@@ -40,6 +40,9 @@ jobs:
   release-linux:
     name: Release (Linux / GNOME)
     runs-on: ubuntu-latest
+    # O secret RELEASE_REPO_TOKEN está vinculado ao Environment "github-token";
+    # secrets de Environment só ficam disponíveis quando o job o declara aqui.
+    environment: github-token
     steps:
       - name: Checkout (histórico completo p/ análise de commits)
         uses: actions/checkout@v4
