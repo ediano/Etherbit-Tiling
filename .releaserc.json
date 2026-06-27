@@ -19,20 +19,8 @@
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "bash packaging/build-linux-release.sh ${nextRelease.version}"
-      }
-    ],
-    [
-      "@semantic-release/github",
-      {
-        "successComment": false,
-        "failComment": false,
-        "assets": [
-          {
-            "path": "etherbit-tiling-linux.tar.gz",
-            "label": "Linux (GNOME) — tar.gz"
-          }
-        ]
+        "prepareCmd": "bash packaging/build-linux-release.sh ${nextRelease.version}",
+        "publishCmd": "echo \"version=${nextRelease.version}\" >> \"$GITHUB_OUTPUT\""
       }
     ]
   ]
