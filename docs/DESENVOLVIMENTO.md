@@ -88,6 +88,24 @@ O GNOME Shell **não** recarrega extensões com `Alt+F2` `r` no Wayland (isso é
 > O Dev Container compila e empacota a extensão, mas **não roda o GNOME Shell**. A execução/teste de
 > runtime (indicador, eventos de janela, D-Bus) acontece num host GNOME 45+ sob Wayland.
 
+## Web (landing page global)
+
+O módulo `web/` é a landing page única e agnóstica (hub de downloads), em **Vite + HTML5/CSS3 puro**
+(ver [rules/0011](../rules/0011-web-landing-vite-css-puro.md)). Usa **pnpm**:
+
+```bash
+cd web
+pnpm install
+pnpm dev        # servidor de desenvolvimento Vite
+pnpm build      # bundle estático em dist/ (HTML + CSS minificado, sem CDN)
+pnpm preview    # serve o build de produção localmente
+```
+
+> **Regra estrita:** zero recursos externos em runtime (sem Tailwind/CDN; fontes via `system-ui`).
+> **Deploy:** GitHub Pages do repositório; `base: '/Etherbit-Tiling/'` em `vite.config.js` (troque
+> por `'/'` em domínio próprio). Links de download/`install.sh`/`og-image.png` são placeholders até
+> haver releases/Pages públicos (o repositório é privado).
+
 ## Plataforma macOS (Swift)
 
 Os arquivos em [`platform-macos/`](../platform-macos/) ficam **visíveis e editáveis** dentro do
@@ -102,6 +120,8 @@ AppKit e da Accessibility API da Apple.
    sessão (`dbus-run-session`), `cargo run -p etherbit-tiling-daemon` registra `org.etherbit.Tiling`.
 4. Na `extension/`, `pnpm install`, `pnpm typecheck` e `pnpm build` concluem; `dist/extension.js`
    preserva os imports `gi://`/`resource:///`.
+5. Em `web/`, `pnpm install` e `pnpm build` concluem; `dist/index.html` não referencia nenhum
+   CSS/JS/fonte externo (sem CDN).
 5. `rust-analyzer`, `even-better-toml` e `eslint` aparecem instalados no container.
 
 ## Notas de versionamento

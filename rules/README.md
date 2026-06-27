@@ -20,6 +20,7 @@ arqueologia de commits.
 | [0008](0008-nome-etherbit.md) | Nome e identidade "Etherbit Tiling" | ✅ Aceita |
 | [0009](0009-nomenclatura-dbus-uuid.md) | Nomenclatura D-Bus, UUID da extensão e contrato JSON | ✅ Aceita |
 | [0010](0010-tooling-extensao-e-zbus.md) | Tooling da extensão (Vite/ESM) e D-Bus puro com zbus | ✅ Aceita |
+| [0011](0011-web-landing-vite-css-puro.md) | Módulo `web/`: landing page com Vite + CSS3 puro (sem CDN) | ✅ Aceita |
 
 ## Como adicionar uma nova decisão
 1. Copie o formato de um ADR existente.

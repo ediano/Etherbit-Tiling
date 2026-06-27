@@ -39,6 +39,7 @@ Etherbit-Tiling/
 ├── core/                  # 🦀 Rust — algoritmo agnóstico "Ether Flow" (etherbit-tiling-core)
 ├── platform-macos/        # 🍎 Swift nativo (AppKit + Accessibility) — build no host macOS
 ├── platform-linux-gnome/  # 🐧 Linux/GNOME — daemon (Rust/D-Bus) + extension (Vite/TS)
+├── web/                   # 🌐 Landing page global (Vite + CSS3 puro) — hub de downloads
 ├── .devcontainer/  docker/  # 🐳 Dev Container (imagem em docker/Dockerfile.core)
 ├── docs/  rules/          # 📚 Documentação e decisões de projeto (ADR)
 └── Cargo.toml             # Workspace Rust raiz, agnóstico (só o core)

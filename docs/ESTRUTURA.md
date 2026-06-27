@@ -34,6 +34,12 @@ Etherbit-Tiling/
 │           ├── extension.ts  #     enable/disable, indicador, filtro Mutter window-created
 │           ├── indicator.ts  #     PanelMenu.Button (gaps, borda ativa, autostart)
 │           └── dbus.ts       #     proxy D-Bus + tipos da config
+├── web/                      # Landing page global (Vite + CSS3 puro): etherbit-tiling-web
+│   ├── package.json          #   scripts dev/build/preview (pnpm)
+│   ├── vite.config.js        #   SPA estática; base de GitHub Pages
+│   ├── index.html            #   HTML5 semântico + SEO (canonical, OG, JSON-LD)
+│   ├── public/favicon.svg    #   ícone vetorial
+│   └── src/                  #   style.css (Dark Mode) + main.js (ano, copiar)
 ├── docs/                     # Documentação
 ├── Cargo.toml                # Workspace Rust raiz, agnóstico (members: core; exclude: platform-linux-gnome)
 ├── Cargo.lock                # Lockfile do core (versionado → builds reproduzíveis)
@@ -48,6 +54,7 @@ Etherbit-Tiling/
 | `platform-macos/` | Swift (AppKit / Accessibility API) | Captura eventos de janela no macOS e aplica o layout decidido pelo core. **Build no host macOS.** |
 | `platform-linux-gnome/daemon/` | Rust (bin) | Roteador de eventos **D-Bus**; ponte entre o GNOME Shell e o core. Depende de `etherbit-tiling-core` por path. |
 | `platform-linux-gnome/extension/` | TypeScript + Vite (ESM) | Extensão-ponte do GNOME Shell que conversa com o daemon. |
+| `web/` | Vite + HTML5/CSS3 puro | Landing page global e agnóstica — hub oficial de distribuição (manifesto + downloads). Sem CDN. |
 | `.devcontainer/` + `docker/` | Docker | Ambiente de desenvolvimento isolado e reproduzível. |
 
 ## Workspaces Rust (builds isolados)

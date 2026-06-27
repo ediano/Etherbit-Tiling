@@ -1,0 +1,15 @@
+{
+  "name": "etherbit-tiling-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Landing page global e agnóstica do Etherbit Tiling — hub oficial de distribuição.",
+  "scripts": {
+    "dev": "vite -p 5173",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^5.2.0"
+  }
+}
