@@ -80,3 +80,84 @@ impl Config {
         serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_has_expected_values() {
+        let cfg = Config::default();
+        assert_eq!(cfg.inner_gap, 8);
+        assert_eq!(cfg.outer_gap, 12);
+        assert!(cfg.active_border);
+        assert_eq!(cfg.border_color, "#5e81ac");
+        assert_eq!(cfg.border_width, 2);
+        assert!(cfg.ignore_list.is_empty());
+        assert!(!cfg.autostart);
+    }
+
+    #[test]
+    fn to_json_is_parseable_with_all_fields() {
+        let json = Config::default().to_json();
+        let value: serde_json::Value = serde_json::from_str(&json).expect("JSON válido");
+        for field in [
+            "inner_gap",
+            "outer_gap",
+            "active_border",
+            "border_color",
+            "border_width",
+            "ignore_list",
+            "autostart",
+        ] {
+            assert!(value.get(field).is_some(), "campo ausente: {field}");
+        }
+    }
+
+    #[test]
+    fn toml_round_trip_preserves_config() {
+        let cfg = Config {
+            inner_gap: 4,
+            outer_gap: 16,
+            active_border: false,
+            border_color: "#bf616a".to_string(),
+            border_width: 3,
+            ignore_list: vec!["obs".to_string(), "microsoft-word".to_string()],
+            autostart: true,
+        };
+        let raw = toml::to_string_pretty(&cfg).expect("serializa TOML");
+        let back: Config = toml::from_str(&raw).expect("desserializa TOML");
+        assert_eq!(back.inner_gap, cfg.inner_gap);
+        assert_eq!(back.outer_gap, cfg.outer_gap);
+        assert_eq!(back.active_border, cfg.active_border);
+        assert_eq!(back.border_color, cfg.border_color);
+        assert_eq!(back.border_width, cfg.border_width);
+        assert_eq!(back.ignore_list, cfg.ignore_list);
+        assert_eq!(back.autostart, cfg.autostart);
+    }
+
+    #[test]
+    fn json_round_trip_preserves_config() {
+        let cfg = Config::default();
+        let back: Config = serde_json::from_str(&cfg.to_json()).expect("desserializa JSON");
+        assert_eq!(back.inner_gap, cfg.inner_gap);
+        assert_eq!(back.border_color, cfg.border_color);
+        assert_eq!(back.autostart, cfg.autostart);
+    }
+
+    #[test]
+    fn partial_input_fills_missing_with_defaults() {
+        // `#[serde(default)]` deve completar campos ausentes — espelha o parseConfig
+        // defensivo da extensão e protege o contrato D-Bus.
+        let cfg: Config = toml::from_str("inner_gap = 20").expect("desserializa parcial");
+        let defaults = Config::default();
+        assert_eq!(cfg.inner_gap, 20);
+        assert_eq!(cfg.outer_gap, defaults.outer_gap);
+        assert_eq!(cfg.border_color, defaults.border_color);
+        assert_eq!(cfg.autostart, defaults.autostart);
+
+        let from_json: Config = serde_json::from_str("{\"border_width\": 5}").expect("JSON parcial");
+        assert_eq!(from_json.border_width, 5);
+        assert_eq!(from_json.inner_gap, defaults.inner_gap);
+    }
+}

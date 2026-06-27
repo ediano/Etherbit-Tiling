@@ -5,29 +5,12 @@
 
 import Gio from 'gi://Gio';
 
+// O contrato puro (tipos, defaults, parse) vive em config.ts — testável sem GJS.
+// Re-exportado aqui para que extension.ts/indicator.ts sigam importando de './dbus.js'.
+export { DEFAULT_CONFIG, parseConfig, type TilingConfig } from './config.js';
+
 export const BUS_NAME = 'org.etherbit.Tiling';
 export const OBJECT_PATH = '/org/etherbit/Tiling';
-
-/// Espelha 1:1 a struct Config do daemon (etherbit-tiling-daemon).
-export interface TilingConfig {
-  inner_gap: number;
-  outer_gap: number;
-  active_border: boolean;
-  border_color: string;
-  border_width: number;
-  ignore_list: string[];
-  autostart: boolean;
-}
-
-export const DEFAULT_CONFIG: TilingConfig = {
-  inner_gap: 8,
-  outer_gap: 12,
-  active_border: true,
-  border_color: '#5e81ac',
-  border_width: 2,
-  ignore_list: [],
-  autostart: false,
-};
 
 // Introspecção: fonte de verdade compartilhada com o `#[interface]` do daemon.
 const IFACE_XML = `
@@ -84,13 +67,4 @@ const TilingProxyWrapper = Gio.DBusProxy.makeProxyWrapper(
 /// Cria um proxy síncrono no barramento de sessão. Pode lançar se o daemon não estiver no bus.
 export function createTilingProxy(): TilingProxy {
   return TilingProxyWrapper(Gio.DBus.session, BUS_NAME, OBJECT_PATH);
-}
-
-/// Faz parse defensivo do JSON do daemon, completando campos ausentes com o padrão.
-export function parseConfig(json: string): TilingConfig {
-  try {
-    return { ...DEFAULT_CONFIG, ...(JSON.parse(json) as Partial<TilingConfig>) };
-  } catch {
-    return { ...DEFAULT_CONFIG };
-  }
 }

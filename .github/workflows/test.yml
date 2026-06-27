@@ -1,0 +1,80 @@
+name: test
+
+# Testes automatizados ISOLADOS por plataforma (ADR 0012): cada plataforma tem seu
+# job, sua toolchain e roda de forma independente. Este workflow também é reutilizável
+# (`workflow_call`) — o release.yml o invoca como gate, de modo que um release só inicia
+# se todos os testes passarem.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+# Em PRs, cancela execuções antigas do mesmo ref para economizar runners.
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # core/ — lib Rust agnóstica (workspace raiz, que só inclui `core`).
+  test-core:
+    name: Testes — core (Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+      - name: cargo test (core)
+        run: cargo test
+
+  # platform-linux-gnome/daemon/ — binário Rust (workspace Cargo separado).
+  test-daemon:
+    name: Testes — daemon (Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: platform-linux-gnome
+      - name: Dependências de build do daemon
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config build-essential
+      - name: cargo test (daemon)
+        run: cargo test --manifest-path platform-linux-gnome/Cargo.toml
+
+  # platform-linux-gnome/extension/ — TypeScript (vitest em ambiente node).
+  test-extension:
+    name: Testes — extension (TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: platform-linux-gnome/extension
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Habilita pnpm via corepack
+        run: corepack enable
+      - name: Instala dependências
+        run: pnpm install --frozen-lockfile
+      - name: Type-check (tsc)
+        run: pnpm run typecheck
+      - name: vitest
+        run: pnpm test
+
+  # platform-macos/ — Swift. Liberar quando existir Package.swift (ver platform-macos/TESTES.md).
+  # test-macos:
+  #   name: Testes — macOS (Swift)
+  #   runs-on: macos-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: swift test
+  #       run: |
+  #         cd platform-macos
+  #         swift test
