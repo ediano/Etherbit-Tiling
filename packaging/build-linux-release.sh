@@ -40,8 +40,9 @@ if [ -d "$EXT/schemas" ]; then
   install -m 644 "$EXT"/schemas/*.gschema.xml "$STAGE/extension/schemas/" 2>/dev/null || true
 fi
 
-echo ">> Adicionando installer e VERSION"
-install -m 755 "$ROOT/packaging/install.sh" "$STAGE/install.sh"
+echo ">> Adicionando installer, uninstaller e VERSION"
+install -m 755 "$ROOT/packaging/install.sh"   "$STAGE/install.sh"
+install -m 755 "$ROOT/packaging/uninstall.sh" "$STAGE/uninstall.sh"
 printf '%s\n' "$VERSION" > "$STAGE/VERSION"
 
 echo ">> Empacotando $STAGE_NAME.tar.gz"

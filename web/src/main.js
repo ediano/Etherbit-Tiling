@@ -7,12 +7,14 @@ if (yearEl) {
   yearEl.textContent = String(new Date().getFullYear());
 }
 
-// Copiar o comando de instalação do Linux.
-const copyBtn = document.querySelector('[data-copy-btn]');
-const cmdEl = document.getElementById('install-cmd');
+// Copiar comandos: cada bloco `.code[data-copy]` tem seu próprio <code> e botão.
+// Funciona tanto na home (1 bloco) quanto na página de desinstalação (vários).
+document.querySelectorAll('.code[data-copy]').forEach((box) => {
+  const btn = box.querySelector('[data-copy-btn]');
+  const cmdEl = box.querySelector('code');
+  if (!btn || !cmdEl) return;
 
-if (copyBtn && cmdEl) {
-  copyBtn.addEventListener('click', async () => {
+  btn.addEventListener('click', async () => {
     const text = cmdEl.textContent?.trim() ?? '';
     try {
       await navigator.clipboard.writeText(text);
@@ -27,12 +29,12 @@ if (copyBtn && cmdEl) {
       sel?.removeAllRanges();
     }
 
-    const original = copyBtn.textContent;
-    copyBtn.textContent = 'Copiado!';
-    copyBtn.classList.add('is-copied');
+    const original = btn.textContent;
+    btn.textContent = 'Copiado!';
+    btn.classList.add('is-copied');
     window.setTimeout(() => {
-      copyBtn.textContent = original;
-      copyBtn.classList.remove('is-copied');
+      btn.textContent = original;
+      btn.classList.remove('is-copied');
     }, 1800);
   });
-}
+});

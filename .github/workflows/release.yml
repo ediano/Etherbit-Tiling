@@ -116,9 +116,15 @@ jobs:
             1. Baixe `etherbit-tiling-linux.tar.gz`.
             2. Extraia: `tar -xzf etherbit-tiling-linux.tar.gz`
             3. Execute: `cd etherbit-tiling-linux && ./install.sh`
+
+            **Desinstalação (um comando)**
+            ```
+            curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/uninstall.sh | bash
+            ```
           files: |
             etherbit-tiling-linux.tar.gz
             packaging/install.sh
+            packaging/uninstall.sh
 
   # -----------------------------------------------------------------------------
   # Futuro — build do macOS (Swift). Mantido comentado até existir platform-macos/.

@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <title>Desinstalar — Etherbit Tiling</title>
+    <meta
+      name="description"
+      content="Como remover completamente o Etherbit Tiling do Linux/GNOME: um comando único ou os passos manuais (daemon, extensão e serviço systemd)."
+    />
+    <meta name="theme-color" content="#0e1116" />
+    <!-- Página utilitária: fora do índice de busca. -->
+    <meta name="robots" content="noindex, follow" />
+    <meta name="color-scheme" content="dark" />
+
+    <link rel="canonical" href="https://etherbit-tiling.vercel.app/desinstalar.html" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  </head>
+
+  <body>
+    <a class="skip-link" href="#main">Pular para o conteúdo</a>
+
+    <header class="site-header">
+      <div class="container site-header__inner">
+        <a class="brand" href="/" aria-label="Etherbit Tiling — início">
+          <svg class="brand__mark" width="28" height="28" viewBox="0 0 32 32" aria-hidden="true">
+            <rect x="2" y="2" width="13" height="13" rx="2" />
+            <rect x="17" y="2" width="13" height="8" rx="2" />
+            <rect x="17" y="12" width="13" height="18" rx="2" />
+            <rect x="2" y="17" width="13" height="13" rx="2" />
+          </svg>
+          <span class="brand__name">Etherbit <strong>Tiling</strong></span>
+        </a>
+        <nav class="site-nav" aria-label="Navegação principal">
+          <a href="/#sistemas">Voltar ao início</a>
+          <a class="site-nav__cta" href="https://github.com/ediano" target="_blank" rel="noopener noreferrer">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="uninstall">
+        <div class="container">
+          <h1 class="section-title">Desinstalar o Etherbit Tiling</h1>
+          <p class="section-lead">
+            Remova o daemon, a extensão GNOME e o serviço do seu usuário. Sem sudo — tudo é instalado
+            no espaço do usuário.
+          </p>
+
+          <div class="uninstall__body">
+            <!-- Um comando -->
+            <div class="uninstall__step">
+              <h2>Em um comando</h2>
+              <p class="uninstall__hint">Baixa e executa o desinstalador oficial:</p>
+              <div class="code" data-copy>
+                <code>curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/uninstall.sh | bash</code>
+                <button class="code__copy" type="button" data-copy-btn aria-label="Copiar comando">Copiar</button>
+              </div>
+            </div>
+
+            <!-- Manual -->
+            <div class="uninstall__step">
+              <h2>Manualmente</h2>
+              <p class="uninstall__hint">
+                Se preferir, execute os passos à mão — eles revertem exatamente o que a instalação fez:
+              </p>
+              <div class="code code--block" data-copy>
+                <code>gnome-extensions disable tiling@etherbit.org
+systemctl --user disable --now etherbit-tiling-daemon.service
+rm -f ~/.local/bin/etherbit-tiling-daemon
+rm -rf ~/.local/share/gnome-shell/extensions/tiling@etherbit.org
+rm -f ~/.config/systemd/user/etherbit-tiling-daemon.service
+systemctl --user daemon-reload</code>
+                <button class="code__copy" type="button" data-copy-btn aria-label="Copiar comandos">Copiar</button>
+              </div>
+            </div>
+
+            <p class="uninstall__note">
+              <strong>Sua configuração é preservada por padrão.</strong> Os arquivos
+              <code>~/.config/etherbit-tiling/</code> e
+              <code>~/.config/autostart/tiling@etherbit.org.desktop</code> não são removidos. Para
+              apagá-los também, rode o desinstalador com <code>ETHERBIT_PURGE=1</code> ou remova-os à
+              mão. No <strong>Wayland</strong>, faça logout/login para o GNOME Shell descarregar a
+              extensão.
+            </p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container site-footer__inner">
+        <p>
+          <strong>Etherbit Tiling</strong> — o tecido invisível que coloca suas janelas em órbita perfeita.
+        </p>
+        <nav aria-label="Links do rodapé">
+          <a href="/">Início</a>
+          <a href="https://github.com/ediano" target="_blank" rel="noopener noreferrer">Repositório</a>
+        </nav>
+        <p class="site-footer__legal">© <span id="year">2026</span> Etherbit Tiling · Inspirado no COSMIC do Pop!_OS</p>
+      </div>
+    </footer>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
