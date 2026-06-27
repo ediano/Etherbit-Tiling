@@ -18,6 +18,8 @@ arqueologia de commits.
 | [0006](0006-cargo-lock-versionado.md) | `Cargo.lock` versionado | ✅ Aceita |
 | [0007](0007-vscode-versionado-parcial.md) | `.vscode/` versionado parcialmente | ✅ Aceita |
 | [0008](0008-nome-etherbit.md) | Nome e identidade "Etherbit Tiling" | ✅ Aceita |
+| [0009](0009-nomenclatura-dbus-uuid.md) | Nomenclatura D-Bus, UUID da extensão e contrato JSON | ✅ Aceita |
+| [0010](0010-tooling-extensao-e-zbus.md) | Tooling da extensão (Vite/ESM) e D-Bus puro com zbus | ✅ Aceita |
 
 ## Como adicionar uma nova decisão
 1. Copie o formato de um ADR existente.

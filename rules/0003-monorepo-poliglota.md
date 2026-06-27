@@ -25,7 +25,7 @@ resolver = "2"
 members = ["daemon"]
 ```
 
-- `etherbit-daemon` depende de `etherbit-core` por path (`{ path = "../../core" }`) — dependência de
+- `etherbit-tiling-daemon` depende de `etherbit-tiling-core` por path (`{ path = "../../core" }`) — dependência de
   path funciona entre workspaces.
 - A raiz usa `exclude` para não puxar crates de plataforma (evita acoplamento e o erro de workspace
   aninhado).

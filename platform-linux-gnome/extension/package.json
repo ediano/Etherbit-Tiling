@@ -1,14 +1,24 @@
 {
-  "name": "etherbit-gnome-extension",
+  "name": "etherbit-tiling-extension",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "install:ext": "pnpm run build && bash scripts/install.sh"
   },
   "devDependencies": {
+    "@girs/clutter-16": "^16.0.0-4.0.0-beta.34",
+    "@girs/gio-2.0": "^2.84.4-4.0.0-beta.34",
+    "@girs/gjs": "^4.0.0-beta.34",
+    "@girs/glib-2.0": "^2.84.4-4.0.0-beta.34",
+    "@girs/gnome-shell": "^48.0.4",
+    "@girs/gobject-2.0": "^2.84.4-4.0.0-beta.34",
+    "@girs/meta-16": "^16.0.0-4.0.0-beta.34",
+    "@girs/st-16": "^16.0.0-4.0.0-beta.34",
     "typescript": "^5.4.0",
     "vite": "^5.2.0"
   }

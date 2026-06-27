@@ -1,0 +1,8 @@
+{
+  "uuid": "tiling@etherbit.org",
+  "name": "Etherbit Tiling",
+  "description": "O tecido invisível que coloca suas janelas em órbita perfeita. Gerenciador automático de janelas (tiling) para GNOME 45+ sob Wayland.",
+  "shell-version": ["45", "46", "47", "48"],
+  "url": "https://github.com/ediano/Etherbit-Tiling",
+  "version": 1
+}

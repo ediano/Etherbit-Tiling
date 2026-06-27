@@ -9,7 +9,7 @@ Etherbit-Tiling/
 │   └── devcontainer.json     #   build → ../docker/Dockerfile.core, feature Node, extensões, pnpm
 ├── docker/
 │   └── Dockerfile.core       # Imagem de dev: rust:1 + build-essential, libdbus-1-dev, pkg-config
-├── core/                     # Crate Rust agnóstico (lib): etherbit-core
+├── core/                     # Crate Rust agnóstico (lib): etherbit-tiling-core
 │   ├── Cargo.toml
 │   └── src/lib.rs            #   algoritmo "Ether Flow"
 ├── platform-macos/           # Projeto Swift nativo (AppKit + Accessibility API)
@@ -17,11 +17,23 @@ Etherbit-Tiling/
 ├── platform-linux-gnome/     # Workspace Rust independente (isolamento de build)
 │   ├── Cargo.toml            #   workspace do Linux (members: daemon)
 │   ├── Cargo.lock            #   lockfile próprio do daemon
-│   ├── daemon/               # Crate Rust (bin): etherbit-daemon — roteador D-Bus
-│   │   ├── Cargo.toml        #   depende de etherbit-core por path (../../core)
-│   │   └── src/main.rs
-│   └── extension/            # Extensão-ponte Vite + TypeScript (ESM)
-│       └── package.json      #   etherbit-gnome-extension
+│   ├── daemon/               # Crate Rust (bin): etherbit-tiling-daemon — serviço D-Bus
+│   │   ├── Cargo.toml        #   zbus + tokio + serde/toml; depende de etherbit-tiling-core por path
+│   │   └── src/
+│   │       ├── main.rs       #     loop de background; sobe org.etherbit.Tiling
+│   │       ├── service.rs    #     interface D-Bus #[interface] (gaps, borda, ignore, autostart)
+│   │       ├── config.rs     #     Config (serde) persistida em ~/.config/etherbit-tiling/config.toml
+│   │       └── autostart.rs  #     manifesto .desktop em ~/.config/autostart
+│   └── extension/            # Extensão-ponte Vite + TypeScript (ESM): etherbit-tiling-extension
+│       ├── package.json      #   scripts: dev/build/typecheck/install:ext (pnpm)
+│       ├── metadata.json     #   uuid tiling@etherbit.org, shell-version 45–48
+│       ├── vite.config.ts    #   modo library; externaliza gi://, resource:///
+│       ├── tsconfig.json     #   ESM, tipos @girs/*
+│       ├── scripts/install.sh#   copia o bundle para a pasta local de extensões do GNOME
+│       └── src/
+│           ├── extension.ts  #     enable/disable, indicador, filtro Mutter window-created
+│           ├── indicator.ts  #     PanelMenu.Button (gaps, borda ativa, autostart)
+│           └── dbus.ts       #     proxy D-Bus + tipos da config
 ├── docs/                     # Documentação
 ├── Cargo.toml                # Workspace Rust raiz, agnóstico (members: core; exclude: platform-linux-gnome)
 ├── Cargo.lock                # Lockfile do core (versionado → builds reproduzíveis)
@@ -34,7 +46,7 @@ Etherbit-Tiling/
 |-------|-------------------|------------------|
 | `core/` | Rust (lib) | **Ether Flow** — algoritmo agnóstico de divisão de tela e regras de filtragem de janelas. Sem dependências de SO. |
 | `platform-macos/` | Swift (AppKit / Accessibility API) | Captura eventos de janela no macOS e aplica o layout decidido pelo core. **Build no host macOS.** |
-| `platform-linux-gnome/daemon/` | Rust (bin) | Roteador de eventos **D-Bus**; ponte entre o GNOME Shell e o core. Depende de `etherbit-core` por path. |
+| `platform-linux-gnome/daemon/` | Rust (bin) | Roteador de eventos **D-Bus**; ponte entre o GNOME Shell e o core. Depende de `etherbit-tiling-core` por path. |
 | `platform-linux-gnome/extension/` | TypeScript + Vite (ESM) | Extensão-ponte do GNOME Shell que conversa com o daemon. |
 | `.devcontainer/` + `docker/` | Docker | Ambiente de desenvolvimento isolado e reproduzível. |
 
@@ -46,7 +58,7 @@ Para isolar os builds ao estilo monorepo, há **dois workspaces Cargo independen
   `exclude = ["platform-linux-gnome"]`. A raiz **não** enxerga crates de plataforma.
 - **`platform-linux-gnome/Cargo.toml`** — workspace específico de Linux/GNOME, member `daemon`.
 
-O `daemon` consome `etherbit-core` por **path** (`{ path = "../../core" }`); dependência de path
+O `daemon` consome `etherbit-tiling-core` por **path** (`{ path = "../../core" }`); dependência de path
 funciona entre workspaces. Cada workspace tem seu próprio `Cargo.lock`, garantindo builds
 reproduzíveis e isolados.
 
