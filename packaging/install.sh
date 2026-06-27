@@ -11,7 +11,38 @@
 set -euo pipefail
 
 UUID="tiling@etherbit.org"
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${ETHERBIT_RELEASE_REPO:-ediano/etherbit-tiling-releases}"
+TARBALL="etherbit-tiling-linux.tar.gz"
+ASSET_URL="https://github.com/$REPO/releases/latest/download/$TARBALL"
+
+# Diretório deste script. Via `curl ... | bash` o script vem do stdin e
+# BASH_SOURCE fica vazio — o `:-` evita o "unbound variable" sob set -u.
+SOURCE="${BASH_SOURCE[0]:-}"
+if [ -n "$SOURCE" ]; then
+  HERE="$(cd "$(dirname "$SOURCE")" && pwd)"
+else
+  HERE=""
+fi
+
+# Bootstrap: se o payload (daemon) não está ao lado do script — caso do
+# `curl | bash`, em que só o install.sh chega — baixa e extrai o tarball de
+# release num diretório temporário e segue a instalação a partir dele.
+if [ -z "$HERE" ] || [ ! -f "$HERE/bin/etherbit-tiling-daemon" ]; then
+  echo ">> Payload local ausente; baixando release de $REPO"
+  command -v tar >/dev/null || { echo "erro: 'tar' é necessário." >&2; exit 1; }
+  TMP="$(mktemp -d)"
+  trap 'rm -rf "$TMP"' EXIT
+  if command -v curl >/dev/null; then
+    curl -fsSL "$ASSET_URL" -o "$TMP/$TARBALL"
+  elif command -v wget >/dev/null; then
+    wget -qO "$TMP/$TARBALL" "$ASSET_URL"
+  else
+    echo "erro: instale 'curl' ou 'wget' para baixar o release." >&2
+    exit 1
+  fi
+  tar -xzf "$TMP/$TARBALL" -C "$TMP"
+  HERE="$TMP/etherbit-tiling-linux"
+fi
 
 BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
 EXT_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/gnome-shell/extensions/$UUID"
