@@ -11,6 +11,9 @@ on:
       - 'core/**'
       - 'platform-linux-gnome/**'
       # - 'platform-macos/**'   # futuro (ver job comentado abaixo)
+  # Permite disparar o release manualmente pela aba Actions (Run workflow),
+  # ignorando o filtro de `paths` acima. Útil para reprocessar uma release.
+  workflow_dispatch:
 
 # semantic-release cria a tag, a Release e anexa os assets.
 permissions:
