@@ -107,7 +107,12 @@ jobs:
 
             Artefatos de produção (sem código-fonte): daemon em Rust + extensão GNOME + installer.
 
-            **Instalação**
+            **Instalação (um comando)**
+            ```
+            curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/install.sh | bash
+            ```
+
+            **Instalação (manual)**
             1. Baixe `etherbit-tiling-linux.tar.gz`.
             2. Extraia: `tar -xzf etherbit-tiling-linux.tar.gz`
             3. Execute: `cd etherbit-tiling-linux && ./install.sh`
