@@ -551,6 +551,78 @@ h4 {
   }
 }
 
+/* Variante multilinha: vários comandos, um por linha (passos manuais). */
+.code--block {
+  align-items: flex-start;
+
+  & code {
+    white-space: pre;
+    line-height: 1.7;
+  }
+
+  & .code__copy {
+    position: sticky;
+    top: 0;
+  }
+}
+
+/* Link discreto na nota do card (ex.: "Como desinstalar"). */
+.card__link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+
+  &:hover {
+    color: var(--primary-2);
+  }
+}
+
+/* ───────────────── Página de desinstalação ───────────────── */
+.uninstall {
+  padding-block: clamp(56px, 9vw, 110px);
+}
+
+.uninstall__body {
+  max-width: 720px;
+  margin: 44px auto 0;
+}
+
+.uninstall__step {
+  margin-bottom: 32px;
+
+  & h2 {
+    font-size: 1.3rem;
+    margin-bottom: 6px;
+  }
+
+  & .uninstall__hint {
+    margin: 0 0 14px;
+    color: var(--muted);
+    font-size: 0.96rem;
+  }
+}
+
+.uninstall__note {
+  padding: 18px 20px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 0.96rem;
+
+  & strong {
+    color: var(--text);
+  }
+
+  & code {
+    font-family: var(--mono);
+    font-size: 0.85em;
+    color: var(--accent);
+    word-break: break-all;
+  }
+}
+
 /* ───────────────────────── Footer ───────────────────────── */
 .site-footer {
   border-top: 1px solid var(--border);
