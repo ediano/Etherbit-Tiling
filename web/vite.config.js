@@ -1,7 +1,7 @@
 import { defineConfig } from "vite";
 
-// Subpath do GitHub Pages do repositório (ediano/Etherbit-Tiling).
-// Para domínio próprio servido na raiz, troque por '/'.
+// Deploy de produção na Vercel em domínio raiz (https://etherbit-tiling.vercel.app/),
+// portanto base '/'. Para servir em subpath, ajuste aqui.
 const BASE = "/";
 
 export default defineConfig({

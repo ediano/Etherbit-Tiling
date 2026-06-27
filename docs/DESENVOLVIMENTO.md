@@ -102,9 +102,9 @@ pnpm preview    # serve o build de produção localmente
 ```
 
 > **Regra estrita:** zero recursos externos em runtime (sem Tailwind/CDN; fontes via `system-ui`).
-> **Deploy:** GitHub Pages do repositório; `base: '/Etherbit-Tiling/'` em `vite.config.js` (troque
-> por `'/'` em domínio próprio). Links de download/`install.sh`/`og-image.png` são placeholders até
-> haver releases/Pages públicos (o repositório é privado).
+> **Deploy:** produção na **Vercel** (https://etherbit-tiling.vercel.app/); `base: '/'` em
+> `vite.config.js`. Os downloads usam assets de Release do GitHub (`releases/latest/download/…`);
+> `og-image.png` ainda é placeholder até haver o asset real.
 
 ## Plataforma macOS (Swift)
 

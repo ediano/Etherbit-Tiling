@@ -19,9 +19,8 @@ o módulo vive, qual stack usa e a regra estrita anti-CDN.
   fonte. O CSS é compilado e **minificado pelo Vite** (`cssMinify`), gerando arquivo estático local.
 - **SEO:** `lang="pt-BR"`, `title`/`description`, `<link rel="canonical">`, Open Graph, Twitter Card,
   `theme-color` e JSON-LD `SoftwareApplication`. Conteúdo em PT-BR (ADR 0001).
-- **Deploy/base:** alvo **GitHub Pages** do repositório; `base: '/Etherbit-Tiling/'` no
-  `vite.config.js` (constante isolada, trocável por `'/'` em domínio próprio). Canônica:
-  `https://ediano.github.io/Etherbit-Tiling/`.
+- **Deploy/base:** produção na **Vercel** em domínio raiz; `base: '/'` no `vite.config.js`
+  (constante isolada). Canônica: `https://etherbit-tiling.vercel.app/`.
 - **pnpm (ADR 0005):** o gate de build do pnpm 11 é tratado via **`pnpm-workspace.yaml`** com
   `verifyDepsBeforeRun: false` e `onlyBuiltDependencies: [esbuild]` (em pnpm 11 o `.npmrc` não aplica
   essas chaves de forma confiável). Sem isso, `pnpm build` falha no pré-check de dependências.
