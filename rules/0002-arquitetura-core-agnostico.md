@@ -10,7 +10,7 @@ lógica por plataforma seria caro e propenso a divergências.
 ## Decisão
 Separar **decisão** de **aplicação**:
 
-- **`core/` (Rust, lib `etherbit-core`)** — algoritmo **Ether Flow**, agnóstico de SO. Recebe estado
+- **`core/` (Rust, lib `etherbit-tiling-core`)** — algoritmo **Ether Flow**, agnóstico de SO. Recebe estado
   das janelas e devolve o layout-alvo. Sem dependências de plataforma.
 - **Camadas nativas finas por plataforma** — apenas capturam eventos e aplicam o layout:
   - **macOS:** Swift (AppKit + Accessibility API) — plataforma-alvo principal.

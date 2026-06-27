@@ -7,7 +7,7 @@
 *.pdb
 
 # Cargo.lock: MANTIDO no versionamento.
-# O workspace produz um binário (etherbit-daemon), então o lockfile
+# O workspace produz um binário (etherbit-tiling-daemon), então o lockfile
 # deve ser commitado para builds reproduzíveis. NÃO ignorar.
 
 # ─────────────────────────────────────────────

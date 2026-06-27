@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+
+    "noEmit": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+
+    "moduleDetection": "force",
+    "useDefineForClassFields": true,
+    "resolveJsonModule": true,
+
+    "types": [
+      "@girs/gjs",
+      "@girs/gjs/dom",
+      "@girs/gobject-2.0",
+      "@girs/gio-2.0",
+      "@girs/glib-2.0",
+      "@girs/st-16",
+      "@girs/meta-16",
+      "@girs/clutter-16",
+      "@girs/gnome-shell/ambient",
+      "@girs/gnome-shell/extensions/global"
+    ]
+  },
+  "include": ["src/**/*.ts"]
+}

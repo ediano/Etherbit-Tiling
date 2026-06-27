@@ -8,7 +8,7 @@ ignorá-lo em bibliotecas. Com os workspaces isolados ([0003](0003-monorepo-poli
 lockfile por workspace: o da raiz (`core`) e o de `platform-linux-gnome/` (`daemon`, binário).
 
 ## Decisão
-**Versionar o `Cargo.lock` de cada workspace.** Como o conjunto produz um binário (`etherbit-daemon`),
+**Versionar o `Cargo.lock` de cada workspace.** Como o conjunto produz um binário (`etherbit-tiling-daemon`),
 os lockfiles são commitados para garantir **builds reproduzíveis**.
 
 O `.gitignore` documenta explicitamente que o `Cargo.lock` **não** deve ser ignorado.

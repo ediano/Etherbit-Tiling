@@ -36,9 +36,10 @@ eventos de janela e aplica as decisões do core.
 
 ```
 Etherbit-Tiling/
-├── core/                  # 🦀 Rust — algoritmo agnóstico "Ether Flow" (etherbit-core)
+├── core/                  # 🦀 Rust — algoritmo agnóstico "Ether Flow" (etherbit-tiling-core)
 ├── platform-macos/        # 🍎 Swift nativo (AppKit + Accessibility) — build no host macOS
 ├── platform-linux-gnome/  # 🐧 Linux/GNOME — daemon (Rust/D-Bus) + extension (Vite/TS)
+├── web/                   # 🌐 Landing page global (Vite + CSS3 puro) — hub de downloads
 ├── .devcontainer/  docker/  # 🐳 Dev Container (imagem em docker/Dockerfile.core)
 ├── docs/  rules/          # 📚 Documentação e decisões de projeto (ADR)
 └── Cargo.toml             # Workspace Rust raiz, agnóstico (só o core)
@@ -58,9 +59,9 @@ O desenvolvimento do **core (Rust)** e da **extension (TypeScript/Vite)** roda d
 # 2. Build do core (workspace raiz, agnóstico):
 cargo build
 # 3. Build/execução do daemon Linux (workspace próprio):
-cd platform-linux-gnome && cargo run -p etherbit-daemon   # => Etherbit daemon — core 0.1.0
-# 4. Instale as deps da extensão GNOME (pnpm via corepack):
-cd platform-linux-gnome/extension && pnpm install
+cd platform-linux-gnome && cargo build                          # ou: cargo run -p etherbit-tiling-daemon (sobe o D-Bus org.etherbit.Tiling)
+# 4. Build/instalação da extensão GNOME (pnpm via corepack):
+cd platform-linux-gnome/extension && pnpm install && pnpm run install:ext
 ```
 
 > Guia completo em [docs/DESENVOLVIMENTO.md](docs/DESENVOLVIMENTO.md).
