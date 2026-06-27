@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = [
+    "core",
+]
+
+# platform-linux-gnome é um workspace independente (específico de Linux/GNOME).
+# A raiz é agnóstica e não deve enxergar crates de plataforma.
+exclude = [
+    "platform-linux-gnome",
+]
