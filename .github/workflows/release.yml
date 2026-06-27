@@ -15,7 +15,19 @@ on:
   # ignorando o filtro de `paths` acima. Útil para reprocessar uma release.
   workflow_dispatch:
 
-# semantic-release cria a tag, a Release e anexa os assets.
+# Arquitetura de DOIS repositórios:
+#   - Repo PRIVADO (este): o semantic-release calcula a versão a partir dos
+#     Conventional Commits, cria a TAG git aqui (estado de versão para a próxima
+#     execução — invisível ao público) e roda o build. NÃO publica Release
+#     pública aqui (o plugin @semantic-release/github foi removido do
+#     .releaserc.json), por isso o build acontece de forma silenciosa.
+#   - Repo PÚBLICO (ediano/etherbit-tiling-releases): recebe a Release, a tag
+#     calculada e os assets via softprops/action-gh-release, autenticado com o
+#     PAT RELEASE_REPO_TOKEN. É a face pública/anônima da distribuição.
+#
+# `contents: write` é necessário para o semantic-release empurrar a tag git
+# para ESTE repositório privado (a publicação no repo externo usa o PAT, não o
+# GITHUB_TOKEN, então não depende destas permissões).
 permissions:
   contents: write
 
@@ -53,11 +65,15 @@ jobs:
       - name: Dependências de build do daemon
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config build-essential
 
-      # semantic-release: calcula a próxima versão a partir dos Conventional
-      # Commits (fix: -> patch, feat: -> minor), roda o build via prepareCmd
-      # (packaging/build-linux-release.sh) e publica o asset na Release. Nunca
-      # sobrescreve releases anteriores — cada execução cria uma nova tag.
-      - name: semantic-release
+      # semantic-release (repo PRIVADO): calcula a próxima versão a partir dos
+      # Conventional Commits (fix: -> patch, feat: -> minor), roda o build via
+      # prepareCmd (packaging/build-linux-release.sh) gerando
+      # `etherbit-tiling-linux.tar.gz`, e cria/empurra a TAG git neste repo —
+      # preservando o estado de versão. O publishCmd exporta a versão calculada
+      # como output (`steps.semrel.outputs.version`); se nenhum release for
+      # devido, o output fica vazio e a publicação pública é pulada.
+      - name: semantic-release (calcula versão + build + tag privada)
+        id: semrel
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -66,14 +82,41 @@ jobs:
             -p @semantic-release/commit-analyzer \
             -p @semantic-release/release-notes-generator \
             -p @semantic-release/exec \
-            -p @semantic-release/github \
             -p conventional-changelog-conventionalcommits \
             semantic-release
+
+      # Publicação PÚBLICA: cria a Release e a tag calculada no repositório
+      # externo `ediano/etherbit-tiling-releases`, anexando o tar.gz unificado e
+      # o install.sh individual. Usa o PAT RELEASE_REPO_TOKEN (escrita no repo de
+      # destino) em vez do GITHUB_TOKEN padrão. Só roda quando o semantic-release
+      # de fato produziu uma nova versão.
+      - name: Publica Release no repo público de releases
+        if: steps.semrel.outputs.version != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.RELEASE_REPO_TOKEN }}
+          repository: ediano/etherbit-tiling-releases
+          tag_name: v${{ steps.semrel.outputs.version }}
+          name: Etherbit Tiling v${{ steps.semrel.outputs.version }}
+          make_latest: true
+          body: |
+            ## Etherbit Tiling v${{ steps.semrel.outputs.version }} — Linux (GNOME)
+
+            Artefatos de produção (sem código-fonte): daemon em Rust + extensão GNOME + installer.
+
+            **Instalação**
+            1. Baixe `etherbit-tiling-linux.tar.gz`.
+            2. Extraia: `tar -xzf etherbit-tiling-linux.tar.gz`
+            3. Execute: `cd etherbit-tiling-linux && ./install.sh`
+          files: |
+            etherbit-tiling-linux.tar.gz
+            packaging/install.sh
 
   # -----------------------------------------------------------------------------
   # Futuro — build do macOS (Swift). Mantido comentado até existir platform-macos/.
   # Compila em modo Release e empacota APENAS o binário (.zip/.dmg), sem expor
-  # os arquivos .swift originais. Anexa como asset adicional à mesma Release.
+  # os arquivos .swift originais. Publica como asset adicional na MESMA Release
+  # do repositório público, reaproveitando a tag calculada no job Linux.
   #
   # release-macos:
   #   name: Release (macOS)
@@ -91,11 +134,11 @@ jobs:
   #       run: |
   #         cd platform-macos/.build/release
   #         zip -j etherbit-tiling-macos.zip etherbit-tiling   # ou gera .dmg
-  #     - name: Anexa asset à Release da tag atual
+  #     - name: Anexa asset à Release pública da tag atual
   #       uses: softprops/action-gh-release@v2
   #       with:
-  #         tag_name: ${{ github.ref_name }}
+  #         token: ${{ secrets.RELEASE_REPO_TOKEN }}
+  #         repository: ediano/etherbit-tiling-releases
+  #         tag_name: v${{ needs.release-linux.outputs.version }}
   #         files: platform-macos/.build/release/etherbit-tiling-macos.zip
-  #       env:
-  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   # -----------------------------------------------------------------------------
