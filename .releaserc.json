@@ -25,6 +25,8 @@
     [
       "@semantic-release/github",
       {
+        "successComment": false,
+        "failComment": false,
         "assets": [
           {
             "path": "etherbit-tiling-linux.tar.gz",
