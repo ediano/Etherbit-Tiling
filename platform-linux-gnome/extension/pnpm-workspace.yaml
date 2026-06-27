@@ -1,0 +1,18 @@
+# Configuração do pnpm (pnpm 10+/11 leem daqui, NÃO mais do .npmrc).
+#
+# Por que este arquivo existe: o pnpm 11 bloqueia por padrão os scripts de
+# build (postinstall) das dependências por política de supply-chain. O esbuild
+# (usado pelo Vite) precisa do postinstall para baixar o binário nativo; sem
+# ele o `vite build` falha com [ERR_PNPM_IGNORED_BUILDS]. As chaves abaixo
+# liberam APENAS o esbuild.
+#
+# `allowBuilds` é o gate do pnpm 11 (gerado por `pnpm approve-builds esbuild`);
+# `onlyBuiltDependencies` mantém compat com pnpm 9/10.
+allowBuilds:
+  esbuild: true
+onlyBuiltDependencies:
+  - esbuild
+
+# Evita o re-check de dependências que o pnpm dispara antes de rodar scripts
+# (ex.: `pnpm build`), que reexecutava o install e quebrava em CI.
+verifyDepsBeforeRun: false
