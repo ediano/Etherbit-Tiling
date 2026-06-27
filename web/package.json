@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Landing page global e agnóstica do Etherbit Tiling — hub oficial de distribuição.",
   "scripts": {
-    "dev": "vite -p 5173",
+    "dev": "vite --port 5173",
     "build": "vite build",
     "preview": "vite preview"
   },
