@@ -1,0 +1,98 @@
+name: release
+
+# Dispara SOMENTE em mudanças de código. Como o GitHub não permite combinar
+# `paths` com `paths-ignore` no mesmo evento, listamos apenas as pastas de
+# lógica — assim commits que tocam só `web/`, `docs/` ou `*.md` nunca acionam
+# um release (mudanças na landing/documentação não afetam o motor do app).
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'core/**'
+      - 'platform-linux-gnome/**'
+      # - 'platform-macos/**'   # futuro (ver job comentado abaixo)
+
+# semantic-release cria a tag, a Release e anexa os assets.
+permissions:
+  contents: write
+
+# Evita dois releases concorrentes na mesma branch.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-linux:
+    name: Release (Linux / GNOME)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (histórico completo p/ análise de commits)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Toolchain Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache de build do Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: platform-linux-gnome
+
+      - name: Node + corepack (pnpm)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Habilita pnpm via corepack
+        run: corepack enable
+
+      - name: Dependências de build do daemon
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config build-essential
+
+      # semantic-release: calcula a próxima versão a partir dos Conventional
+      # Commits (fix: -> patch, feat: -> minor), roda o build via prepareCmd
+      # (packaging/build-linux-release.sh) e publica o asset na Release. Nunca
+      # sobrescreve releases anteriores — cada execução cria uma nova tag.
+      - name: semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx --yes \
+            -p semantic-release \
+            -p @semantic-release/commit-analyzer \
+            -p @semantic-release/release-notes-generator \
+            -p @semantic-release/exec \
+            -p @semantic-release/github \
+            -p conventional-changelog-conventionalcommits \
+            semantic-release
+
+  # -----------------------------------------------------------------------------
+  # Futuro — build do macOS (Swift). Mantido comentado até existir platform-macos/.
+  # Compila em modo Release e empacota APENAS o binário (.zip/.dmg), sem expor
+  # os arquivos .swift originais. Anexa como asset adicional à mesma Release.
+  #
+  # release-macos:
+  #   name: Release (macOS)
+  #   runs-on: macos-latest
+  #   needs: release-linux            # reusa a tag/Release já criada no Linux
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         fetch-depth: 0
+  #     - name: Build Swift (Release)
+  #       run: |
+  #         cd platform-macos
+  #         swift build -c release
+  #     - name: Empacota binário (sem .swift)
+  #       run: |
+  #         cd platform-macos/.build/release
+  #         zip -j etherbit-tiling-macos.zip etherbit-tiling   # ou gera .dmg
+  #     - name: Anexa asset à Release da tag atual
+  #       uses: softprops/action-gh-release@v2
+  #       with:
+  #         tag_name: ${{ github.ref_name }}
+  #         files: platform-macos/.build/release/etherbit-tiling-macos.zip
+  #       env:
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  # -----------------------------------------------------------------------------

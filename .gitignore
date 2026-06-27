@@ -1,4 +1,10 @@
 # ─────────────────────────────────────────────
+#  Release  (artefatos gerados por packaging/build-linux-release.sh)
+# ─────────────────────────────────────────────
+/dist-release/
+/etherbit-tiling-linux.tar.gz
+
+# ─────────────────────────────────────────────
 #  Rust / Cargo  (core + platform-linux-gnome/daemon)
 # ─────────────────────────────────────────────
 /target/
