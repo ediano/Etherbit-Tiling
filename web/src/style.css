@@ -433,7 +433,8 @@ h4 {
 
 .cards {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  /* auto-fit: equilibra com 2 cards (macOS oculto) e volta a 3 quando reativado. */
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 22px;
   margin-top: 48px;
 }

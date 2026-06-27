@@ -47,8 +47,8 @@
         "@type": "SoftwareApplication",
         "name": "Etherbit Tiling",
         "applicationCategory": "UtilitiesApplication",
-        "operatingSystem": "macOS, Linux",
-        "description": "Gerenciador automático de janelas (tiling) com algoritmo agnóstico em Rust (Ether Flow). Nativo em Swift no macOS e daemon Rust + extensão no Linux/GNOME 45+ (Wayland).",
+        "operatingSystem": "Linux",
+        "description": "Gerenciador automático de janelas (tiling) com algoritmo agnóstico em Rust (Ether Flow). Daemon Rust + extensão no Linux/GNOME 45+ (Wayland).",
         "url": "https://ediano.github.io/Etherbit-Tiling/",
         "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
       }
@@ -72,7 +72,7 @@
         <nav class="site-nav" aria-label="Navegação principal">
           <a href="#manifesto">Manifesto</a>
           <a href="#sistemas">Sistemas</a>
-          <a class="site-nav__cta" href="https://github.com/ediano/Etherbit-Tiling" rel="noopener">GitHub</a>
+          <a class="site-nav__cta" href="https://github.com/ediano/Etherbit-Tiling" target="_blank" rel="noopener noreferrer">GitHub</a>
         </nav>
       </div>
     </header>
@@ -81,14 +81,14 @@
       <!-- ───────────────────────── Hero ───────────────────────── -->
       <section class="hero">
         <div class="container hero__inner">
-          <p class="eyebrow">macOS · Linux/GNOME · agnóstico de sistema</p>
+          <p class="eyebrow">Linux/GNOME · Wayland · agnóstico de sistema</p>
           <h1 class="hero__title">Etherbit Tiling</h1>
           <p class="hero__subtitle">
             O tecido invisível que coloca suas janelas em órbita perfeita.
           </p>
           <div class="hero__actions">
             <a class="btn btn--primary" href="#sistemas">Baixar agora</a>
-            <a class="btn btn--ghost" href="https://github.com/ediano/Etherbit-Tiling" rel="noopener">
+            <a class="btn btn--ghost" href="https://github.com/ediano/Etherbit-Tiling" target="_blank" rel="noopener noreferrer">
               Ver no GitHub
             </a>
           </div>
@@ -164,7 +164,9 @@
           <p class="section-lead">Um núcleo agnóstico em Rust, uma camada nativa fina por sistema. Escolha o seu.</p>
 
           <div class="cards">
-            <!-- macOS -->
+            <!-- macOS — oculto por hora: suporte ainda não disponível (platform-macos é stub).
+                 Para reativar, descomente o card abaixo. -->
+            <!--
             <article class="card">
               <div class="card__icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" width="32" height="32"><path d="M16.4 12.9c0-2 1.6-3 1.7-3.1-1-1.4-2.4-1.6-2.9-1.6-1.2-.1-2.4.7-3 .7-.6 0-1.6-.7-2.6-.7-1.3 0-2.6.8-3.3 2-1.4 2.4-.4 6 1 8 .7 1 1.4 2.1 2.4 2 1-.1 1.3-.6 2.5-.6s1.5.6 2.6.6c1 0 1.7-1 2.4-2 .5-.7.7-1.1 1.1-2-2.8-1-3.4-3.6-1.4-3.7zM14.6 6.3c.5-.7.9-1.6.8-2.6-.8 0-1.8.6-2.4 1.3-.5.6-1 1.5-.8 2.5.9 0 1.8-.5 2.4-1.2z"/></svg>
@@ -174,12 +176,12 @@
                 Suporte nativo em <strong>Swift</strong> (Apple Silicon &amp; Intel), sobre a Accessibility API.
                 Ultra leve e <strong>resiliente às atualizações da Apple</strong>.
               </p>
-              <!-- TODO: apontar para o release real quando publicado. -->
-              <a class="btn btn--primary card__cta" href="https://github.com/ediano/Etherbit-Tiling/releases" rel="noopener">
+              <a class="btn btn--primary card__cta" href="https://github.com/ediano/Etherbit-Tiling/releases" target="_blank" rel="noopener noreferrer">
                 Baixar instalador
               </a>
               <p class="card__note">.dmg · macOS 13+</p>
             </article>
+            -->
 
             <!-- Linux -->
             <article class="card">
@@ -196,7 +198,7 @@
                 <code id="install-cmd">curl -sSL https://ediano.github.io/Etherbit-Tiling/install.sh | bash</code>
                 <button class="code__copy" type="button" data-copy-btn aria-label="Copiar comando">Copiar</button>
               </div>
-              <a class="btn btn--ghost card__cta" href="https://github.com/ediano/Etherbit-Tiling/releases" rel="noopener">
+              <a class="btn btn--ghost card__cta" href="https://github.com/ediano/Etherbit-Tiling/releases" target="_blank" rel="noopener noreferrer">
                 Baixar .tar.gz
               </a>
               <p class="card__note">GNOME 45–48 · Wayland</p>
@@ -226,8 +228,8 @@
           <strong>Etherbit Tiling</strong> — o tecido invisível que coloca suas janelas em órbita perfeita.
         </p>
         <nav aria-label="Links do rodapé">
-          <a href="https://github.com/ediano/Etherbit-Tiling" rel="noopener">Repositório</a>
-          <a href="https://github.com/ediano/Etherbit-Tiling/tree/main/docs" rel="noopener">Documentação</a>
+          <a href="https://github.com/ediano/Etherbit-Tiling" target="_blank" rel="noopener noreferrer">Repositório</a>
+          <a href="https://github.com/ediano/Etherbit-Tiling/tree/main/docs" target="_blank" rel="noopener noreferrer">Documentação</a>
         </nav>
         <p class="site-footer__legal">© <span id="year">2026</span> Etherbit Tiling · Inspirado no COSMIC do Pop!_OS</p>
       </div>
