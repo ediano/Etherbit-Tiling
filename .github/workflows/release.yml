@@ -37,8 +37,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Gate de qualidade: roda a suíte isolada por plataforma (.github/workflows/test.yml,
+  # reutilizável via workflow_call). O release só começa se TODOS os testes passarem.
+  tests:
+    name: Testes (gate do release)
+    uses: ./.github/workflows/test.yml
+
   release-linux:
     name: Release (Linux / GNOME)
+    needs: tests
     runs-on: ubuntu-latest
     # O secret RELEASE_REPO_TOKEN está vinculado ao Environment "github-token";
     # secrets de Environment só ficam disponíveis quando o job o declara aqui.

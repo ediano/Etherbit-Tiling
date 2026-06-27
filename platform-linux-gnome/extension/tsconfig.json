@@ -28,6 +28,7 @@
       "@girs/st-16",
       "@girs/meta-16",
       "@girs/clutter-16",
+      "@girs/shell-16",
       "@girs/gnome-shell/ambient",
       "@girs/gnome-shell/extensions/global"
     ]

@@ -25,6 +25,11 @@ fn desktop_contents() -> String {
         .and_then(|p| p.to_str().map(str::to_string))
         .unwrap_or_else(|| "etherbit-tiling-daemon".to_string());
 
+    desktop_contents_for(&exec)
+}
+
+/// Monta o `.desktop` para um `exec` dado. Função pura (sem efeitos colaterais), testável.
+fn desktop_contents_for(exec: &str) -> String {
     format!(
         "[Desktop Entry]\n\
          Type=Application\n\
@@ -58,4 +63,27 @@ pub fn apply(enabled: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn desktop_contents_has_required_keys() {
+        let contents = desktop_contents_for("/usr/bin/foo");
+        assert!(contents.starts_with("[Desktop Entry]\n"));
+        assert!(contents.contains("Type=Application\n"));
+        assert!(contents.contains("Name=Etherbit Tiling\n"));
+        assert!(contents.contains("Exec=/usr/bin/foo\n"));
+        assert!(contents.contains("X-GNOME-Autostart-enabled=true\n"));
+        assert!(contents.contains("NoDisplay=true\n"));
+    }
+
+    #[test]
+    fn desktop_contents_injects_given_exec() {
+        let contents = desktop_contents_for("/opt/etherbit/daemon");
+        assert!(contents.contains("Exec=/opt/etherbit/daemon\n"));
+        assert!(!contents.contains("Exec=etherbit-tiling-daemon\n"));
+    }
 }
