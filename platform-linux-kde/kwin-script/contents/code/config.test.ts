@@ -28,6 +28,8 @@ describe('DEFAULT_CONFIG', () => {
       border_width: 2,
       ignore_list: [],
       autostart: false,
+      rounded_corners: true,
+      corner_radius: 12,
     });
   });
 });

@@ -23,11 +23,13 @@ const MAX_GAP = 50;
 export interface IndicatorHandlers {
   onGap: (gap: number) => void;
   onAutostart: (enabled: boolean) => void;
+  onRoundedCorners: (enabled: boolean) => void;
 }
 
 class EtherbitIndicatorImpl extends PanelMenu.Button {
   private _handlers: IndicatorHandlers;
   private _gapSlider!: Slider;
+  private _roundedSwitch!: PopupMenu.PopupSwitchMenuItem;
   private _autostartSwitch!: PopupMenu.PopupSwitchMenuItem;
   // Evita reentrância: ao refletir a config do daemon não queremos re-disparar handlers.
   private _syncing = false;
@@ -52,6 +54,12 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
 
     this._menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
+    this._roundedSwitch = new PopupMenu.PopupSwitchMenuItem('Cantos arredondados', true);
+    this._roundedSwitch.connect('toggled', (_item, state) => {
+      if (!this._syncing) this._handlers.onRoundedCorners(state);
+    });
+    this._menu.addMenuItem(this._roundedSwitch);
+
     this._autostartSwitch = new PopupMenu.PopupSwitchMenuItem('Iniciar com o sistema', false);
     this._autostartSwitch.connect('toggled', (_item, state) => {
       if (!this._syncing) this._handlers.onAutostart(state);
@@ -63,6 +71,7 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
   sync(config: TilingConfig): void {
     this._syncing = true;
     this._gapSlider.value = Math.min(config.gap / MAX_GAP, 1);
+    this._roundedSwitch.setToggleState(config.rounded_corners);
     this._autostartSwitch.setToggleState(config.autostart);
     this._syncing = false;
   }

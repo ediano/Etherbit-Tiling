@@ -57,13 +57,18 @@ function loadConfig(): TilingConfig {
     border_width: readConfig('borderWidth', DEFAULT_CONFIG.border_width),
     ignore_list: DEFAULT_CONFIG.ignore_list,
     autostart: readConfig('autostart', DEFAULT_CONFIG.autostart),
+    rounded_corners: readConfig('roundedCorners', DEFAULT_CONFIG.rounded_corners),
+    corner_radius: readConfig('cornerRadius', DEFAULT_CONFIG.corner_radius),
   };
 }
 
-/// Empurra a config lida do kwinrc para o daemon: ele persiste no TOML e gerencia o autostart.
+/// Empurra a config lida do kwinrc para o daemon: ele persiste no TOML e gerencia o autostart. Os
+/// cantos arredondados são propagados por consistência da config; no KDE o arredondamento em si
+/// depende do efeito NATIVO de cantos do KWin (um Script não instancia shaders — ver ADR 0019).
 function pushConfigToDaemon(cfg: TilingConfig): void {
   callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetGap', cfg.gap);
   callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetAutostart', cfg.autostart);
+  callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetRoundedCorners', cfg.rounded_corners, cfg.corner_radius);
 }
 
 const config = loadConfig();

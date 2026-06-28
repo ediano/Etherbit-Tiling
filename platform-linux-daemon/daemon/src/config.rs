@@ -31,6 +31,11 @@ pub struct Config {
     pub autostart: bool,
     /// Altura (px) da barra de abas desenhada no topo de um quadrante empilhado.
     pub tab_bar_height: u32,
+    /// Arredondar os cantos das janelas gerenciadas (e do overlay/abas). No GNOME a extensão aplica
+    /// um efeito; no KDE depende do efeito nativo de cantos arredondados do KWin.
+    pub rounded_corners: bool,
+    /// Raio (px) dos cantos arredondados.
+    pub corner_radius: u32,
 }
 
 impl Default for Config {
@@ -43,6 +48,8 @@ impl Default for Config {
             ignore_list: Vec::new(),
             autostart: false,
             tab_bar_height: 28,
+            rounded_corners: true,
+            corner_radius: 12,
         }
     }
 }
@@ -98,6 +105,8 @@ mod tests {
         assert!(cfg.ignore_list.is_empty());
         assert!(!cfg.autostart);
         assert_eq!(cfg.tab_bar_height, 28);
+        assert!(cfg.rounded_corners);
+        assert_eq!(cfg.corner_radius, 12);
     }
 
     #[test]
@@ -112,6 +121,8 @@ mod tests {
             "ignore_list",
             "autostart",
             "tab_bar_height",
+            "rounded_corners",
+            "corner_radius",
         ] {
             assert!(value.get(field).is_some(), "campo ausente: {field}");
         }
@@ -127,10 +138,14 @@ mod tests {
             ignore_list: vec!["obs".to_string(), "microsoft-word".to_string()],
             autostart: true,
             tab_bar_height: 32,
+            rounded_corners: false,
+            corner_radius: 20,
         };
         let raw = toml::to_string_pretty(&cfg).expect("serializa TOML");
         let back: Config = toml::from_str(&raw).expect("desserializa TOML");
         assert_eq!(back.gap, cfg.gap);
+        assert_eq!(back.rounded_corners, cfg.rounded_corners);
+        assert_eq!(back.corner_radius, cfg.corner_radius);
         assert_eq!(back.active_border, cfg.active_border);
         assert_eq!(back.border_color, cfg.border_color);
         assert_eq!(back.border_width, cfg.border_width);

@@ -33,6 +33,10 @@ const IFACE_XML = `
     <method name="SetAutostart">
       <arg type="b" direction="in" name="enabled"/>
     </method>
+    <method name="SetRoundedCorners">
+      <arg type="b" direction="in" name="enabled"/>
+      <arg type="u" direction="in" name="radius"/>
+    </method>
     <method name="SyncWindows">
       <arg type="s" direction="in" name="windows_json"/>
       <arg type="s" direction="in" name="monitors_json"/>
@@ -74,6 +78,7 @@ export interface TilingProxy {
   SetActiveBorderSync(enabled: boolean, color: string, width: number): void;
   SetIgnoreListSync(appIds: string[]): void;
   SetAutostartSync(enabled: boolean): void;
+  SetRoundedCornersSync(enabled: boolean, radius: number): void;
   /// Envia janelas/monitores + estado (stacks/grupos desligados) e recebe o `layout_json`
   /// (`{ rects, tab_bars }`) do daemon.
   SyncWindowsSync(windowsJson: string, monitorsJson: string, stateJson: string): [string];

@@ -7,6 +7,7 @@
 //    APLICA os retângulos-alvo devolvidos via `move_resize_frame` (geométrico e instantâneo).
 // Toda a matemática (Ether Flow) e a resiliência gráfica vivem no Rust (core/daemon).
 
+import type Clutter from 'gi://Clutter';
 import type Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
@@ -48,6 +49,7 @@ import {
   type MonitorSnapshot,
 } from './bridge.js';
 import { EtherbitIndicator } from './indicator.js';
+import { applyRoundedCorners, clearRoundedCorners } from './effects.js';
 
 /// Nomes das chaves de atalho no gschema (schemas/org.gnome.shell.extensions.etherbit-tiling.gschema.xml).
 const KEY_TOGGLE_TILING = 'toggle-tiling';
@@ -128,6 +130,8 @@ export default class EtherbitTilingExtension extends Extension {
     this._indicator = new EtherbitIndicator({
       onGap: (gap) => this._proxy?.SetGapSync(gap),
       onAutostart: (enabled) => this._proxy?.SetAutostartSync(enabled),
+      onRoundedCorners: (enabled) =>
+        this._proxy?.SetRoundedCornersSync(enabled, this._config.corner_radius),
     });
     Main.panel.addToStatusArea(this.uuid, this._indicator);
 
@@ -248,6 +252,11 @@ export default class EtherbitTilingExtension extends Extension {
 
     for (const { window, unmanagedId } of this._tracked.values()) {
       window.disconnect(unmanagedId);
+      // Remove o efeito de cantos arredondados para deixar as janelas no estado original.
+      const actor = window.get_compositor_private() as Clutter.Actor | null;
+      if (actor) {
+        clearRoundedCorners(actor);
+      }
     }
     this._tracked.clear();
 
@@ -381,6 +390,15 @@ export default class EtherbitTilingExtension extends Extension {
         const window = byId.get(command.id);
         // user_op=false: reposicionamento programático, instantâneo e puramente geométrico.
         window?.move_resize_frame(false, command.x, command.y, command.width, command.height);
+        // Cantos arredondados (efeito no ator) conforme a config — best-effort, nunca quebra.
+        const actor = window?.get_compositor_private() as Clutter.Actor | null;
+        if (actor) {
+          if (this._config.rounded_corners) {
+            applyRoundedCorners(actor, this._config.corner_radius);
+          } else {
+            clearRoundedCorners(actor);
+          }
+        }
       }
       // Oculta as abas inativas recém-empilhadas.
       for (const id of shouldHide) {

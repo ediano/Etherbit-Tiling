@@ -95,6 +95,19 @@ impl Tiling {
         self.notify(&emitter).await
     }
 
+    /// Liga/desliga os cantos arredondados das janelas e define o raio (px).
+    async fn set_rounded_corners(
+        &mut self,
+        enabled: bool,
+        radius: u32,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
+        self.config.rounded_corners = enabled;
+        self.config.corner_radius = radius;
+        self.persist()?;
+        self.notify(&emitter).await
+    }
+
     /// Liga/desliga o início com o sistema, gerenciando o `.desktop` de autostart.
     async fn set_autostart(
         &mut self,

@@ -25,6 +25,8 @@ describe('parseConfig', () => {
       border_width: 3,
       ignore_list: ['obs', 'microsoft-word'],
       autostart: true,
+      rounded_corners: false,
+      corner_radius: 20,
     };
     expect(parseConfig(JSON.stringify(full))).toEqual(full);
   });
@@ -48,6 +50,8 @@ describe('DEFAULT_CONFIG', () => {
       border_width: 2,
       ignore_list: [],
       autostart: false,
+      rounded_corners: true,
+      corner_radius: 12,
     });
   });
 });

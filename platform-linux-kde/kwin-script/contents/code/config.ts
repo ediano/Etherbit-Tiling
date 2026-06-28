@@ -11,6 +11,8 @@ export interface TilingConfig {
   border_width: number;
   ignore_list: string[];
   autostart: boolean;
+  rounded_corners: boolean;
+  corner_radius: number;
 }
 
 /// Deve casar 1:1 com `impl Default for Config` em daemon/src/config.rs.
@@ -21,6 +23,8 @@ export const DEFAULT_CONFIG: TilingConfig = {
   border_width: 2,
   ignore_list: [],
   autostart: false,
+  rounded_corners: true,
+  corner_radius: 12,
 };
 
 /// Faz parse defensivo do JSON do daemon, completando campos ausentes com o padrão.
