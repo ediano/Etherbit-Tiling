@@ -487,11 +487,16 @@ fn zone_rect(area: &WorkArea, zone: DropZone, opts: &LayoutOptions) -> PreviewRe
     PreviewRect { x: round(x), y: round(y), width: round(w), height: round(h) }
 }
 
-/// Detecta o destino de um drop CONSIDERANDO a janela sob o cursor. Se o cursor está na faixa
-/// superior (`STACK_BAND` da altura) da janela-alvo, o destino é `DropZone::Stack` (empilhar nela) e
-/// o preview é o retângulo da própria janela-alvo. Caso contrário, delega a `detect_drop_zone` (split
-/// do monitor, comportamento atual). A ponte resolve QUAL é a janela sob o cursor; o core resolve a
-/// fração. Restringir o gatilho à faixa superior evita colidir com `Center` (= maximizar).
+/// Detecta o destino de um drop CONSIDERANDO a janela sob o cursor. Quando há janela-alvo e o cursor
+/// está DENTRO dela:
+///  - faixa superior (`STACK_BAND` da altura) → `DropZone::Stack` (empilhar nela), preview = a própria
+///    janela-alvo;
+///  - caso contrário → o sub-quadrante REAL da janela-alvo (metade esquerda/direita/superior/inferior
+///    DELA, conforme o lado mais próximo do cursor), casando pixel a pixel com o split que `move_window`
+///    produzirá (ratio 0.5 + `inner_gap` na costura). Isto corrige o preview que antes mostrava 50% do
+///    MONITOR em grids povoados.
+/// Só quando NÃO há janela sob o cursor (ponto solto na área) delega a `detect_drop_zone` (split do
+/// monitor). A ponte resolve QUAL é a janela sob o cursor; o core resolve a fração.
 pub fn detect_drop_target(
     area: &WorkArea,
     target: Option<PreviewRect>,
@@ -504,14 +509,43 @@ pub fn detect_drop_target(
 
     if let Some(t) = target {
         if t.width > 0 && t.height > 0 {
-            let inside_x = x >= t.x && x < t.x + t.width;
+            let fx = (x - t.x) as f64 / t.width as f64;
             let fy = (y - t.y) as f64 / t.height as f64;
-            if inside_x && (0.0..1.0).contains(&fy) && fy < STACK_BAND {
-                return DropPreview { zone: DropZone::Stack, rect: t };
+            if (0.0..1.0).contains(&fx) && (0.0..1.0).contains(&fy) {
+                if fy < STACK_BAND {
+                    return DropPreview { zone: DropZone::Stack, rect: t };
+                }
+                let (zone, rect) = sub_rect_of_target(t, fx, fy, opts);
+                return DropPreview { zone, rect };
             }
         }
     }
     detect_drop_zone(area, x, y, opts)
+}
+
+/// Metade da janela-alvo `t` que o drop vai ocupar, escolhida pelo lado mais próximo do cursor
+/// (fração `(fx, fy)` dentro de `t`). Usa `inner_gap` na costura, espelhando `split_axis` — assim o
+/// preview casa pixel a pixel com o split real produzido por `move_window` (ratio 0.5). Empates de
+/// distância resolvem na ordem esquerda → direita → topo → base (determinístico).
+fn sub_rect_of_target(t: PreviewRect, fx: f64, fy: f64, opts: &LayoutOptions) -> (DropZone, PreviewRect) {
+    let gap = opts.inner_gap as f64;
+    let (tx, ty, tw, th) = (t.x as f64, t.y as f64, t.width as f64, t.height as f64);
+    let half_w = (tw - gap) / 2.0;
+    let half_h = (th - gap) / 2.0;
+
+    // Distância do cursor a cada borda da janela-alvo; a menor define o lado.
+    let (left, right, top, bottom) = (fx, 1.0 - fx, fy, 1.0 - fy);
+    let nearest = left.min(right).min(top).min(bottom);
+
+    if nearest == left {
+        (DropZone::Left, PreviewRect { x: round(tx), y: round(ty), width: round(half_w), height: round(th) })
+    } else if nearest == right {
+        (DropZone::Right, PreviewRect { x: round(tx + half_w + gap), y: round(ty), width: round(half_w), height: round(th) })
+    } else if nearest == top {
+        (DropZone::Top, PreviewRect { x: round(tx), y: round(ty), width: round(tw), height: round(half_h) })
+    } else {
+        (DropZone::Bottom, PreviewRect { x: round(tx), y: round(ty + half_h + gap), width: round(tw), height: round(half_h) })
+    }
 }
 
 /// Arredondamento meio-para-cima compatível com `Math.round` do JS para valores positivos.
@@ -961,13 +995,39 @@ mod tests {
     }
 
     #[test]
-    fn drop_target_below_band_delegates_to_split() {
+    fn drop_target_below_band_uses_target_sub_rect() {
+        // Abaixo da faixa de stack, o preview é a METADE da janela-alvo (não 50% do monitor).
         let area = area_1000x800();
         let target = PreviewRect { x: 100, y: 100, width: 400, height: 400 };
-        // y abaixo da faixa superior → comportamento de split (mesma zona que detect_drop_zone).
+        // cursor centro-baixo → metade INFERIOR do alvo (half_h = (400-8)/2 = 196; y = 100+196+8).
         let p = detect_drop_target(&area, Some(target), 300, 350, &opts());
-        assert_eq!(p.zone, detect_drop_zone(&area, 300, 350, &opts()).zone);
+        assert_eq!(p.zone, DropZone::Bottom);
+        assert_eq!(p.rect, PreviewRect { x: 100, y: 304, width: 400, height: 196 });
         assert_ne!(p.zone, DropZone::Stack);
+    }
+
+    #[test]
+    fn drop_target_left_and_right_halves_of_target() {
+        let area = area_1000x800();
+        let target = PreviewRect { x: 100, y: 100, width: 400, height: 400 };
+        // Perto da borda esquerda do alvo → metade ESQUERDA dele (half_w = (400-8)/2 = 196).
+        let left = detect_drop_target(&area, Some(target), 120, 300, &opts());
+        assert_eq!(left.zone, DropZone::Left);
+        assert_eq!(left.rect, PreviewRect { x: 100, y: 100, width: 196, height: 400 });
+        // Perto da borda direita → metade DIREITA (x = 100 + 196 + 8 = 304).
+        let right = detect_drop_target(&area, Some(target), 480, 300, &opts());
+        assert_eq!(right.zone, DropZone::Right);
+        assert_eq!(right.rect, PreviewRect { x: 304, y: 100, width: 196, height: 400 });
+    }
+
+    #[test]
+    fn drop_target_top_half_below_stack_band() {
+        // Topo do alvo, mas FORA da faixa de stack (fy = 0.25 exato) → metade superior do alvo.
+        let area = area_1000x800();
+        let target = PreviewRect { x: 100, y: 100, width: 400, height: 400 };
+        let p = detect_drop_target(&area, Some(target), 300, 200, &opts());
+        assert_eq!(p.zone, DropZone::Top);
+        assert_eq!(p.rect, PreviewRect { x: 100, y: 100, width: 400, height: 196 });
     }
 
     #[test]
