@@ -34,6 +34,9 @@
 
 html {
   scroll-behavior: smooth;
+  /* Rede de segurança: impede que qualquer elemento gere scroll horizontal.
+     `clip` (e não overflow:hidden no body) preserva o position:sticky do header. */
+  overflow-x: clip;
 }
 
 body {
@@ -373,7 +376,7 @@ h4 {
 /* ───────────────── Essência (Ether + Bit) ───────────────── */
 .essence-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 20px;
   margin-top: 44px;
 }
@@ -402,7 +405,7 @@ h4 {
 
 .pillars {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 18px;
   margin-top: 24px;
 }
@@ -433,8 +436,9 @@ h4 {
 
 .cards {
   display: grid;
-  /* Grid de 2 colunas; colapsa para 1 no mobile (ver bloco "Responsivo"). */
-  grid-template-columns: repeat(2, 1fr);
+  /* `minmax(0, 1fr)` (e não `1fr` = `minmax(auto,1fr)`) evita que o min-content do
+     card — a URL longa do `curl` — impeça a coluna de encolher e estoure a seção. */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 22px;
   margin-top: 48px;
 }
@@ -442,6 +446,8 @@ h4 {
 .card {
   display: flex;
   flex-direction: column;
+  /* Item de grid precisa poder encolher abaixo do próprio conteúdo. */
+  min-width: 0;
   padding: 30px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -703,7 +709,7 @@ h4 {
   }
 
   .site-nav {
-    gap: 2px;
+    gap: 6px;
   }
   .site-nav a {
     padding: 8px 10px;
@@ -719,6 +725,32 @@ h4 {
     font-size: 0.78rem;
     white-space: normal;
     max-width: 100%;
+  }
+
+  /* Bloco de comando empilha (comando em cima, "Copiar" embaixo) e o comando
+     longo quebra em linhas em vez de rolar horizontalmente — mais elegante no toque. */
+  .code {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .code code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    overflow-x: visible;
+  }
+  .code--block {
+    align-items: stretch;
+  }
+  .code--block code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .code--block .code__copy {
+    position: static;
+  }
+  .code__copy {
+    width: 100%;
+    min-height: 44px;
   }
 
   .uninstall__body > h2 {
@@ -738,6 +770,23 @@ h4 {
 
   .brand .brand__name {
     font-size: 0.95rem;
+  }
+}
+
+/* Telas muito estreitas (iPhone SE etc.): respiro e tipografia dos cards. */
+@media (max-width: 380px) {
+  .card {
+    padding: 18px;
+  }
+  .card .card__icon {
+    width: 48px;
+    height: 48px;
+  }
+  .card .card__title {
+    font-size: 1.1rem;
+  }
+  .btn {
+    padding: 10px 16px;
   }
 }
 
