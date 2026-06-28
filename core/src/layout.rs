@@ -322,7 +322,9 @@ pub fn compute_layout_with(
                     width: round(srect.w),
                     height: round(srect.h),
                 }),
-                Slot::Stack(desc) => render_stack(desc, srect, &ids, opts, &mut rects, &mut tab_bars),
+                Slot::Stack(desc) => {
+                    render_stack(desc, srect, &ids, opts, &mut rects, &mut tab_bars)
+                }
             }
         }
     }
@@ -534,7 +536,12 @@ pub fn detect_drop_target(
 /// (fração `(fx, fy)` dentro de `t`). Usa `inner_gap` na costura, espelhando `split_axis` — assim o
 /// preview casa pixel a pixel com o split real produzido por `move_window` (ratio 0.5). Empates de
 /// distância resolvem na ordem esquerda → direita → topo → base (determinístico).
-fn sub_rect_of_target(t: PreviewRect, fx: f64, fy: f64, opts: &LayoutOptions) -> (DropZone, PreviewRect) {
+fn sub_rect_of_target(
+    t: PreviewRect,
+    fx: f64,
+    fy: f64,
+    opts: &LayoutOptions,
+) -> (DropZone, PreviewRect) {
     let gap = opts.inner_gap as f64;
     let (tx, ty, tw, th) = (t.x as f64, t.y as f64, t.width as f64, t.height as f64);
     let half_w = (tw - gap) / 2.0;
@@ -545,13 +552,35 @@ fn sub_rect_of_target(t: PreviewRect, fx: f64, fy: f64, opts: &LayoutOptions) ->
     let nearest = left.min(right).min(top).min(bottom);
 
     if nearest == left {
-        (DropZone::Left, PreviewRect { x: round(tx), y: round(ty), width: round(half_w), height: round(th) })
+        (
+            DropZone::Left,
+            PreviewRect { x: round(tx), y: round(ty), width: round(half_w), height: round(th) },
+        )
     } else if nearest == right {
-        (DropZone::Right, PreviewRect { x: round(tx + half_w + gap), y: round(ty), width: round(half_w), height: round(th) })
+        (
+            DropZone::Right,
+            PreviewRect {
+                x: round(tx + half_w + gap),
+                y: round(ty),
+                width: round(half_w),
+                height: round(th),
+            },
+        )
     } else if nearest == top {
-        (DropZone::Top, PreviewRect { x: round(tx), y: round(ty), width: round(tw), height: round(half_h) })
+        (
+            DropZone::Top,
+            PreviewRect { x: round(tx), y: round(ty), width: round(tw), height: round(half_h) },
+        )
     } else {
-        (DropZone::Bottom, PreviewRect { x: round(tx), y: round(ty + half_h + gap), width: round(tw), height: round(half_h) })
+        (
+            DropZone::Bottom,
+            PreviewRect {
+                x: round(tx),
+                y: round(ty + half_h + gap),
+                width: round(tw),
+                height: round(half_h),
+            },
+        )
     }
 }
 
@@ -650,9 +679,7 @@ fn stack_anchored_at<'a>(
     stacks: &'a [StackDescriptor],
     group_ids: &[u64],
 ) -> Option<&'a StackDescriptor> {
-    stacks.iter().find(|s| {
-        s.member_ids.iter().copied().find(|m| group_ids.contains(m)) == Some(id)
-    })
+    stacks.iter().find(|s| s.member_ids.iter().copied().find(|m| group_ids.contains(m)) == Some(id))
 }
 
 /// Calcula a geometria a partir da ÁRVORE persistente (aplicando ratios), integrando stacks (uma
@@ -732,12 +759,9 @@ fn collapse_leaf(tree: LayoutTree, id: u64) -> LayoutTree {
                 match (walk(*first, id), walk(*second, id)) {
                     (None, None) => None,
                     (Some(n), None) | (None, Some(n)) => Some(n),
-                    (Some(a), Some(b)) => Some(Node::Split {
-                        axis,
-                        ratio,
-                        first: Box::new(a),
-                        second: Box::new(b),
-                    }),
+                    (Some(a), Some(b)) => {
+                        Some(Node::Split { axis, ratio, first: Box::new(a), second: Box::new(b) })
+                    }
                 }
             }
         }
@@ -794,9 +818,8 @@ fn insert_one(
         None => return LayoutTree { root: Some(Node::Leaf(new_id)) },
         Some(r) => r,
     };
-    let target = focused
-        .filter(|f| node_contains(&root, *f))
-        .or_else(|| largest_leaf_id(&root, area, opts));
+    let target =
+        focused.filter(|f| node_contains(&root, *f)).or_else(|| largest_leaf_id(&root, area, opts));
     let Some(target) = target else {
         return LayoutTree { root: Some(root) };
     };
@@ -1001,7 +1024,8 @@ pub fn resize_window(
         return tree.clone();
     }
     // Split governante: o mais profundo no caminho com o eixo certo e descida pelo lado certo.
-    let gov = (0..path.len()).rev().find(|&i| path[i].axis == axis_needed && path[i].first == from_first);
+    let gov =
+        (0..path.len()).rev().find(|&i| path[i].axis == axis_needed && path[i].first == from_first);
     let Some(gi) = gov else {
         return tree.clone(); // borda externa → nada a redimensionar
     };
