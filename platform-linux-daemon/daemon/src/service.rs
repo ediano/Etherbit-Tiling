@@ -16,6 +16,11 @@ use crate::protocol;
 pub const BUS_NAME: &str = "dev.ediano.etherbit.Tiling";
 pub const OBJECT_PATH: &str = "/dev/ediano/etherbit/Tiling";
 
+/// Travas globais (px): o daemon faz clamp independentemente do cliente (UI ou D-Bus direto), para o
+/// gap nunca engolir a área útil e o raio nunca cortar barras de título/menus (ver ADR 0019).
+const GAP_MAX: u32 = 100;
+const CORNER_RADIUS_MAX: u32 = 50;
+
 /// Objeto servido no barramento de sessão.
 pub struct Tiling {
     config: Config,
@@ -58,13 +63,13 @@ impl Tiling {
         self.config.to_json()
     }
 
-    /// Ajusta o gap único (espaçamento entre janelas e bordas, ambos os eixos).
+    /// Ajusta o gap único (espaçamento entre janelas e bordas, ambos os eixos). Travado em 0..=100.
     async fn set_gap(
         &mut self,
         gap: u32,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> fdo::Result<()> {
-        self.config.gap = gap;
+        self.config.gap = gap.min(GAP_MAX);
         self.persist()?;
         self.notify(&emitter).await
     }
@@ -95,7 +100,7 @@ impl Tiling {
         self.notify(&emitter).await
     }
 
-    /// Liga/desliga os cantos arredondados das janelas e define o raio (px).
+    /// Liga/desliga os cantos arredondados das janelas e define o raio (px). Raio travado em 0..=50.
     async fn set_rounded_corners(
         &mut self,
         enabled: bool,
@@ -103,7 +108,7 @@ impl Tiling {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> fdo::Result<()> {
         self.config.rounded_corners = enabled;
-        self.config.corner_radius = radius;
+        self.config.corner_radius = radius.min(CORNER_RADIUS_MAX);
         self.persist()?;
         self.notify(&emitter).await
     }
