@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use etherbit_tiling_core::{
     compute_geometry, detect_drop_target, is_tileable, move_window as core_move_window, reconcile,
-    Axis, DropPreview, DropZone, LayoutOptions, LayoutTree, Node, PreviewRect, StackDescriptor,
-    TabBarRect, WindowInfo, WindowRect, WorkArea, MIN_RATIO,
+    resize_window as core_resize_window, Axis, DropPreview, DropZone, Edge, LayoutOptions,
+    LayoutTree, Node, PreviewRect, StackDescriptor, TabBarRect, WindowInfo, WindowRect, WorkArea,
+    MIN_RATIO,
 };
 
 /// Janela vinda da ponte. Espelha `windows_json` do contrato D-Bus.
@@ -175,7 +176,18 @@ fn parse_zone(s: &str) -> DropZone {
     }
 }
 
-/// Saída de `move_window`: só as árvores atualizadas (a ponte persiste e re-sincroniza a geometria).
+/// Rótulo (snake_case) → borda do core (desconhecido → `Right`).
+fn parse_edge(s: &str) -> Edge {
+    match s {
+        "left" => Edge::Left,
+        "top" => Edge::Top,
+        "bottom" => Edge::Bottom,
+        _ => Edge::Right,
+    }
+}
+
+/// Saída de `move_window`/`resize_window`: só as árvores atualizadas (a ponte persiste e re-sincroniza
+/// a geometria).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct TreesDto {
     #[serde(default)]
@@ -453,6 +465,37 @@ pub fn move_window(
     serde_json::to_string(&TreesDto { trees: dtos }).context("falha ao serializar trees_json")
 }
 
+/// Redimensiona elasticamente a janela `id` arrastando a borda `edge` em `delta_px` (positivo = a
+/// janela cresceu). Acha o split governante na árvore do grupo de `id` (usando a área do monitor
+/// daquele grupo) e ajusta o ratio. Tree-only: devolve `{"trees":[...]}`; a geometria vem do
+/// `SyncWindows` seguinte. Grupos que não contêm `id` (ou sem área) são no-op.
+pub fn resize_window(
+    monitors_json: &str,
+    state_json: &str,
+    id: u64,
+    edge: &str,
+    delta_px: i32,
+    opts: LayoutOptions,
+) -> Result<String> {
+    let monitors: Vec<MonitorDto> =
+        serde_json::from_str(monitors_json).context("monitors_json inválido")?;
+    let areas: Vec<WorkArea> = monitors.iter().map(WorkArea::from).collect();
+    let state = parse_state(state_json)?;
+    let edge = parse_edge(edge);
+    let trees = parse_trees(&state);
+    let dtos: Vec<TreeDto> = trees
+        .iter()
+        .map(|(m, w, t)| {
+            let resized = match areas.iter().find(|a| a.index == *m) {
+                Some(area) => core_resize_window(t, area, &opts, id, edge, delta_px),
+                None => t.clone(),
+            };
+            tree_to_dto(*m, *w, &resized)
+        })
+        .collect();
+    serde_json::to_string(&TreesDto { trees: dtos }).context("falha ao serializar trees_json")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -678,6 +721,29 @@ mod tests {
     #[test]
     fn move_window_rejects_invalid_state() {
         assert!(move_window("{bad", 1, 2, "left").is_err());
+    }
+
+    #[test]
+    fn resize_window_adjusts_tree_ratio() {
+        // Árvore de [1,2] (lado a lado); resize borda direita de 1 em +100 → 1 mais larga depois.
+        let w = format!("[{},{}]", win_json(1, "a"), win_json(2, "b"));
+        let first = sync_windows(&w, AREAS, "", &[], OPTS).expect("ok");
+        let r1 = layout_of(&first);
+        let trees_json = serde_json::to_string(&r1.trees).unwrap();
+        let state = format!(r#"{{"trees":{trees_json}}}"#);
+        let before = r1.rects.iter().find(|r| r.id == 1).unwrap().width;
+
+        let out = resize_window(AREAS, &state, 1, "right", 100, OPTS).expect("resize ok");
+        let resized: TreesDto = serde_json::from_str(&out).expect("trees");
+        let state2 = format!(r#"{{"trees":{}}}"#, serde_json::to_string(&resized.trees).unwrap());
+        let second = sync_windows(&w, AREAS, &state2, &[], OPTS).expect("ok");
+        let after = layout_of(&second).rects.iter().find(|r| r.id == 1).unwrap().width;
+        assert_eq!(after, before + 100);
+    }
+
+    #[test]
+    fn resize_window_rejects_invalid_state() {
+        assert!(resize_window(AREAS, "{bad", 1, "right", 50, OPTS).is_err());
     }
 
     #[test]

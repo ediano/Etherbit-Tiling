@@ -427,6 +427,38 @@ export function parseLayoutTrees(
   return out;
 }
 
+/// Uma borda redimensionada + quanto a janela CRESCEU nela (px; negativo = encolheu).
+export interface ResizeDelta {
+  edge: 'left' | 'right' | 'top' | 'bottom';
+  deltaPx: number;
+}
+
+/// Infere quais bordas se moveram comparando o frame ANTES e DEPOIS do resize, e quanto a janela
+/// cresceu em cada uma (positivo). Agnóstico do compositor; resize de canto devolve duas entradas.
+export function resizeDeltaFrom(
+  before: { x: number; y: number; width: number; height: number },
+  after: { x: number; y: number; width: number; height: number },
+): ResizeDelta[] {
+  const out: ResizeDelta[] = [];
+  const leftGrow = before.x - after.x;
+  const rightGrow = after.x + after.width - (before.x + before.width);
+  const topGrow = before.y - after.y;
+  const bottomGrow = after.y + after.height - (before.y + before.height);
+  if (leftGrow !== 0) {
+    out.push({ edge: 'left', deltaPx: leftGrow });
+  }
+  if (rightGrow !== 0) {
+    out.push({ edge: 'right', deltaPx: rightGrow });
+  }
+  if (topGrow !== 0) {
+    out.push({ edge: 'top', deltaPx: topGrow });
+  }
+  if (bottomGrow !== 0) {
+    out.push({ edge: 'bottom', deltaPx: bottomGrow });
+  }
+  return out;
+}
+
 /// Serializa o retângulo da janela sob o cursor para o `target_json` do `ResolveDropZone` (`""` se
 /// não há janela-alvo).
 export function serializeTarget(

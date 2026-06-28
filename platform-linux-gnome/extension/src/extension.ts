@@ -31,6 +31,7 @@ import {
   parseTabBars,
   parseLayoutTrees,
   parsePreview,
+  resizeDeltaFrom,
   orderKey,
   appendToOrder,
   removeFromOrder,
@@ -108,6 +109,11 @@ export default class EtherbitTilingExtension extends Extension {
   private _lastPreviewZone = 'none';
   // Em voo: evita empilhar chamadas D-Bus síncronas mais rápido que a resposta.
   private _resolving = false;
+  // Resize manual em curso: id + frame inicial (para derivar borda/delta ao soltar).
+  private _resizeStart: {
+    id: number;
+    rect: { x: number; y: number; width: number; height: number };
+  } | null = null;
 
   override enable(): void {
     // 1) Proxy D-Bus. Sem daemon no bus, o indicador fica em estado padrão e a ponte não roteia.
@@ -433,20 +439,30 @@ export default class EtherbitTilingExtension extends Extension {
 
   // ---- Arrasto + overlay de preview da drop zone ----
 
-  /// Início de um arrasto de MOVIMENTO de janela: passa a amostrar o cursor (~60 FPS) e a desenhar
-  /// a drop zone. Ignora resize e ambientes sem daemon (degradação suave).
+  /// Início de um grab: MOVIMENTO → amostra o cursor (~60 FPS) e desenha a drop zone; RESIZE →
+  /// captura o frame inicial para derivar borda/delta ao soltar. Sem daemon: degradação suave.
   private _onGrabBegin(window: Meta.Window | null, op: Meta.GrabOp): void {
-    if (!window || !this._proxy || op !== Meta.GrabOp.MOVING) {
+    if (!window || !this._proxy) {
       return;
     }
-    this._stopDrag(); // encerra qualquer arrasto pendente antes de iniciar outro
-    this._draggedId = window.get_stable_sequence();
-    this._lastPointer = null;
-    this._resolving = false;
-    this._dragSource = GLib.timeout_add(GLib.PRIORITY_DEFAULT, DRAG_TICK_MS, () => {
-      this._onDragTick();
-      return GLib.SOURCE_CONTINUE;
-    });
+    if (op === Meta.GrabOp.MOVING) {
+      this._stopDrag(); // encerra qualquer arrasto pendente antes de iniciar outro
+      this._resizeStart = null;
+      this._draggedId = window.get_stable_sequence();
+      this._lastPointer = null;
+      this._resolving = false;
+      this._dragSource = GLib.timeout_add(GLib.PRIORITY_DEFAULT, DRAG_TICK_MS, () => {
+        this._onDragTick();
+        return GLib.SOURCE_CONTINUE;
+      });
+      return;
+    }
+    // Qualquer outro grab numa janela = resize manual: guarda a geometria inicial.
+    const r = window.get_frame_rect();
+    this._resizeStart = {
+      id: window.get_stable_sequence(),
+      rect: { x: r.x, y: r.y, width: r.width, height: r.height },
+    };
   }
 
   /// Um tick do arrasto: lê o cursor, resolve a zona no daemon e atualiza o overlay. Faz throttle
@@ -562,8 +578,49 @@ export default class EtherbitTilingExtension extends Extension {
           }
         }
       }
+    } else if (
+      this._resizeStart &&
+      window &&
+      this._proxy &&
+      window.get_stable_sequence() === this._resizeStart.id
+    ) {
+      this._applyResize(window);
     }
+    this._resizeStart = null;
     this._stopDrag();
+  }
+
+  /// Fim de um resize manual: deriva a(s) borda(s) e o delta do frame inicial→final e aplica o resize
+  /// elástico na árvore via `ResizeWindow` (uma chamada por eixo). O `_scheduleRelayout()` re-tila.
+  private _applyResize(window: Meta.Window): void {
+    const start = this._resizeStart;
+    if (!start || !this._proxy) {
+      return;
+    }
+    const r = window.get_frame_rect();
+    const deltas = resizeDeltaFrom(start.rect, {
+      x: r.x,
+      y: r.y,
+      width: r.width,
+      height: r.height,
+    });
+    const focus = global.display.focus_window;
+    const focusedId = focus ? focus.get_stable_sequence() : 0;
+    const monitorsJson = serializeMonitors(this._collectMonitors());
+    for (const d of deltas) {
+      try {
+        const [treesJson] = this._proxy.ResizeWindowSync(
+          monitorsJson,
+          serializeState(this._stacks, this._disabledGroups, this._trees, focusedId),
+          start.id,
+          d.edge,
+          d.deltaPx,
+        );
+        this._trees = parseLayoutTrees(treesJson);
+      } catch (error) {
+        console.error(`Etherbit Tiling: ResizeWindow falhou: ${error}`);
+      }
+    }
   }
 
   /// Janela NORMAL cujo frame contém `(x, y)`, excluindo `excludeId` (a própria arrastada).

@@ -7,6 +7,7 @@ import {
   parseTabBars,
   parseLayoutTrees,
   parsePreview,
+  resizeDeltaFrom,
   orderKey,
   appendToOrder,
   removeFromOrder,
@@ -209,6 +210,32 @@ describe('estado de abas (stacks) e tiling por grupo', () => {
   it('parseLayoutTrees é defensivo (JSON inválido → vazio)', () => {
     expect(parseLayoutTrees('not json').size).toBe(0);
     expect(parseLayoutTrees('{}').size).toBe(0);
+  });
+
+  it('resizeDeltaFrom infere borda direita (cresceu) e esquerda', () => {
+    // Largura 100→160 com x fixo → borda direita cresceu 60.
+    expect(resizeDeltaFrom({ x: 0, y: 0, width: 100, height: 50 }, { x: 0, y: 0, width: 160, height: 50 })).toEqual([
+      { edge: 'right', deltaPx: 60 },
+    ]);
+    // x 100→70, largura 100→130 → borda esquerda cresceu 30.
+    expect(resizeDeltaFrom({ x: 100, y: 0, width: 100, height: 50 }, { x: 70, y: 0, width: 130, height: 50 })).toEqual([
+      { edge: 'left', deltaPx: 30 },
+    ]);
+  });
+
+  it('resizeDeltaFrom de canto devolve duas bordas', () => {
+    const out = resizeDeltaFrom(
+      { x: 0, y: 0, width: 100, height: 100 },
+      { x: 0, y: 0, width: 140, height: 130 },
+    );
+    expect(out).toEqual([
+      { edge: 'right', deltaPx: 40 },
+      { edge: 'bottom', deltaPx: 30 },
+    ]);
+  });
+
+  it('resizeDeltaFrom sem mudança → vazio', () => {
+    expect(resizeDeltaFrom({ x: 1, y: 2, width: 3, height: 4 }, { x: 1, y: 2, width: 3, height: 4 })).toEqual([]);
   });
 
   it('serializeTarget devolve "" sem alvo e JSON com alvo', () => {

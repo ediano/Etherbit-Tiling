@@ -912,6 +912,111 @@ pub fn reconcile(
     tree
 }
 
+/// Uma decisão na descida da raiz até uma folha: o retângulo do nó-split, seu eixo e se descemos
+/// pela primeira criança. Usada pelo resize para localizar o split que governa a borda arrastada.
+struct Decision {
+    rect: Rectf,
+    axis: Axis,
+    first: bool,
+}
+
+/// Caminho (decisões) da raiz até a folha `id`, anotando o `Rectf` de cada split. `false` se a folha
+/// não está na árvore.
+fn find_path(node: &Node, id: u64, rect: Rectf, gap: f64, out: &mut Vec<Decision>) -> bool {
+    match node {
+        Node::Leaf(lid) => *lid == id,
+        Node::Split { axis, ratio, first, second } => {
+            let (a, b) = split_rect(rect, gap, *axis, *ratio);
+            out.push(Decision { rect, axis: *axis, first: true });
+            if find_path(first, id, a, gap, out) {
+                return true;
+            }
+            out.pop();
+            out.push(Decision { rect, axis: *axis, first: false });
+            if find_path(second, id, b, gap, out) {
+                return true;
+            }
+            out.pop();
+            false
+        }
+    }
+}
+
+/// Ajusta (soma `delta`, com clamp) o `ratio` do split alcançado seguindo `path` (sequência de
+/// first/second) a partir de `node`. `path` vazio = este nó é o alvo.
+fn adjust_ratio(node: Node, path: &[bool], delta: f64) -> Node {
+    match node {
+        Node::Split { axis, ratio, first, second } => {
+            if path.is_empty() {
+                let nr = (ratio + delta).clamp(MIN_RATIO, 1.0 - MIN_RATIO);
+                Node::Split { axis, ratio: nr, first, second }
+            } else if path[0] {
+                Node::Split {
+                    axis,
+                    ratio,
+                    first: Box::new(adjust_ratio(*first, &path[1..], delta)),
+                    second,
+                }
+            } else {
+                Node::Split {
+                    axis,
+                    ratio,
+                    first,
+                    second: Box::new(adjust_ratio(*second, &path[1..], delta)),
+                }
+            }
+        }
+        leaf => leaf,
+    }
+}
+
+/// Redimensiona elasticamente a janela `id` arrastando a borda `edge` em `delta_px` (positivo =
+/// a janela CRESCEU naquela borda). Acha o split ancestral que governa aquela borda — o mais profundo
+/// no eixo da borda em que descemos pelo lado certo (Right/Bottom → `first`; Left/Top → `second`) — e
+/// ajusta o seu `ratio`. O vizinho imediato encolhe na mesma proporção (a soma das crianças é
+/// constante → tela 100% preenchida). Borda externa (sem tal ancestral) ou folha única → no-op.
+pub fn resize_window(
+    tree: &LayoutTree,
+    area: &WorkArea,
+    opts: &LayoutOptions,
+    id: u64,
+    edge: Edge,
+    delta_px: i32,
+) -> LayoutTree {
+    let root = match &tree.root {
+        Some(r) => r,
+        None => return tree.clone(),
+    };
+    // Eixo da borda, lado pelo qual a folha deve descer no split governante, e sinal do ajuste.
+    let (axis_needed, from_first, sign) = match edge {
+        Edge::Right => (Axis::Horizontal, true, 1.0),
+        Edge::Left => (Axis::Horizontal, false, -1.0),
+        Edge::Bottom => (Axis::Vertical, true, 1.0),
+        Edge::Top => (Axis::Vertical, false, -1.0),
+    };
+    let inner = inner_rect(area, opts.outer_gap as f64);
+    let gap = opts.inner_gap as f64;
+    let mut path = Vec::new();
+    if !find_path(root, id, inner, gap, &mut path) {
+        return tree.clone();
+    }
+    // Split governante: o mais profundo no caminho com o eixo certo e descida pelo lado certo.
+    let gov = (0..path.len()).rev().find(|&i| path[i].axis == axis_needed && path[i].first == from_first);
+    let Some(gi) = gov else {
+        return tree.clone(); // borda externa → nada a redimensionar
+    };
+    let extent = match axis_needed {
+        Axis::Horizontal => path[gi].rect.w - gap,
+        Axis::Vertical => path[gi].rect.h - gap,
+    };
+    if extent <= 0.0 {
+        return tree.clone();
+    }
+    let delta_ratio = sign * (delta_px as f64) / extent;
+    let node_path: Vec<bool> = path[..gi].iter().map(|d| d.first).collect();
+    LayoutTree { root: Some(adjust_ratio(root.clone(), &node_path, delta_ratio)) }
+}
+
 /// Arredondamento meio-para-cima compatível com `Math.round` do JS para valores positivos.
 fn round(v: f64) -> i32 {
     v.round() as i32
@@ -1522,5 +1627,76 @@ mod tests {
         assert_eq!(move_window(&tree, 2, 1, DropZone::Center), tree);
         // Alvo ausente → inalterado (não perde a janela arrastada).
         assert_eq!(move_window(&tree, 2, 99, DropZone::Left), tree);
+    }
+
+    #[test]
+    fn resize_window_horizontal_is_elastic_and_fills() {
+        // [1|2] lado a lado; arrastar a borda DIREITA de 1 em +100 → 1 cresce 100, 2 encolhe 100.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let before = compute_geometry(&tree, &area, &opts(), &[], &[1, 2]);
+        let b1 = before.rects.iter().find(|r| r.id == 1).unwrap();
+        let b2 = before.rects.iter().find(|r| r.id == 2).unwrap();
+        let resized = resize_window(&tree, &area, &opts(), 1, Edge::Right, 100);
+        let after = compute_geometry(&resized, &area, &opts(), &[], &[1, 2]);
+        let a1 = after.rects.iter().find(|r| r.id == 1).unwrap();
+        let a2 = after.rects.iter().find(|r| r.id == 2).unwrap();
+        assert_eq!(a1.width, b1.width + 100);
+        assert_eq!(a2.width, b2.width - 100);
+        // Tela 100% preenchida: a soma das larguras + a costura é constante.
+        assert_eq!(a1.width + a2.width, b1.width + b2.width);
+        // Mesma faixa vertical (não tocou no eixo Y).
+        assert_eq!(a1.height, b1.height);
+    }
+
+    #[test]
+    fn resize_window_left_edge_grows_window_leftward() {
+        // [1|2]; arrastar a borda ESQUERDA de 2 em +60 (cresceu) → 2 cresce 60, 1 encolhe 60.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let before = compute_geometry(&tree, &area, &opts(), &[], &[1, 2]);
+        let b1 = before.rects.iter().find(|r| r.id == 1).unwrap().width;
+        let b2 = before.rects.iter().find(|r| r.id == 2).unwrap().width;
+        let resized = resize_window(&tree, &area, &opts(), 2, Edge::Left, 60);
+        let after = compute_geometry(&resized, &area, &opts(), &[], &[1, 2]);
+        assert_eq!(after.rects.iter().find(|r| r.id == 2).unwrap().width, b2 + 60);
+        assert_eq!(after.rects.iter().find(|r| r.id == 1).unwrap().width, b1 - 60);
+    }
+
+    #[test]
+    fn resize_window_vertical_axis() {
+        // Bootstrap [1,2,3]: 1 e 2 EMPILHADOS na metade esquerda (split vertical), 3 na direita.
+        // Arrastar a borda INFERIOR de 1 (a costura 1↔2) em +50 → 1 cresce, 2 encolhe.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], None, &area, &opts());
+        let before = compute_geometry(&tree, &area, &opts(), &[], &[1, 2, 3]);
+        let b1 = before.rects.iter().find(|r| r.id == 1).unwrap().height;
+        let b2 = before.rects.iter().find(|r| r.id == 2).unwrap().height;
+        let resized = resize_window(&tree, &area, &opts(), 1, Edge::Bottom, 50);
+        let after = compute_geometry(&resized, &area, &opts(), &[], &[1, 2, 3]);
+        assert_eq!(after.rects.iter().find(|r| r.id == 1).unwrap().height, b1 + 50);
+        assert_eq!(after.rects.iter().find(|r| r.id == 2).unwrap().height, b2 - 50);
+    }
+
+    #[test]
+    fn resize_window_outer_edge_is_noop() {
+        // Borda esquerda de 1 (já colada na borda do monitor) não tem split governante → no-op.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        assert_eq!(resize_window(&tree, &area, &opts(), 1, Edge::Left, 50), tree);
+        // Folha única também não redimensiona.
+        let single = reconcile(&LayoutTree::default(), &[1], &[], None, &area, &opts());
+        assert_eq!(resize_window(&single, &area, &opts(), 1, Edge::Right, 50), single);
+    }
+
+    #[test]
+    fn resize_window_clamps_to_min_ratio() {
+        // Delta gigante não colapsa a vizinha: o ratio é clampado (ambas as larguras > 0).
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let resized = resize_window(&tree, &area, &opts(), 1, Edge::Right, 100_000);
+        let after = compute_geometry(&resized, &area, &opts(), &[], &[1, 2]);
+        let w2 = after.rects.iter().find(|r| r.id == 2).unwrap().width;
+        assert!(w2 > 0, "vizinha nunca colapsa a zero");
     }
 }

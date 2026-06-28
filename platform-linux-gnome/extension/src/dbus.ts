@@ -53,6 +53,14 @@ const IFACE_XML = `
       <arg type="s" direction="in" name="zone"/>
       <arg type="s" direction="out" name="trees_json"/>
     </method>
+    <method name="ResizeWindow">
+      <arg type="s" direction="in" name="monitors_json"/>
+      <arg type="s" direction="in" name="state_json"/>
+      <arg type="t" direction="in" name="id"/>
+      <arg type="s" direction="in" name="edge"/>
+      <arg type="i" direction="in" name="delta_px"/>
+      <arg type="s" direction="out" name="trees_json"/>
+    </method>
     <signal name="ConfigChanged">
       <arg type="s" name="config_json"/>
     </signal>
@@ -85,6 +93,15 @@ export interface TilingProxy {
     draggedId: number,
     targetId: number,
     zone: string,
+  ): [string];
+  /// Resize elástico: arrasta a borda `edge` da janela `id` em `deltaPx` (positivo = cresceu).
+  /// Recebe monitores + `stateJson` (árvores) e devolve `{"trees":[...]}` para a ponte persistir.
+  ResizeWindowSync(
+    monitorsJson: string,
+    stateJson: string,
+    id: number,
+    edge: string,
+    deltaPx: number,
   ): [string];
   connectSignal(
     name: 'ConfigChanged',

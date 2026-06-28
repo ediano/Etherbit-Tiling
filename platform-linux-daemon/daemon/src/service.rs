@@ -161,6 +161,22 @@ impl Tiling {
             .map_err(|e| fdo::Error::InvalidArgs(format!("move_window: {e}")))
     }
 
+    /// Resize manual elástico: arrasta a borda `edge` (left/right/top/bottom) da janela `id` em
+    /// `delta_px` (positivo = cresceu). Recebe `monitors_json` (para a área do grupo) + `state_json`
+    /// (árvores) e devolve `{"trees":[...]}` atualizado; a geometria vem do `SyncWindows` seguinte.
+    async fn resize_window(
+        &self,
+        monitors_json: String,
+        state_json: String,
+        id: u64,
+        edge: String,
+        delta_px: i32,
+    ) -> fdo::Result<String> {
+        let opts = self.layout_options();
+        protocol::resize_window(&monitors_json, &state_json, id, &edge, delta_px, opts)
+            .map_err(|e| fdo::Error::InvalidArgs(format!("resize_window: {e}")))
+    }
+
     /// Sinal emitido sempre que a configuração muda. Carrega a config completa em JSON.
     #[zbus(signal)]
     async fn config_changed(emitter: &SignalEmitter<'_>, config_json: String) -> zbus::Result<()>;

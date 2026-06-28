@@ -8,9 +8,9 @@ pub mod layout;
 
 pub use layout::{
     compute_geometry, compute_layout, compute_layout_with, detect_drop_target, detect_drop_zone,
-    is_tileable, move_window, reconcile, Axis, DropPreview, DropZone, Edge, LayoutOptions,
-    LayoutResult, LayoutTree, Node, PreviewRect, StackDescriptor, StackGroup, TabBarRect,
-    WindowInfo, WindowRect, WorkArea, MIN_RATIO,
+    is_tileable, move_window, reconcile, resize_window, Axis, DropPreview, DropZone, Edge,
+    LayoutOptions, LayoutResult, LayoutTree, Node, PreviewRect, StackDescriptor, StackGroup,
+    TabBarRect, WindowInfo, WindowRect, WorkArea, MIN_RATIO,
 };
 
 pub fn version() -> &'static str {

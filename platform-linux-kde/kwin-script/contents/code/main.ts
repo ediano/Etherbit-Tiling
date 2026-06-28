@@ -27,6 +27,7 @@ import {
   parseTabBars,
   parseLayoutTrees,
   parsePreview,
+  resizeDeltaFrom,
   orderKey,
   appendToOrder,
   removeFromOrder,
@@ -95,6 +96,9 @@ let lastCursor: QPoint | null = null;
 let resolving = false;
 /// Zona resolvida no último passo do arrasto (define stack vs swap ao soltar).
 let lastZone = 'none';
+/// Resize manual em curso: internalId + frame inicial (para derivar borda/delta ao soltar).
+let resizeStart: { id: string; rect: { x: number; y: number; width: number; height: number } } | null =
+  null;
 /// Suprime retile reentrante enquanto aplicamos geometria/minimização.
 let applying = false;
 
@@ -391,15 +395,24 @@ function updateOutline(preview: DropPreview | null): void {
   });
 }
 
-/// Início de um move interativo: passa a rastrear o cursor. Ignora resize (`!win.move`).
+/// Início de um move/resize interativo. MOVE → rastreia o cursor (drop zone). RESIZE → captura o
+/// frame inicial para derivar borda/delta ao soltar.
 function onMoveStart(win: KWinWindow): void {
-  if (!win.move) {
+  if (win.move) {
+    resizeStart = null;
+    draggedId = windowId(win);
+    lastCursor = null;
+    resolving = false;
+    lastZone = 'none';
     return;
   }
-  draggedId = windowId(win);
-  lastCursor = null;
-  resolving = false;
-  lastZone = 'none';
+  if (win.resize) {
+    const g = win.frameGeometry;
+    resizeStart = {
+      id: windowId(win),
+      rect: { x: g.x, y: g.y, width: g.width, height: g.height },
+    };
+  }
 }
 
 /// Um passo do arrasto: resolve a zona no daemon (com o retângulo da janela sob o cursor) e atualiza
@@ -453,7 +466,12 @@ function onMoveFinish(win: KWinWindow): void {
   lastZone = 'none';
 
   if (dragged === null) {
-    retile();
+    // Não era um move: pode ter sido um resize manual.
+    if (resizeStart && win.frameGeometry) {
+      applyResize(win);
+    } else {
+      retile();
+    }
     return;
   }
   const cursor = workspace.cursorPos;
@@ -490,6 +508,55 @@ function onMoveFinish(win: KWinWindow): void {
     return;
   }
   retile();
+}
+
+/// Fim de um resize manual: deriva a(s) borda(s) e o delta do frame inicial→final e aplica o resize
+/// elástico na árvore via `ResizeWindow` (uma chamada por eixo, encadeadas). Depois re-tila.
+function applyResize(win: KWinWindow): void {
+  const start = resizeStart;
+  resizeStart = null;
+  if (!start) {
+    retile();
+    return;
+  }
+  const g = win.frameGeometry;
+  const deltas = resizeDeltaFrom(start.rect, {
+    x: g.x,
+    y: g.y,
+    width: g.width,
+    height: g.height,
+  });
+  const idT = lastTransportOf.get(start.id);
+  if (idT === undefined || deltas.length === 0) {
+    retile();
+    return;
+  }
+  const monitorsJson = serializeMonitors(monitorsFrom(collectOutputs()));
+  let i = 0;
+  const applyNext = (): void => {
+    if (i >= deltas.length) {
+      retile();
+      return;
+    }
+    const d = deltas[i] as { edge: string; deltaPx: number };
+    i += 1;
+    callDBus(
+      BUS_NAME,
+      OBJECT_PATH,
+      IFACE,
+      'ResizeWindow',
+      monitorsJson,
+      serializeState(stacks, disabled, lastTransportOf, trees, start.id),
+      idT,
+      d.edge,
+      d.deltaPx,
+      (treesJson: string) => {
+        trees = parseLayoutTrees(treesJson, lastTransportToStable);
+        applyNext();
+      },
+    );
+  };
+  applyNext();
 }
 
 /// Conecta os sinais de move interativo de uma janela (start/step/finish).

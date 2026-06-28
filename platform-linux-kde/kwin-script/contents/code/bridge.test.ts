@@ -21,6 +21,7 @@ import {
   toggleGroupDisabled,
   treeToTransport,
   treeFromTransport,
+  resizeDeltaFrom,
   type Stack,
   type TreeNode,
   type TransportNode,
@@ -198,6 +199,18 @@ describe('estado de abas (stacks, ids string) e tiling por grupo', () => {
     });
     const trees = parseLayoutTrees(json, toStable);
     expect(trees.get(orderKey(0, 0))).toEqual({ win: 'a' });
+  });
+
+  it('resizeDeltaFrom infere bordas e canto', () => {
+    expect(resizeDeltaFrom({ x: 0, y: 0, width: 100, height: 50 }, { x: 0, y: 0, width: 160, height: 50 })).toEqual([
+      { edge: 'right', deltaPx: 60 },
+    ]);
+    expect(
+      resizeDeltaFrom({ x: 0, y: 0, width: 100, height: 100 }, { x: 0, y: 0, width: 140, height: 130 }),
+    ).toEqual([
+      { edge: 'right', deltaPx: 40 },
+      { edge: 'bottom', deltaPx: 30 },
+    ]);
   });
 
   it('serializeTarget devolve "" sem alvo e JSON com alvo', () => {
