@@ -118,27 +118,22 @@ jobs:
             Artefatos de produção (sem código-fonte): daemon em Rust + camada nativa por ambiente.
             O daemon é compartilhado entre GNOME e KDE.
 
+            > Baixe os artefatos **desta** release, nos **Assets** abaixo. Cada release contém a
+            > sua própria versão — não dependa de _latest_.
+
             ### GNOME (Wayland)
-            **Instalação (um comando)**
-            ```
-            curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/install-gnome.sh | bash
-            ```
-            **Manual:** baixe `etherbit-tiling-gnome.tar.gz`, extraia e rode `./install-gnome.sh`.
-            **Desinstalação:**
-            ```
-            curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/uninstall-gnome.sh | bash
-            ```
+            1. Baixe `etherbit-tiling-gnome.tar.gz` nos Assets desta release.
+            2. Extraia: `tar -xzf etherbit-tiling-gnome.tar.gz`
+            3. Instale: `cd etherbit-tiling-gnome && ./install-gnome.sh`
+
+            **Desinstalação:** baixe `uninstall-gnome.sh` nos Assets e rode `./uninstall-gnome.sh`.
 
             ### KDE Plasma 6 (Wayland)
-            **Instalação (um comando)**
-            ```
-            curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/install-kde.sh | bash
-            ```
-            **Manual:** baixe `etherbit-tiling-kde.tar.gz`, extraia e rode `./install-kde.sh`.
-            **Desinstalação:**
-            ```
-            curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/uninstall-kde.sh | bash
-            ```
+            1. Baixe `etherbit-tiling-kde.tar.gz` nos Assets desta release.
+            2. Extraia: `tar -xzf etherbit-tiling-kde.tar.gz`
+            3. Instale: `cd etherbit-tiling-kde && ./install-kde.sh`
+
+            **Desinstalação:** baixe `uninstall-kde.sh` nos Assets e rode `./uninstall-kde.sh`.
           files: |
             etherbit-tiling-gnome.tar.gz
             etherbit-tiling-kde.tar.gz

@@ -24,6 +24,7 @@ arqueologia de commits.
 | [0012](0012-testes-isolados-por-plataforma.md) | Testes automatizados isolados por plataforma (gate do release) | ✅ Aceita |
 | [0013](0013-camada-kde-kwin-script.md) | Camada KDE via KWin Script (Wayland-only) | ✅ Aceita |
 | [0014](0014-daemon-linux-compartilhado.md) | Daemon Linux compartilhado entre GNOME e KDE | ✅ Aceita |
+| [0015](0015-notas-release-sem-url.md) | Notas de release sem URLs (download manual de assets versionados) | ✅ Aceita |
 
 ## Como adicionar uma nova decisão
 1. Copie o formato de um ADR existente.
