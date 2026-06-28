@@ -433,16 +433,10 @@ h4 {
 
 .cards {
   display: grid;
-  /* Grid de 2 colunas; em telas estreitas colapsa para 1 (ver media query). */
+  /* Grid de 2 colunas; colapsa para 1 no mobile (ver bloco "Responsivo"). */
   grid-template-columns: repeat(2, 1fr);
   gap: 22px;
   margin-top: 48px;
-}
-
-@media (max-width: 640px) {
-  .cards {
-    grid-template-columns: 1fr;
-  }
 }
 
 .card {
@@ -529,6 +523,11 @@ h4 {
     white-space: nowrap;
     overflow-x: auto;
     flex: 1;
+    /* Crítico: sem isto, o flex-item assume min-width:auto e o comando longo
+       (curl …) não encolhe, estourando o card e gerando scroll horizontal na
+       página inteira no mobile. min-width:0 deixa o overflow-x:auto funcionar. */
+    min-width: 0;
+    -webkit-overflow-scrolling: touch;
   }
 }
 
@@ -679,6 +678,8 @@ h4 {
 }
 
 /* ───────────────────────── Responsivo ───────────────────────── */
+
+/* Tablet e abaixo: grids de múltiplas colunas viram coluna única. */
 @media (max-width: 860px) {
   .essence-grid,
   .pillars,
@@ -688,6 +689,55 @@ h4 {
 
   .site-nav .site-nav__cta {
     display: none;
+  }
+}
+
+/* Celular: compacta header, reduz respiros e ajusta tipografia. */
+@media (max-width: 600px) {
+  .container {
+    padding-inline: 18px;
+  }
+
+  .site-header__inner {
+    height: 56px;
+  }
+
+  .site-nav {
+    gap: 2px;
+  }
+  .site-nav a {
+    padding: 8px 10px;
+    font-size: 0.9rem;
+  }
+
+  .card {
+    padding: 24px;
+  }
+
+  /* O eyebrow é longo ("Linux GNOME & KDE · …"); deixa quebrar com elegância. */
+  .eyebrow {
+    font-size: 0.78rem;
+    white-space: normal;
+    max-width: 100%;
+  }
+
+  .uninstall__body > h2 {
+    font-size: 1.3rem;
+  }
+}
+
+/* Celular estreito: CTAs do hero empilham em largura total (alvos de toque). */
+@media (max-width: 420px) {
+  .hero__actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .hero__actions .btn {
+    width: 100%;
+  }
+
+  .brand .brand__name {
+    font-size: 0.95rem;
   }
 }
 
