@@ -253,35 +253,6 @@ export function sortByOrder(order: Map<string, number[]>, key: string, ids: numb
     .map((e) => e.id);
 }
 
-/// Drop = TROCA (swap) a posição do arrastado com a do alvo dentro do grupo `key`. Se a janela
-/// arrastada ainda não estiver no grupo (mudou de monitor/workspace), insere-a na posição do alvo.
-/// Retorna `true` se algo mudou. MVP do rearranjo; split de folha arbitrária fica para o futuro.
-export function reorderForDrop(
-  order: Map<string, number[]>,
-  key: string,
-  draggedId: number,
-  targetId: number,
-): boolean {
-  if (draggedId === targetId) {
-    return false;
-  }
-  const list = order.get(key);
-  if (!list) {
-    return false;
-  }
-  const ti = list.indexOf(targetId);
-  if (ti === -1) {
-    return false;
-  }
-  const di = list.indexOf(draggedId);
-  if (di === -1) {
-    // Arrastada veio de outro grupo: insere na posição do alvo.
-    list.splice(ti, 0, draggedId);
-    return true;
-  }
-  [list[di], list[ti]] = [list[ti] as number, list[di] as number];
-  return true;
-}
 
 // ---- Estado de abas (stacks) e de tiling por grupo (estado leve da ponte) ----
 //

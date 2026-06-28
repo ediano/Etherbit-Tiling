@@ -75,3 +75,14 @@ precisavam respeitar ambos.
   fora do escopo do KWin *Script*. A paridade entregue é **funcional** (empilhar, trocar, agrupar,
   arrastar), com apresentação nativa de cada plataforma.
 - **`Super+S` pode colidir** com um atalho padrão do Plasma — documentado; o usuário pode religar.
+
+## Emenda (2026): Árvore persistente → ver [0019](0019-arvore-bsp-persistente-resize-elastico.md)
+
+O [0019](0019-arvore-bsp-persistente-resize-elastico.md) troca o BSP função-da-ordem por uma **árvore
+BSP persistente** (estabilidade i3/COSMIC + resize elástico). Os **stacks** deixam de ser uma lista
+lateral (`StackDescriptor`/`StackGroup` paralelos) no caminho novo: cada stack ocupa a **folha do seu
+id-âncora** (primeiro membro presente) na árvore e é materializado na geometria por `reconcile`/
+`compute_geometry` (reusa a renderização de barra de abas deste ADR via `render_stack`). O
+`detect_drop_target` foi corrigido para projetar o **sub-quadrante real da janela-alvo** no preview
+(antes mostrava 50% do monitor). O estado de stacks/abas/grupos desligados **continua na ponte** e o
+daemon **continua sem estado**. Status permanece **✅ Aceita** (o 0019 o estende, não o revoga).

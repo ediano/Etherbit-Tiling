@@ -251,34 +251,6 @@ export function sortByOrder(order: Map<string, string[]>, key: string, ids: stri
     .map((e) => e.id);
 }
 
-/// Drop = TROCA (swap) a posição do arrastado com a do alvo dentro do grupo `key`. Se o arrastado
-/// ainda não estiver no grupo, insere-o na posição do alvo. Retorna `true` se algo mudou.
-export function reorderForDrop(
-  order: Map<string, string[]>,
-  key: string,
-  draggedId: string,
-  targetId: string,
-): boolean {
-  if (draggedId === targetId) {
-    return false;
-  }
-  const list = order.get(key);
-  if (!list) {
-    return false;
-  }
-  const ti = list.indexOf(targetId);
-  if (ti === -1) {
-    return false;
-  }
-  const di = list.indexOf(draggedId);
-  if (di === -1) {
-    list.splice(ti, 0, draggedId);
-    return true;
-  }
-  [list[di], list[ti]] = [list[ti] as string, list[di] as string];
-  return true;
-}
-
 // ---- Estado de abas (stacks) e de tiling por grupo (estado leve da ponte) ----
 //
 // Espelha os helpers do GNOME, mas com ids STRING (`internalId`). O `state_json` do contrato usa ids

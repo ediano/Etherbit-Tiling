@@ -12,7 +12,6 @@ import {
   appendToOrder,
   removeFromOrder,
   sortByOrder,
-  reorderForDrop,
   serializeState,
   serializeTarget,
   removeIdFromStacks,
@@ -297,23 +296,5 @@ describe('ordem estável das janelas', () => {
     const order = new Map<string, number[]>([['0:1', [30, 10, 20]]]);
     // ids presentes em ordem arbitrária + um id novo (99) ainda não registrado
     expect(sortByOrder(order, '0:1', [10, 99, 20, 30])).toEqual([30, 10, 20, 99]);
-  });
-
-  it('reorderForDrop troca arrastado com alvo', () => {
-    const order = new Map<string, number[]>([['0:0', [1, 2, 3]]]);
-    expect(reorderForDrop(order, '0:0', 1, 3)).toBe(true);
-    expect(order.get('0:0')).toEqual([3, 2, 1]);
-  });
-
-  it('reorderForDrop insere o arrastado vindo de outro grupo na posição do alvo', () => {
-    const order = new Map<string, number[]>([['0:0', [1, 2]]]);
-    expect(reorderForDrop(order, '0:0', 9, 2)).toBe(true);
-    expect(order.get('0:0')).toEqual([1, 9, 2]);
-  });
-
-  it('reorderForDrop é no-op quando arrastado == alvo', () => {
-    const order = new Map<string, number[]>([['0:0', [1, 2]]]);
-    expect(reorderForDrop(order, '0:0', 1, 1)).toBe(false);
-    expect(order.get('0:0')).toEqual([1, 2]);
   });
 });

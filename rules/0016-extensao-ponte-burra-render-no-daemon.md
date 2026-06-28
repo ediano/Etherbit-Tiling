@@ -81,6 +81,17 @@ ativa, grupos com tiling desligado) vive na **ponte** — o daemon **permanece s
 contrato D-Bus evoluído e atalhos em [0018](0018-abas-atalhos-globais-drag-to-group.md). Status deste
 ADR permanece **✅ Aceita** (o 0018 o estende, não o revoga).
 
+## Emenda (2026): Árvore persistente e resize → ver [0019](0019-arvore-bsp-persistente-resize-elastico.md)
+
+O "trabalho futuro" de **resize manual proporcional persistente** acima foi cumprido pelo
+[0019](0019-arvore-bsp-persistente-resize-elastico.md): o motor evoluiu do BSP função-da-ordem para
+uma **árvore BSP persistente com `ratio` por nó**. **Crucial:** a árvore vive como estado leve da
+**ponte** (viaja em `state_json` e volta no `layout_json`/`trees_json`) — o **daemon continua sem
+estado** e o core continua puro (recebe a árvore, devolve a árvore/geometria). Cantos arredondados
+seguem a regra deste ADR: a extensão GNOME (dentro do Mutter) anexa um efeito ao ator; o daemon
+(processo externo) não desenha sobre janelas alheias, e o KDE depende do efeito nativo do KWin.
+Status permanece **✅ Aceita** (o 0019 o estende, não o revoga).
+
 ## Consequências
 - **Resiliência estrutural:** como a extensão não renderiza layout e aplica geometria instantânea, o
   congelamento em LLVMpipe deixa de ocorrer — sem precisar detectar render por software no compositor.

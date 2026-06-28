@@ -11,7 +11,6 @@ import {
   appendToOrder,
   removeFromOrder,
   sortByOrder,
-  reorderForDrop,
   serializeState,
   serializeTarget,
   removeIdFromStacks,
@@ -265,23 +264,5 @@ describe('ordem estável das janelas (ids string/internalId)', () => {
   it('sortByOrder respeita a ordem registrada e joga ids novos para o fim', () => {
     const order = new Map<string, string[]>([['0:0', ['c', 'a', 'b']]]);
     expect(sortByOrder(order, '0:0', ['a', 'z', 'b', 'c'])).toEqual(['c', 'a', 'b', 'z']);
-  });
-
-  it('reorderForDrop troca arrastado com alvo', () => {
-    const order = new Map<string, string[]>([['0:0', ['a', 'b', 'c']]]);
-    expect(reorderForDrop(order, '0:0', 'a', 'c')).toBe(true);
-    expect(order.get('0:0')).toEqual(['c', 'b', 'a']);
-  });
-
-  it('reorderForDrop insere arrastado de outro grupo na posição do alvo', () => {
-    const order = new Map<string, string[]>([['0:0', ['a', 'b']]]);
-    expect(reorderForDrop(order, '0:0', 'z', 'b')).toBe(true);
-    expect(order.get('0:0')).toEqual(['a', 'z', 'b']);
-  });
-
-  it('reorderForDrop é no-op quando arrastado == alvo', () => {
-    const order = new Map<string, string[]>([['0:0', ['a', 'b']]]);
-    expect(reorderForDrop(order, '0:0', 'a', 'a')).toBe(false);
-    expect(order.get('0:0')).toEqual(['a', 'b']);
   });
 });
