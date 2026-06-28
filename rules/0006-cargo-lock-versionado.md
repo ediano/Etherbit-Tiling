@@ -5,7 +5,7 @@
 ## Contexto
 A convenção do Cargo: versionar `Cargo.lock` em projetos que produzem **binários**, e (historicamente)
 ignorá-lo em bibliotecas. Com os workspaces isolados ([0003](0003-monorepo-poliglota.md)), há um
-lockfile por workspace: o da raiz (`core`) e o de `platform-linux-gnome/` (`daemon`, binário).
+lockfile por workspace: o da raiz (`core`) e o de `platform-linux-daemon/` (`daemon`, binário).
 
 ## Decisão
 **Versionar o `Cargo.lock` de cada workspace.** Como o conjunto produz um binário (`etherbit-tiling-daemon`),

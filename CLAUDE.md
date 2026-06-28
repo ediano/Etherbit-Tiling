@@ -26,7 +26,7 @@ principal **macOS** (Swift), suporte **Linux/GNOME** (daemon Rust + extension GN
 
 - **Idioma:** docs e comunicação em **português**; código/identificadores em inglês. → [rules/0001](rules/0001-idioma-portugues.md)
 - **Arquitetura:** core agnóstico decide o layout; camadas nativas finas aplicam. → [rules/0002](rules/0002-arquitetura-core-agnostico.md)
-- **Rust:** workspaces isolados — raiz agnóstica (`core`) e `platform-linux-gnome` (`daemon`); `edition 2021`; `Cargo.lock` versionado por workspace. → [rules/0003](rules/0003-monorepo-poliglota.md), [rules/0006](rules/0006-cargo-lock-versionado.md)
+- **Rust:** workspaces isolados — raiz agnóstica (`core`) e `platform-linux-daemon` (`daemon`, compartilhado por GNOME/KDE); `edition 2021`; `Cargo.lock` versionado por workspace. → [rules/0003](rules/0003-monorepo-poliglota.md), [rules/0006](rules/0006-cargo-lock-versionado.md)
 - **Docker:** centralizado em `docker/Dockerfile.core` (sem `.devcontainer/Dockerfile`). → [rules/0004](rules/0004-docker-centralizado.md)
 - **Extension:** pnpm via corepack. → [rules/0005](rules/0005-pnpm-na-extension.md)
 - **Shell:** o ambiente local usa **fish** — encadeie com `; and`, não `&&`.

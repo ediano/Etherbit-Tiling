@@ -15,11 +15,11 @@ Adotar um **monorepo com workspaces Cargo independentes**, um por domínio de bu
 [workspace]
 resolver = "2"
 members = ["core"]
-exclude = ["platform-linux-gnome"]
+exclude = ["platform-linux-daemon"]
 ```
 
 ```toml
-# platform-linux-gnome/Cargo.toml (específico de Linux/GNOME)
+# platform-linux-daemon/Cargo.toml (daemon Linux, compartilhado por GNOME/KDE)
 [workspace]
 resolver = "2"
 members = ["daemon"]

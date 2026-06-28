@@ -32,7 +32,7 @@ jobs:
       - name: cargo test (core)
         run: cargo test
 
-  # platform-linux-gnome/daemon/ — binário Rust (workspace Cargo separado).
+  # platform-linux-daemon/daemon/ — binário Rust (workspace Cargo separado, compartilhado por GNOME/KDE).
   test-daemon:
     name: Testes — daemon (Rust)
     runs-on: ubuntu-latest
@@ -41,11 +41,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: platform-linux-gnome
+          workspaces: platform-linux-daemon
       - name: Dependências de build do daemon
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config build-essential
       - name: cargo test (daemon)
-        run: cargo test --manifest-path platform-linux-gnome/Cargo.toml
+        run: cargo test --manifest-path platform-linux-daemon/Cargo.toml
 
   # platform-linux-gnome/extension/ — TypeScript (vitest em ambiente node).
   test-extension:

@@ -14,16 +14,17 @@ Etherbit-Tiling/
 │   └── src/lib.rs            #   algoritmo "Ether Flow"
 ├── platform-macos/           # Projeto Swift nativo (AppKit + Accessibility API)
 │   └── README.md
-├── platform-linux-gnome/     # Workspace Rust independente (isolamento de build)
+├── platform-linux-daemon/    # Workspace Rust independente (daemon compartilhado por GNOME/KDE)
 │   ├── Cargo.toml            #   workspace do Linux (members: daemon)
 │   ├── Cargo.lock            #   lockfile próprio do daemon
-│   ├── daemon/               # Crate Rust (bin): etherbit-tiling-daemon — serviço D-Bus
-│   │   ├── Cargo.toml        #   zbus + tokio + serde/toml; depende de etherbit-tiling-core por path
-│   │   └── src/
-│   │       ├── main.rs       #     loop de background; sobe org.etherbit.Tiling
-│   │       ├── service.rs    #     interface D-Bus #[interface] (gaps, borda, ignore, autostart)
-│   │       ├── config.rs     #     Config (serde) persistida em ~/.config/etherbit-tiling/config.toml
-│   │       └── autostart.rs  #     manifesto .desktop em ~/.config/autostart
+│   └── daemon/               # Crate Rust (bin): etherbit-tiling-daemon — serviço D-Bus
+│       ├── Cargo.toml        #   zbus + tokio + serde/toml; depende de etherbit-tiling-core por path
+│       └── src/
+│           ├── main.rs       #     loop de background; sobe org.etherbit.Tiling
+│           ├── service.rs    #     interface D-Bus #[interface] (gaps, borda, ignore, autostart)
+│           ├── config.rs     #     Config (serde) persistida em ~/.config/etherbit-tiling/config.toml
+│           └── autostart.rs  #     manifesto .desktop em ~/.config/autostart
+├── platform-linux-gnome/     # Camada GNOME (Wayland) — só a extension; usa o daemon
 │   └── extension/            # Extensão-ponte Vite + TypeScript (ESM): etherbit-tiling-extension
 │       ├── package.json      #   scripts: dev/build/typecheck/install:ext (pnpm)
 │       ├── metadata.json     #   uuid tiling@etherbit.org, shell-version 45–48
@@ -50,7 +51,7 @@ Etherbit-Tiling/
 │   ├── public/favicon.svg    #   ícone vetorial
 │   └── src/                  #   style.css (Dark Mode) + main.js (ano, copiar)
 ├── docs/                     # Documentação
-├── Cargo.toml                # Workspace Rust raiz, agnóstico (members: core; exclude: platform-linux-gnome)
+├── Cargo.toml                # Workspace Rust raiz, agnóstico (members: core; exclude: platform-linux-daemon)
 ├── Cargo.lock                # Lockfile do core (versionado → builds reproduzíveis)
 └── .gitignore
 ```
@@ -61,9 +62,9 @@ Etherbit-Tiling/
 |-------|-------------------|------------------|
 | `core/` | Rust (lib) | **Ether Flow** — algoritmo agnóstico de divisão de tela e regras de filtragem de janelas. Sem dependências de SO. |
 | `platform-macos/` | Swift (AppKit / Accessibility API) | Captura eventos de janela no macOS e aplica o layout decidido pelo core. **Build no host macOS.** |
-| `platform-linux-gnome/daemon/` | Rust (bin) | Roteador de eventos **D-Bus**; ponte entre o GNOME Shell e o core. Depende de `etherbit-tiling-core` por path. |
+| `platform-linux-daemon/daemon/` | Rust (bin) | Roteador de eventos **D-Bus** compartilhado por GNOME e KDE; ponte entre a camada nativa e o core. Depende de `etherbit-tiling-core` por path. |
 | `platform-linux-gnome/extension/` | TypeScript + Vite (ESM) | Extensão-ponte do GNOME Shell que conversa com o daemon. |
-| `platform-linux-kde/kwin-script/` | TypeScript + Vite (IIFE) | KWin Script (Plasma 6 / Wayland) que aplica o tiling e conversa com o daemon. **Reusa o daemon do GNOME** (ver ADR 0014). |
+| `platform-linux-kde/kwin-script/` | TypeScript + Vite (IIFE) | KWin Script (Plasma 6 / Wayland) que aplica o tiling e conversa com o daemon. **Reusa o daemon compartilhado** (ver ADR 0014). |
 | `web/` | Vite + HTML5/CSS3 puro | Landing page global e agnóstica — hub oficial de distribuição (manifesto + downloads). Sem CDN. |
 | `.devcontainer/` + `docker/` | Docker | Ambiente de desenvolvimento isolado e reproduzível. |
 
@@ -72,8 +73,8 @@ Etherbit-Tiling/
 Para isolar os builds ao estilo monorepo, há **dois workspaces Cargo independentes**:
 
 - **Raiz (`Cargo.toml`)** — agnóstico, com `resolver = "2"`, member único `core` e
-  `exclude = ["platform-linux-gnome"]`. A raiz **não** enxerga crates de plataforma.
-- **`platform-linux-gnome/Cargo.toml`** — workspace específico de Linux/GNOME, member `daemon`.
+  `exclude = ["platform-linux-daemon"]`. A raiz **não** enxerga crates de plataforma.
+- **`platform-linux-daemon/Cargo.toml`** — workspace do daemon Linux (compartilhado por GNOME/KDE), member `daemon`.
 
 O `daemon` consome `etherbit-tiling-core` por **path** (`{ path = "../../core" }`); dependência de path
 funciona entre workspaces. Cada workspace tem seu próprio `Cargo.lock`, garantindo builds
@@ -82,8 +83,9 @@ reproduzíveis e isolados.
 O `platform-macos` (Swift) **não** faz parte de nenhum workspace Cargo — é editável como texto no
 container, mas compilado por Xcode/SwiftPM no host macOS.
 
-O `platform-linux-kde` **não** tem workspace Cargo próprio: entrega só o KWin Script (TypeScript) e
-**reaproveita o daemon** compilado em `platform-linux-gnome` (o daemon é agnóstico de DE — ver
+Tanto o `platform-linux-gnome` quanto o `platform-linux-kde` **não** têm workspace Cargo próprio:
+entregam só a camada nativa (TypeScript) e **reaproveitam o daemon** compilado em
+`platform-linux-daemon` (o daemon é agnóstico de DE — ver
 [ADR 0014](../rules/0014-daemon-linux-compartilhado.md)).
 
 > Veja também: [ARQUITETURA.md](ARQUITETURA.md) · [DESENVOLVIMENTO.md](DESENVOLVIMENTO.md)
