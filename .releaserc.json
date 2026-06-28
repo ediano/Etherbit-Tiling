@@ -19,7 +19,7 @@
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "bash packaging/build-linux-release.sh ${nextRelease.version}",
+        "prepareCmd": "bash packaging/build-linux-release.sh ${nextRelease.version} && bash packaging/build-kde-release.sh ${nextRelease.version}",
         "publishCmd": "echo \"version=${nextRelease.version}\" >> \"$GITHUB_OUTPUT\""
       }
     ]

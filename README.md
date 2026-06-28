@@ -5,8 +5,8 @@
 **O tecido invisível que coloca suas janelas em órbita perfeita.**
 
 Gerenciador automático de janelas (*tiling window manager*) com algoritmo agnóstico em Rust,
-foco principal em **macOS** (Swift nativo) e suporte a **Linux / GNOME 45+ (Wayland)**.
-Inspirado no ambiente **COSMIC** do Pop!_OS.
+foco principal em **macOS** (Swift nativo) e suporte a **Linux / GNOME 45+ (Wayland)** e
+**KDE Plasma 6 (Wayland)**. Inspirado no ambiente **COSMIC** do Pop!_OS.
 
 </div>
 
@@ -39,6 +39,7 @@ Etherbit-Tiling/
 ├── core/                  # 🦀 Rust — algoritmo agnóstico "Ether Flow" (etherbit-tiling-core)
 ├── platform-macos/        # 🍎 Swift nativo (AppKit + Accessibility) — build no host macOS
 ├── platform-linux-gnome/  # 🐧 Linux/GNOME — daemon (Rust/D-Bus) + extension (Vite/TS)
+├── platform-linux-kde/    # 🐧 Linux/KDE Plasma 6 (Wayland) — KWin Script (Vite/TS); reusa o daemon
 ├── web/                   # 🌐 Landing page global (Vite + CSS3 puro) — hub de downloads
 ├── .devcontainer/  docker/  # 🐳 Dev Container (imagem em docker/Dockerfile.core)
 ├── docs/  rules/          # 📚 Documentação e decisões de projeto (ADR)
@@ -62,6 +63,8 @@ cargo build
 cd platform-linux-gnome && cargo build                          # ou: cargo run -p etherbit-tiling-daemon (sobe o D-Bus org.etherbit.Tiling)
 # 4. Build/instalação da extensão GNOME (pnpm via corepack):
 cd platform-linux-gnome/extension && pnpm install && pnpm run install:ext
+# 5. Build/instalação do KWin Script KDE (Plasma 6/Wayland; reusa o daemon):
+cd platform-linux-kde/kwin-script && pnpm install && pnpm run install:script
 ```
 
 > Guia completo em [docs/DESENVOLVIMENTO.md](docs/DESENVOLVIMENTO.md).

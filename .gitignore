@@ -3,6 +3,7 @@
 # ─────────────────────────────────────────────
 /dist-release/
 /etherbit-tiling-linux.tar.gz
+/etherbit-tiling-kde.tar.gz
 
 # ─────────────────────────────────────────────
 #  Rust / Cargo  (core + platform-linux-gnome/daemon)
@@ -34,6 +35,10 @@ pnpm-debug.log*
 
 # Saída de compilação TypeScript
 *.tsbuildinfo
+
+# KWin Script (platform-linux-kde): o bundle IIFE é gerado pelo Vite ao lado dos
+# fontes .ts em contents/code/ — artefato de build, NÃO versionado (como dist/ no GNOME).
+/platform-linux-kde/kwin-script/contents/code/main.js
 
 # Variáveis de ambiente
 .env

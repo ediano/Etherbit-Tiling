@@ -34,6 +34,15 @@ Etherbit-Tiling/
 │           ├── extension.ts  #     enable/disable, indicador, filtro Mutter window-created
 │           ├── indicator.ts  #     PanelMenu.Button (gaps, borda ativa, autostart)
 │           └── dbus.ts       #     proxy D-Bus + tipos da config
+├── platform-linux-kde/       # Camada KDE Plasma 6 (Wayland) — só o KWin Script; reusa o daemon
+│   └── kwin-script/          # KPackage "KWin/Script" (Vite + TypeScript → bundle IIFE)
+│       ├── metadata.json     #   KPackageStructure KWin/Script; Id etherbit-tiling
+│       ├── vite.config.ts    #   bundle único IIFE (QJSEngine não tem ESM em runtime)
+│       ├── kwin-globals.d.ts #   tipos ambientes da API de scripting do KWin
+│       └── contents/
+│           ├── code/         #     main.ts (ponte), config.ts/tiling.ts (puros, testáveis)
+│           ├── config/main.xml #   KConfigXT (innerGap, outerGap, borda, autostart)
+│           └── ui/config.ui  #     UI nativa (objectName = kcfg_<chave>)
 ├── web/                      # Landing page global (Vite + CSS3 puro): etherbit-tiling-web
 │   ├── package.json          #   scripts dev/build/preview (pnpm)
 │   ├── vite.config.js        #   SPA estática; base de GitHub Pages
@@ -54,6 +63,7 @@ Etherbit-Tiling/
 | `platform-macos/` | Swift (AppKit / Accessibility API) | Captura eventos de janela no macOS e aplica o layout decidido pelo core. **Build no host macOS.** |
 | `platform-linux-gnome/daemon/` | Rust (bin) | Roteador de eventos **D-Bus**; ponte entre o GNOME Shell e o core. Depende de `etherbit-tiling-core` por path. |
 | `platform-linux-gnome/extension/` | TypeScript + Vite (ESM) | Extensão-ponte do GNOME Shell que conversa com o daemon. |
+| `platform-linux-kde/kwin-script/` | TypeScript + Vite (IIFE) | KWin Script (Plasma 6 / Wayland) que aplica o tiling e conversa com o daemon. **Reusa o daemon do GNOME** (ver ADR 0014). |
 | `web/` | Vite + HTML5/CSS3 puro | Landing page global e agnóstica — hub oficial de distribuição (manifesto + downloads). Sem CDN. |
 | `.devcontainer/` + `docker/` | Docker | Ambiente de desenvolvimento isolado e reproduzível. |
 
@@ -71,5 +81,9 @@ reproduzíveis e isolados.
 
 O `platform-macos` (Swift) **não** faz parte de nenhum workspace Cargo — é editável como texto no
 container, mas compilado por Xcode/SwiftPM no host macOS.
+
+O `platform-linux-kde` **não** tem workspace Cargo próprio: entrega só o KWin Script (TypeScript) e
+**reaproveita o daemon** compilado em `platform-linux-gnome` (o daemon é agnóstico de DE — ver
+[ADR 0014](../rules/0014-daemon-linux-compartilhado.md)).
 
 > Veja também: [ARQUITETURA.md](ARQUITETURA.md) · [DESENVOLVIMENTO.md](DESENVOLVIMENTO.md)

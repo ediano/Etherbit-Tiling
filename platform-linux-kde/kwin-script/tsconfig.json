@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2019",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2020"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+
+    "noEmit": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+
+    "moduleDetection": "force",
+    "useDefineForClassFields": true,
+    "resolveJsonModule": true,
+
+    "types": ["vitest/globals"]
+  },
+  "include": ["contents/code/**/*.ts", "kwin-globals.d.ts"]
+}

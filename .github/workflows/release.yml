@@ -10,6 +10,7 @@ on:
     paths:
       - 'core/**'
       - 'platform-linux-gnome/**'
+      - 'platform-linux-kde/**'
       # - 'platform-macos/**'   # futuro (ver job comentado abaixo)
   # Permite disparar o release manualmente pela aba Actions (Run workflow),
   # ignorando o filtro de `paths` acima. Útil para reprocessar uma release.
@@ -44,7 +45,7 @@ jobs:
     uses: ./.github/workflows/test.yml
 
   release-linux:
-    name: Release (Linux / GNOME)
+    name: Release (Linux / GNOME + KDE)
     needs: tests
     runs-on: ubuntu-latest
     # O secret RELEASE_REPO_TOKEN está vinculado ao Environment "github-token";
@@ -77,8 +78,9 @@ jobs:
 
       # semantic-release (repo PRIVADO): calcula a próxima versão a partir dos
       # Conventional Commits (fix: -> patch, feat: -> minor), roda o build via
-      # prepareCmd (packaging/build-linux-release.sh) gerando
-      # `etherbit-tiling-linux.tar.gz`, e cria/empurra a TAG git neste repo —
+      # prepareCmd (build-linux-release.sh + build-kde-release.sh) gerando
+      # `etherbit-tiling-linux.tar.gz` e `etherbit-tiling-kde.tar.gz`, e
+      # cria/empurra a TAG git neste repo —
       # preservando o estado de versão. O publishCmd exporta a versão calculada
       # como output (`steps.semrel.outputs.version`); se nenhum release for
       # devido, o output fica vazio e a publicação pública é pulada.
@@ -110,28 +112,39 @@ jobs:
           name: Etherbit Tiling v${{ steps.semrel.outputs.version }}
           make_latest: true
           body: |
-            ## Etherbit Tiling v${{ steps.semrel.outputs.version }} — Linux (GNOME)
+            ## Etherbit Tiling v${{ steps.semrel.outputs.version }} — Linux (GNOME + KDE)
 
-            Artefatos de produção (sem código-fonte): daemon em Rust + extensão GNOME + installer.
+            Artefatos de produção (sem código-fonte): daemon em Rust + camada nativa por ambiente.
+            O daemon é compartilhado entre GNOME e KDE.
 
+            ### GNOME (Wayland)
             **Instalação (um comando)**
             ```
             curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/install.sh | bash
             ```
-
-            **Instalação (manual)**
-            1. Baixe `etherbit-tiling-linux.tar.gz`.
-            2. Extraia: `tar -xzf etherbit-tiling-linux.tar.gz`
-            3. Execute: `cd etherbit-tiling-linux && ./install.sh`
-
-            **Desinstalação (um comando)**
+            **Manual:** baixe `etherbit-tiling-linux.tar.gz`, extraia e rode `./install.sh`.
+            **Desinstalação:**
             ```
             curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/uninstall.sh | bash
             ```
+
+            ### KDE Plasma 6 (Wayland)
+            **Instalação (um comando)**
+            ```
+            curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/install-kde.sh | bash
+            ```
+            **Manual:** baixe `etherbit-tiling-kde.tar.gz`, extraia e rode `./install-kde.sh`.
+            **Desinstalação:**
+            ```
+            curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/uninstall-kde.sh | bash
+            ```
           files: |
             etherbit-tiling-linux.tar.gz
+            etherbit-tiling-kde.tar.gz
             packaging/install.sh
             packaging/uninstall.sh
+            packaging/install-kde.sh
+            packaging/uninstall-kde.sh
 
   # -----------------------------------------------------------------------------
   # Futuro — build do macOS (Swift). Mantido comentado até existir platform-macos/.
