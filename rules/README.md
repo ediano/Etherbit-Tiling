@@ -29,6 +29,7 @@ arqueologia de commits.
 | [0017](0017-dominio-proprio-ediano-dev.md) | Migração para domínio próprio (`ediano.dev`) | ✅ Aceita |
 | [0018](0018-abas-atalhos-globais-drag-to-group.md) | Abas (StackNode), atalhos globais e agrupar por arraste | ✅ Aceita |
 | [0019](0019-arvore-bsp-persistente-resize-elastico.md) | Árvore BSP persistente, resize elástico, gap único e cantos arredondados | ✅ Aceita |
+| [0020](0020-resiliencia-ipc-dbus.md) | Resiliência de IPC (D-Bus): ativação, reconexão e wake handshake | ✅ Aceita |
 
 ## Como adicionar uma nova decisão
 1. Copie o formato de um ADR existente.

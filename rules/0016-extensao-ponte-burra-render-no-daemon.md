@@ -92,6 +92,14 @@ seguem a regra deste ADR: a extensão GNOME (dentro do Mutter) anexa um efeito a
 (processo externo) não desenha sobre janelas alheias, e o KDE depende do efeito nativo do KWin.
 Status permanece **✅ Aceita** (o 0019 o estende, não o revoga).
 
+## Emenda (2026): Resiliência de IPC → ver [0020](0020-resiliencia-ipc-dbus.md)
+
+O ciclo de vida "daemon só sobe no login + uma conexão sem reconexão" se mostrou frágil após
+ociosidade/suspensão (parava até o reboot). O [0020](0020-resiliencia-ipc-dbus.md) adiciona **ativação
+D-Bus** (o daemon é relançado sob demanda), **reconexão + watch de nome na ponte** e um **wake
+handshake via logind**. O daemon segue **sem estado** — o que torna "sair e reativar" uma recuperação
+segura. Status permanece **✅ Aceita**.
+
 ## Consequências
 - **Resiliência estrutural:** como a extensão não renderiza layout e aplica geometria instantânea, o
   congelamento em LLVMpipe deixa de ocorrer — sem precisar detectar render por software no compositor.
