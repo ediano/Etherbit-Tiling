@@ -62,7 +62,9 @@ pub async fn init_render() -> Result<RenderContext> {
                     compatible_surface: None,
                 })
                 .await
-                .ok_or_else(|| anyhow!("nenhum adapter wgpu disponível (nem hardware nem software)"))?;
+                .ok_or_else(|| {
+                    anyhow!("nenhum adapter wgpu disponível (nem hardware nem software)")
+                })?;
             (adapter, true)
         }
     };

@@ -26,9 +26,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: .
+      - name: cargo fmt --check (core)
+        run: cargo fmt --check
       - name: cargo test (core)
         run: cargo test
 
@@ -39,11 +43,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: platform-linux-daemon
       - name: Dependências de build do daemon
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config build-essential
+      - name: cargo fmt --check (daemon)
+        run: cargo fmt --manifest-path platform-linux-daemon/Cargo.toml --check
       - name: cargo test (daemon)
         run: cargo test --manifest-path platform-linux-daemon/Cargo.toml
 

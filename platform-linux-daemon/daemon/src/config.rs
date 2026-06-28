@@ -156,7 +156,8 @@ mod tests {
         assert_eq!(cfg.border_color, defaults.border_color);
         assert_eq!(cfg.autostart, defaults.autostart);
 
-        let from_json: Config = serde_json::from_str("{\"border_width\": 5}").expect("JSON parcial");
+        let from_json: Config =
+            serde_json::from_str("{\"border_width\": 5}").expect("JSON parcial");
         assert_eq!(from_json.border_width, 5);
         assert_eq!(from_json.inner_gap, defaults.inner_gap);
     }
