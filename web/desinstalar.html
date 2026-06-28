@@ -7,7 +7,7 @@
     <title>Desinstalar — Etherbit Tiling</title>
     <meta
       name="description"
-      content="Como remover completamente o Etherbit Tiling do Linux/GNOME: um comando único ou os passos manuais (daemon, extensão e serviço systemd)."
+      content="Como remover completamente o Etherbit Tiling do Linux (GNOME ou KDE Plasma): um comando único ou os passos manuais (daemon, camada nativa e serviço systemd)."
     />
     <meta name="theme-color" content="#0e1116" />
     <!-- Página utilitária: fora do índice de busca. -->
@@ -44,24 +44,24 @@
         <div class="container">
           <h1 class="section-title">Desinstalar o Etherbit Tiling</h1>
           <p class="section-lead">
-            Remova o daemon, a extensão GNOME e o serviço do seu usuário. Sem sudo — tudo é instalado
-            no espaço do usuário.
+            Remova o daemon, a camada nativa (extensão GNOME ou KWin Script) e o serviço do seu
+            usuário. Sem sudo — tudo é instalado no espaço do usuário.
           </p>
 
           <div class="uninstall__body">
-            <!-- Um comando -->
+            <!-- GNOME -->
+            <h2>Linux · GNOME</h2>
             <div class="uninstall__step">
-              <h2>Em um comando</h2>
+              <h3>Em um comando</h3>
               <p class="uninstall__hint">Baixa e executa o desinstalador oficial:</p>
               <div class="code" data-copy>
-                <code>curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/uninstall.sh | bash</code>
+                <code>curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/uninstall-gnome.sh | bash</code>
                 <button class="code__copy" type="button" data-copy-btn aria-label="Copiar comando">Copiar</button>
               </div>
             </div>
 
-            <!-- Manual -->
             <div class="uninstall__step">
-              <h2>Manualmente</h2>
+              <h3>Manualmente</h3>
               <p class="uninstall__hint">
                 Se preferir, execute os passos à mão — eles revertem exatamente o que a instalação fez:
               </p>
@@ -76,13 +76,41 @@ systemctl --user daemon-reload</code>
               </div>
             </div>
 
+            <!-- KDE -->
+            <h2>Linux · KDE Plasma 6</h2>
+            <div class="uninstall__step">
+              <h3>Em um comando</h3>
+              <p class="uninstall__hint">Baixa e executa o desinstalador oficial do KDE:</p>
+              <div class="code" data-copy>
+                <code>curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/uninstall-kde.sh | bash</code>
+                <button class="code__copy" type="button" data-copy-btn aria-label="Copiar comando">Copiar</button>
+              </div>
+            </div>
+
+            <div class="uninstall__step">
+              <h3>Manualmente</h3>
+              <p class="uninstall__hint">
+                Desabilita e remove o KWin Script, o daemon e o serviço:
+              </p>
+              <div class="code code--block" data-copy>
+                <code>kwriteconfig6 --file kwinrc --group Plugins --key etherbit-tilingEnabled false
+kpackagetool6 --type=KWin/Script -r etherbit-tiling
+qdbus6 org.kde.KWin /KWin reconfigure
+systemctl --user disable --now etherbit-tiling-daemon.service
+rm -f ~/.local/bin/etherbit-tiling-daemon
+rm -f ~/.config/systemd/user/etherbit-tiling-daemon.service
+systemctl --user daemon-reload</code>
+                <button class="code__copy" type="button" data-copy-btn aria-label="Copiar comandos">Copiar</button>
+              </div>
+            </div>
+
             <p class="uninstall__note">
               <strong>Sua configuração é preservada por padrão.</strong> Os arquivos
-              <code>~/.config/etherbit-tiling/</code> e
+              <code>~/.config/etherbit-tiling/</code> e (no GNOME) o
               <code>~/.config/autostart/tiling@etherbit.org.desktop</code> não são removidos. Para
               apagá-los também, rode o desinstalador com <code>ETHERBIT_PURGE=1</code> ou remova-os à
-              mão. No <strong>Wayland</strong>, faça logout/login para o GNOME Shell descarregar a
-              extensão.
+              mão. No <strong>Wayland</strong>: no GNOME, faça logout/login para descarregar a extensão;
+              no KDE, o <code>qdbus … reconfigure</code> já descarrega o KWin Script.
             </p>
           </div>
         </div>

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# uninstall.sh — remove o Etherbit Tiling (daemon + extensão GNOME + serviço)
-# do usuário atual. Reverte exatamente o que o install.sh fez.
+# uninstall-gnome.sh — remove o Etherbit Tiling (daemon + extensão GNOME + serviço)
+# do usuário atual. Reverte exatamente o que o install-gnome.sh fez.
 #
 # Idempotente — pode rodar várias vezes; ausências são toleradas. Roda no espaço
 # do usuário (sem sudo). Não baixa nada: opera só sobre o que já está instalado.
 #
 # Por padrão PRESERVA a configuração do usuário. Para apagá-la também, defina
 # ETHERBIT_PURGE=1 (env), já que `curl ... | bash` é não-interativo:
-#   curl -sSL .../uninstall.sh | ETHERBIT_PURGE=1 bash
+#   curl -sSL .../uninstall-gnome.sh | ETHERBIT_PURGE=1 bash
 set -euo pipefail
 
 UUID="tiling@etherbit.org"
