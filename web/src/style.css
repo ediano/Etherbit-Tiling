@@ -24,8 +24,12 @@
   --shadow-lg: 0 24px 60px -20px rgba(0, 0, 0, 0.8);
   --ring: 0 0 0 3px rgba(94, 129, 172, 0.35);
 
-  --font: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans", sans-serif;
-  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+  --font:
+    system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell,
+    "Noto Sans", sans-serif;
+  --mono:
+    ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas,
+    monospace;
 }
 
 * {
@@ -50,8 +54,16 @@ body {
 
   /* Brilho ambiente sutil no topo. */
   background-image:
-    radial-gradient(900px 500px at 70% -10%, rgba(94, 129, 172, 0.16), transparent 60%),
-    radial-gradient(700px 400px at 10% 0%, rgba(136, 192, 208, 0.08), transparent 55%);
+    radial-gradient(
+      900px 500px at 70% -10%,
+      rgba(94, 129, 172, 0.16),
+      transparent 60%
+    ),
+    radial-gradient(
+      700px 400px at 10% 0%,
+      rgba(136, 192, 208, 0.08),
+      transparent 55%
+    );
   background-repeat: no-repeat;
 }
 
@@ -134,7 +146,9 @@ h4 {
     border-radius: var(--radius-sm);
     color: var(--muted);
     font-size: 0.95rem;
-    transition: color 0.2s ease, background 0.2s ease;
+    transition:
+      color 0.2s ease,
+      background 0.2s ease;
 
     &:hover {
       color: var(--text);
@@ -202,7 +216,11 @@ h4 {
   font-size: 0.98rem;
   border: 1px solid transparent;
   cursor: pointer;
-  transition: transform 0.15s ease, box-shadow 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.2s ease,
+    background 0.2s ease,
+    border-color 0.2s ease;
 
   &:active {
     transform: translateY(1px);
@@ -291,7 +309,11 @@ h4 {
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-strong);
   background:
-    linear-gradient(135deg, rgba(94, 129, 172, 0.22), rgba(136, 192, 208, 0.06)),
+    linear-gradient(
+      135deg,
+      rgba(94, 129, 172, 0.22),
+      rgba(136, 192, 208, 0.06)
+    ),
     var(--surface);
   transform-origin: center;
   animation: settle 7s ease-in-out infinite;
@@ -452,7 +474,10 @@ h4 {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  transition: transform 0.2s ease, box-shadow 0.25s ease, border-color 0.2s ease;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.25s ease,
+    border-color 0.2s ease;
 
   &:hover {
     transform: translateY(-6px);
@@ -547,7 +572,9 @@ h4 {
   border: 1px solid var(--border-strong);
   border-radius: 7px;
   cursor: pointer;
-  transition: background 0.2s ease, color 0.2s ease;
+  transition:
+    background 0.2s ease,
+    color 0.2s ease;
 
   &:hover {
     background: var(--primary);
@@ -734,7 +761,7 @@ h4 {
     align-items: stretch;
   }
   .code code {
-    white-space: pre-wrap;
+    white-space: normal;
     overflow-wrap: anywhere;
     overflow-x: visible;
   }
