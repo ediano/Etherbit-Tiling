@@ -111,12 +111,27 @@ impl Tiling {
         windows_json: String,
         monitors_json: String,
     ) -> fdo::Result<String> {
-        let opts = LayoutOptions {
-            inner_gap: self.config.inner_gap,
-            outer_gap: self.config.outer_gap,
-        };
+        let opts =
+            LayoutOptions { inner_gap: self.config.inner_gap, outer_gap: self.config.outer_gap };
         protocol::sync_windows(&windows_json, &monitors_json, &self.config.ignore_list, opts)
             .map_err(|e| fdo::Error::InvalidArgs(format!("sync_windows: {e}")))
+    }
+
+    /// Resolve a zona de drop sob o ponto `(x, y)` para a janela arrastada `window_id`. A ponte
+    /// chama isto em alta frequência durante o arrasto e desenha o overlay com o retângulo
+    /// devolvido. Request/response puro (daemon sem estado): a ponte envia os monitores na chamada,
+    /// como em `SyncWindows`. `window_id` é reservado (futuro: excluir a própria janela).
+    async fn resolve_drop_zone(
+        &self,
+        x: i32,
+        y: i32,
+        window_id: u64,
+        monitors_json: String,
+    ) -> fdo::Result<String> {
+        let opts =
+            LayoutOptions { inner_gap: self.config.inner_gap, outer_gap: self.config.outer_gap };
+        protocol::resolve_drop_zone(&monitors_json, x, y, window_id, opts)
+            .map_err(|e| fdo::Error::InvalidArgs(format!("resolve_drop_zone: {e}")))
     }
 
     /// Sinal emitido sempre que a configuração muda. Carrega a config completa em JSON.
