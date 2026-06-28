@@ -58,6 +58,12 @@ impl Tiling {
 
 #[interface(name = "dev.ediano.etherbit.Tiling")]
 impl Tiling {
+    /// Handshake/health-check barato: confirma que o daemon está vivo e respondendo. Usado pela ponte
+    /// ao (re)detectar o daemon no barramento (pós-wake/reativação) e útil para diagnóstico.
+    async fn ping(&self) -> String {
+        "ok".to_string()
+    }
+
     /// Retorna a configuração atual serializada em JSON.
     async fn get_config(&self) -> String {
         self.config.to_json()
