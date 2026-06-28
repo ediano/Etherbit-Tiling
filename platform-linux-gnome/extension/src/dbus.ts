@@ -16,6 +16,9 @@ export const OBJECT_PATH = '/dev/ediano/etherbit/Tiling';
 const IFACE_XML = `
 <node>
   <interface name="dev.ediano.etherbit.Tiling">
+    <method name="Ping">
+      <arg type="s" direction="out" name="status"/>
+    </method>
     <method name="GetConfig">
       <arg type="s" direction="out" name="config_json"/>
     </method>
@@ -73,6 +76,8 @@ const IFACE_XML = `
 
 /// Forma do proxy gerado por makeProxyWrapper que efetivamente usamos.
 export interface TilingProxy {
+  /// Handshake/health-check: devolve `["ok"]` se o daemon está vivo.
+  PingSync(): [string];
   GetConfigSync(): [string];
   SetGapSync(gap: number): void;
   SetActiveBorderSync(enabled: boolean, color: string, width: number): void;
