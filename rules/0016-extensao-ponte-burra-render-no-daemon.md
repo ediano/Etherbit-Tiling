@@ -15,10 +15,11 @@ ADR [0002](0002-arquitetura-core-agnostico.md) já separa **decisão de layout**
 (camadas nativas), mas faltava firmar onde mora a renderização e o quanto a camada nativa pode conter.
 
 ## Decisão
-- **A extensão GNOME e o KWin Script são "pontes burras":** não desenham nada e não decidem layout.
-  Atuam como ponte IPC de via dupla — coletam metadados brutos das janelas e áreas úteis, chamam
-  `SyncWindows` no daemon e **aplicam** os retângulos-alvo devolvidos (`move_resize_frame` no GNOME,
-  `frameGeometry` no KWin), de forma **instantânea e geométrica** (sem animação em JS).
+- **A extensão GNOME e o KWin Script são "pontes burras":** não decidem layout e não desenham nada,
+  **com a única exceção do preview estático de drop zone** (ver Emenda 2026 abaixo). Atuam como ponte
+  IPC de via dupla — coletam metadados brutos das janelas e áreas úteis, chamam `SyncWindows` no
+  daemon e **aplicam** os retângulos-alvo devolvidos (`move_resize_frame` no GNOME, `frameGeometry`
+  no KWin), de forma **instantânea e geométrica** (sem animação em JS).
 - **A decisão de layout vive no core (`etherbit-tiling-core`):** `compute_layout` e `is_tileable`
   (filtro cirúrgico) são únicos e agnósticos, sem dependências nem GL. Elimina a duplicação que existia
   no `_shouldIgnore` (GNOME) e no `tileColumns`/`shouldTile` (KDE).
@@ -38,15 +39,49 @@ ADR [0002](0002-arquitetura-core-agnostico.md) já separa **decisão de layout**
   Shell carregar a extensão automaticamente no próximo login Wayland — sem passo manual. O daemon
   mantém o serviço `systemd --user` + `.desktop`.
 
+## Emenda (2026): Drop Zone Preview
+
+Recurso novo: ao **arrastar** uma janela, um indicador semi-transparente mostra em tempo real a área
+que ela ocupará ao soltar. Isso reabre a questão "quem desenha?" — e a resposta confirma e refina
+esta ADR em vez de revogá-la (status permanece **✅ Aceita**).
+
+- **A matemática continua 100% no Rust.** O core ganha `detect_drop_zone(area, x, y, opts)` (zona +
+  retângulo, FRAÇÕES da área) e o daemon expõe `ResolveDropZone(x, y, monitors_json) ->
+  preview_json` (request/response, **modelo pull**, espelhável GNOME/KDE). A ponte **não decide**
+  a zona — só envia o ponto do cursor e recebe o retângulo pronto.
+- **O preview é desenhado pela EXTENSÃO**, não pelo daemon. Sob Wayland/GNOME (Mutter, **sem
+  `wlr-layer-shell`**) apenas o compositor pode sobrepor janelas alheias; a extensão roda **dentro**
+  do compositor e pode, o daemon (processo separado) não. O `wgpu` segue **reservado às janelas
+  próprias do daemon** — não é usado para este overlay.
+- **Por que isto NÃO reintroduz o problema da "Borda Ativa":** aquela era um overlay **animado e
+  contínuo** sobre a janela focada (custo de render constante → congela LLVMpipe). O preview é um
+  **único `St.Widget` estático, não-reativo, sem animação e efêmero** (existe só durante o grab de
+  movimento), reposicionado por `set_position/set_size`. Custo desprezível. A proibição de **animação
+  em JS** permanece de pé.
+- **KDE (KWin Script):** mesma matemática (chama `ResolveDropZone`), mas o indicador usa o primitivo
+  **nativo** `workspace.showOutline(rect)` / `hideOutline()` — não há equivalente ao `St.Widget`
+  preenchido, e uma caixa QML seria peso/fragilidade fora da "ponte burra". O arrasto é rastreado por
+  eventos (`Window.interactiveMoveResizeStarted/Stepped/Finished`), sem polling. **Diferença de
+  apresentação aceita:** GNOME = caixa preenchida semi-transparente; KDE = *outline* nativo (o mesmo
+  do quick-tile). Paridade funcional total.
+- **O daemon permanece SEM ESTADO.** O motor de layout evoluiu de colunas para uma **divisão binária
+  (BSP) determinística** (grades simétricas infinitas, isoladas por `(monitor, workspace)`), que é
+  função pura da **ordem** das janelas. Essa ordem (estado leve) vive na **ponte**, não no daemon —
+  o que mantém a paridade pull do KDE e o princípio "a verdade vive no compositor". O drop apenas
+  reordena e dispara o relayout. **Resize manual proporcional persistente exigiria estado e fica como
+  trabalho futuro (novo ADR).**
+
 ## Consequências
-- **Resiliência estrutural:** como a extensão não renderiza e aplica geometria instantânea, o
+- **Resiliência estrutural:** como a extensão não renderiza layout e aplica geometria instantânea, o
   congelamento em LLVMpipe deixa de ocorrer — sem precisar detectar render por software no compositor.
-  A flag/runtime de "degradação suave" no lado JS torna-se desnecessária.
+  A flag/runtime de "degradação suave" no lado JS torna-se desnecessária. O overlay de drop zone é
+  estático/efêmero (um ator reposicionado, sem loop de render) e não recria esse risco.
 - **Core agnóstico de fato:** `etherbit-tiling-core` deixa de ser stub e passa a conter o Ether Flow
   (hoje, layout em colunas como placeholder), testável isoladamente. Reafirma o ADR 0002.
-- **Paridade GNOME/KDE:** o mesmo método `SyncWindows` e o módulo puro espelhado `bridge.ts` (como
-  `config.ts` já é espelhado) cobrem as duas camadas. No KDE o `id` da janela é um handle opaco válido
-  por chamada; no GNOME usa-se `get_stable_sequence()`.
+- **Paridade GNOME/KDE:** o mesmo método `SyncWindows`/`ResolveDropZone` e o módulo puro espelhado
+  `bridge.ts` (como `config.ts` já é espelhado) cobrem as duas camadas. O `id` enviado ao daemon
+  segue opaco por chamada; a **ordem estável** (que torna o BSP determinístico e o drop persistente)
+  usa uma chave estável de sessão: `get_stable_sequence()` no GNOME e `internalId` no KDE.
 - **Limitação registrada:** desenhar bordas/efeitos sobre janelas de terceiros exigiria o Etherbit ser
   o compositor (modelo COSMIC), fora do escopo de extensão/KWin Script.
 - **wgpu opcional:** mantém o daemon leve e o CI sem GPU (feature desligada); habilita-se localmente com

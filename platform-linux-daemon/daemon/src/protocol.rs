@@ -9,7 +9,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use etherbit_tiling_core::{
-    compute_layout, is_tileable, LayoutOptions, WindowInfo, WindowRect, WorkArea,
+    compute_layout, detect_drop_zone, is_tileable, DropPreview, DropZone, LayoutOptions,
+    WindowInfo, WindowRect, WorkArea,
 };
 
 /// Janela vinda da ponte. Espelha `windows_json` do contrato D-Bus.
@@ -54,6 +55,45 @@ pub struct RectDto {
     pub height: i32,
 }
 
+/// Zona de drop resolvida + retângulo de preview. Espelha `preview_json` do contrato D-Bus.
+/// A `zone` viaja como string snake_case (mantém o core sem serde e o contrato legível).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PreviewDto {
+    pub zone: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+/// Rótulo estável (snake_case) da zona para o contrato D-Bus.
+fn zone_label(zone: DropZone) -> &'static str {
+    match zone {
+        DropZone::Left => "left",
+        DropZone::Right => "right",
+        DropZone::Top => "top",
+        DropZone::Bottom => "bottom",
+        DropZone::TopLeft => "top_left",
+        DropZone::TopRight => "top_right",
+        DropZone::BottomLeft => "bottom_left",
+        DropZone::BottomRight => "bottom_right",
+        DropZone::Center => "center",
+        DropZone::None => "none",
+    }
+}
+
+impl From<DropPreview> for PreviewDto {
+    fn from(p: DropPreview) -> Self {
+        PreviewDto {
+            zone: zone_label(p.zone).to_string(),
+            x: p.rect.x,
+            y: p.rect.y,
+            width: p.rect.width,
+            height: p.rect.height,
+        }
+    }
+}
+
 impl From<WindowDto> for WindowInfo {
     fn from(w: WindowDto) -> Self {
         WindowInfo {
@@ -74,25 +114,13 @@ impl From<WindowDto> for WindowInfo {
 
 impl From<&MonitorDto> for WorkArea {
     fn from(m: &MonitorDto) -> Self {
-        WorkArea {
-            index: m.index,
-            x: m.x,
-            y: m.y,
-            width: m.width,
-            height: m.height,
-        }
+        WorkArea { index: m.index, x: m.x, y: m.y, width: m.width, height: m.height }
     }
 }
 
 impl From<&WindowRect> for RectDto {
     fn from(r: &WindowRect) -> Self {
-        RectDto {
-            id: r.id,
-            x: r.x,
-            y: r.y,
-            width: r.width,
-            height: r.height,
-        }
+        RectDto { id: r.id, x: r.x, y: r.y, width: r.width, height: r.height }
     }
 }
 
@@ -114,16 +142,38 @@ pub fn sync_windows(
     let areas: Vec<WorkArea> = monitors.iter().map(WorkArea::from).collect();
 
     // Filtro cirúrgico centralizado no core; a ponte é burra e pode enviar tudo.
-    let tileable: Vec<WindowInfo> = windows
-        .into_iter()
-        .map(WindowInfo::from)
-        .filter(|w| is_tileable(w, ignore_list))
-        .collect();
+    let tileable: Vec<WindowInfo> =
+        windows.into_iter().map(WindowInfo::from).filter(|w| is_tileable(w, ignore_list)).collect();
 
     let rects = compute_layout(&tileable, &areas, &opts);
     let dtos: Vec<RectDto> = rects.iter().map(RectDto::from).collect();
 
     serde_json::to_string(&dtos).context("falha ao serializar layout_json")
+}
+
+/// Resolve a zona de drop sob o ponto `(x, y)`. Reaproveita o parse de monitores do `sync_windows`,
+/// escolhe a área útil que CONTÉM o ponto e delega ao core (`detect_drop_zone`). Sem área contendo
+/// o ponto → zona `"none"` (retângulo zerado). O daemon permanece sem estado: a ponte envia os
+/// monitores a cada chamada, como em `SyncWindows`.
+pub fn resolve_drop_zone(
+    monitors_json: &str,
+    x: i32,
+    y: i32,
+    opts: LayoutOptions,
+) -> Result<String> {
+    let monitors: Vec<MonitorDto> =
+        serde_json::from_str(monitors_json).context("monitors_json inválido")?;
+
+    let preview = monitors
+        .iter()
+        .find(|m| x >= m.x && x < m.x + m.width && y >= m.y && y < m.y + m.height)
+        .map(|m| {
+            let area = WorkArea::from(m);
+            PreviewDto::from(detect_drop_zone(&area, x, y, &opts))
+        })
+        .unwrap_or(PreviewDto { zone: "none".to_string(), x: 0, y: 0, width: 0, height: 0 });
+
+    serde_json::to_string(&preview).context("falha ao serializar preview_json")
 }
 
 #[cfg(test)]
@@ -179,5 +229,47 @@ mod tests {
     fn sync_empty_windows_yields_empty_layout() {
         let out = sync_windows("[]", AREAS, &[], OPTS).expect("ok");
         assert_eq!(out, "[]");
+    }
+
+    #[test]
+    fn resolve_left_zone_in_single_monitor() {
+        let out = resolve_drop_zone(AREAS, 20, 400, OPTS).expect("ok");
+        let p: PreviewDto = serde_json::from_str(&out).unwrap();
+        assert_eq!(p, PreviewDto { zone: "left".into(), x: 12, y: 12, width: 484, height: 776 });
+    }
+
+    #[test]
+    fn resolve_center_zone_matches_single_window() {
+        let out = resolve_drop_zone(AREAS, 500, 400, OPTS).expect("ok");
+        let p: PreviewDto = serde_json::from_str(&out).unwrap();
+        assert_eq!(p.zone, "center");
+        // Idêntico ao single-window do layout (consistência preview ↔ destino real).
+        let layout = sync_windows(&format!("[{}]", win_json(1, "a")), AREAS, &[], OPTS).unwrap();
+        let rects: Vec<RectDto> = serde_json::from_str(&layout).unwrap();
+        assert_eq!(
+            (p.x, p.y, p.width, p.height),
+            (rects[0].x, rects[0].y, rects[0].width, rects[0].height)
+        );
+    }
+
+    #[test]
+    fn resolve_point_outside_any_monitor_is_none() {
+        let out = resolve_drop_zone(AREAS, 5000, 400, OPTS).expect("ok");
+        let p: PreviewDto = serde_json::from_str(&out).unwrap();
+        assert_eq!(p, PreviewDto { zone: "none".into(), x: 0, y: 0, width: 0, height: 0 });
+    }
+
+    #[test]
+    fn resolve_picks_correct_monitor() {
+        // Dois monitores lado a lado; ponto perto da borda esquerda do SEGUNDO → Left local dele.
+        let areas = r#"[{"index":0,"x":0,"y":0,"width":1000,"height":800},{"index":1,"x":1000,"y":0,"width":1000,"height":800}]"#;
+        let out = resolve_drop_zone(areas, 1020, 400, OPTS).expect("ok");
+        let p: PreviewDto = serde_json::from_str(&out).unwrap();
+        assert_eq!(p, PreviewDto { zone: "left".into(), x: 1012, y: 12, width: 484, height: 776 });
+    }
+
+    #[test]
+    fn resolve_rejects_invalid_json() {
+        assert!(resolve_drop_zone("nope", 20, 400, OPTS).is_err());
     }
 }

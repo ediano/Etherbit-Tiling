@@ -6,7 +6,10 @@
 
 pub mod layout;
 
-pub use layout::{compute_layout, is_tileable, LayoutOptions, WindowInfo, WindowRect, WorkArea};
+pub use layout::{
+    compute_layout, detect_drop_zone, is_tileable, DropPreview, DropZone, LayoutOptions,
+    PreviewRect, WindowInfo, WindowRect, WorkArea,
+};
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

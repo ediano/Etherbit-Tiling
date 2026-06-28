@@ -39,6 +39,12 @@ const IFACE_XML = `
       <arg type="s" direction="in" name="monitors_json"/>
       <arg type="s" direction="out" name="layout_json"/>
     </method>
+    <method name="ResolveDropZone">
+      <arg type="i" direction="in" name="x"/>
+      <arg type="i" direction="in" name="y"/>
+      <arg type="s" direction="in" name="monitors_json"/>
+      <arg type="s" direction="out" name="preview_json"/>
+    </method>
     <signal name="ConfigChanged">
       <arg type="s" name="config_json"/>
     </signal>
@@ -54,6 +60,8 @@ export interface TilingProxy {
   SetAutostartSync(enabled: boolean): void;
   /// Envia as janelas/monitores atuais e recebe o `layout_json` (retângulos-alvo) do daemon.
   SyncWindowsSync(windowsJson: string, monitorsJson: string): [string];
+  /// Resolve a zona de drop sob `(x, y)` e recebe o `preview_json`.
+  ResolveDropZoneSync(x: number, y: number, monitorsJson: string): [string];
   connectSignal(
     name: 'ConfigChanged',
     callback: (proxy: TilingProxy, sender: string, params: [string]) => void,
