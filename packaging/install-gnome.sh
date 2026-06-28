@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# install.sh — instala o Etherbit Tiling (daemon + extensão GNOME) no usuário atual.
+# install-gnome.sh — instala o Etherbit Tiling (daemon + extensão GNOME) no usuário atual.
 #
-# Faz parte do pacote etherbit-tiling-linux.tar.gz. Estrutura esperada ao lado
+# Faz parte do pacote etherbit-tiling-gnome.tar.gz. Estrutura esperada ao lado
 # deste script:
 #   bin/etherbit-tiling-daemon
 #   extension/{extension.js, metadata.json, [extension.js.map], [stylesheet.css], [schemas/]}
@@ -12,7 +12,7 @@ set -euo pipefail
 
 UUID="tiling@etherbit.org"
 REPO="${ETHERBIT_RELEASE_REPO:-ediano/etherbit-tiling-releases}"
-TARBALL="etherbit-tiling-linux.tar.gz"
+TARBALL="etherbit-tiling-gnome.tar.gz"
 ASSET_URL="https://github.com/$REPO/releases/latest/download/$TARBALL"
 
 # Diretório deste script. Via `curl ... | bash` o script vem do stdin e
@@ -25,7 +25,7 @@ else
 fi
 
 # Bootstrap: se o payload (daemon) não está ao lado do script — caso do
-# `curl | bash`, em que só o install.sh chega — baixa e extrai o tarball de
+# `curl | bash`, em que só o install-gnome.sh chega — baixa e extrai o tarball de
 # release num diretório temporário e segue a instalação a partir dele.
 if [ -z "$HERE" ] || [ ! -f "$HERE/bin/etherbit-tiling-daemon" ]; then
   echo ">> Payload local ausente; baixando release de $REPO"
@@ -41,7 +41,7 @@ if [ -z "$HERE" ] || [ ! -f "$HERE/bin/etherbit-tiling-daemon" ]; then
     exit 1
   fi
   tar -xzf "$TMP/$TARBALL" -C "$TMP"
-  HERE="$TMP/etherbit-tiling-linux"
+  HERE="$TMP/etherbit-tiling-gnome"
 fi
 
 BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"

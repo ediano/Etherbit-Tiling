@@ -78,8 +78,8 @@ jobs:
 
       # semantic-release (repo PRIVADO): calcula a próxima versão a partir dos
       # Conventional Commits (fix: -> patch, feat: -> minor), roda o build via
-      # prepareCmd (build-linux-release.sh + build-kde-release.sh) gerando
-      # `etherbit-tiling-linux.tar.gz` e `etherbit-tiling-kde.tar.gz`, e
+      # prepareCmd (build-gnome-release.sh + build-kde-release.sh) gerando
+      # `etherbit-tiling-gnome.tar.gz` e `etherbit-tiling-kde.tar.gz`, e
       # cria/empurra a TAG git neste repo —
       # preservando o estado de versão. O publishCmd exporta a versão calculada
       # como output (`steps.semrel.outputs.version`); se nenhum release for
@@ -98,8 +98,8 @@ jobs:
             semantic-release
 
       # Publicação PÚBLICA: cria a Release e a tag calculada no repositório
-      # externo `ediano/etherbit-tiling-releases`, anexando o tar.gz unificado e
-      # o install.sh individual. Usa o PAT RELEASE_REPO_TOKEN (escrita no repo de
+      # externo `ediano/etherbit-tiling-releases`, anexando os tar.gz unificados e
+      # os install-*.sh individuais. Usa o PAT RELEASE_REPO_TOKEN (escrita no repo de
       # destino) em vez do GITHUB_TOKEN padrão. Só roda quando o semantic-release
       # de fato produziu uma nova versão.
       - name: Publica Release no repo público de releases
@@ -120,12 +120,12 @@ jobs:
             ### GNOME (Wayland)
             **Instalação (um comando)**
             ```
-            curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/install.sh | bash
+            curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/install-gnome.sh | bash
             ```
-            **Manual:** baixe `etherbit-tiling-linux.tar.gz`, extraia e rode `./install.sh`.
+            **Manual:** baixe `etherbit-tiling-gnome.tar.gz`, extraia e rode `./install-gnome.sh`.
             **Desinstalação:**
             ```
-            curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/uninstall.sh | bash
+            curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/uninstall-gnome.sh | bash
             ```
 
             ### KDE Plasma 6 (Wayland)
@@ -139,10 +139,10 @@ jobs:
             curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/uninstall-kde.sh | bash
             ```
           files: |
-            etherbit-tiling-linux.tar.gz
+            etherbit-tiling-gnome.tar.gz
             etherbit-tiling-kde.tar.gz
-            packaging/install.sh
-            packaging/uninstall.sh
+            packaging/install-gnome.sh
+            packaging/uninstall-gnome.sh
             packaging/install-kde.sh
             packaging/uninstall-kde.sh
 

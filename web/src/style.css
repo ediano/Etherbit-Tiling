@@ -433,10 +433,16 @@ h4 {
 
 .cards {
   display: grid;
-  /* auto-fit: equilibra com 2 cards (macOS oculto) e volta a 3 quando reativado. */
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  /* Grid de 2 colunas; em telas estreitas colapsa para 1 (ver media query). */
+  grid-template-columns: repeat(2, 1fr);
   gap: 22px;
   margin-top: 48px;
+}
+
+@media (max-width: 640px) {
+  .cards {
+    grid-template-columns: 1fr;
+  }
 }
 
 .card {

@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# build-linux-release.sh — compila e empacota o release de produção do Linux/GNOME.
+# build-gnome-release.sh — compila e empacota o release de produção do Linux/GNOME.
 #
-# Gera `etherbit-tiling-linux.tar.gz` na raiz do repo contendo APENAS os
+# Gera `etherbit-tiling-gnome.tar.gz` na raiz do repo contendo APENAS os
 # artefatos de produção (binário do daemon + bundle da extensão + installer),
 # sem código-fonte (.rs/.ts) nem histórico. Chamado pelo semantic-release via
 # o prepareCmd em .releaserc.json:
 #
-#   bash packaging/build-linux-release.sh <versao>
+#   bash packaging/build-gnome-release.sh <versao>
 set -euo pipefail
 
-VERSION="${1:?uso: build-linux-release.sh <versao>}"
+VERSION="${1:?uso: build-gnome-release.sh <versao>}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STAGE_NAME="etherbit-tiling-linux"
+STAGE_NAME="etherbit-tiling-gnome"
 STAGE="$ROOT/dist-release/$STAGE_NAME"
 
 echo ">> Limpando staging"
@@ -41,8 +41,8 @@ if [ -d "$EXT/schemas" ]; then
 fi
 
 echo ">> Adicionando installer, uninstaller e VERSION"
-install -m 755 "$ROOT/packaging/install.sh"   "$STAGE/install.sh"
-install -m 755 "$ROOT/packaging/uninstall.sh" "$STAGE/uninstall.sh"
+install -m 755 "$ROOT/packaging/install-gnome.sh"   "$STAGE/install-gnome.sh"
+install -m 755 "$ROOT/packaging/uninstall-gnome.sh" "$STAGE/uninstall-gnome.sh"
 printf '%s\n' "$VERSION" > "$STAGE/VERSION"
 
 echo ">> Empacotando $STAGE_NAME.tar.gz"

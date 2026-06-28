@@ -2,7 +2,7 @@
 #  Release  (artefatos gerados por packaging/build-linux-release.sh)
 # ─────────────────────────────────────────────
 /dist-release/
-/etherbit-tiling-linux.tar.gz
+/etherbit-tiling-gnome.tar.gz
 /etherbit-tiling-kde.tar.gz
 
 # ─────────────────────────────────────────────
