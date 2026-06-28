@@ -10,7 +10,7 @@
 #   curl -sSL .../uninstall-gnome.sh | ETHERBIT_PURGE=1 bash
 set -euo pipefail
 
-UUID="tiling@etherbit.org"
+UUID="etherbit.tiling@ediano.dev"
 BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
 EXT_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/gnome-shell/extensions/$UUID"
 SYSTEMD_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"

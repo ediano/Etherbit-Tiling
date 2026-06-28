@@ -1,4 +1,4 @@
-// dbus.ts — ponte D-Bus com o daemon `org.etherbit.Tiling`.
+// dbus.ts — ponte D-Bus com o daemon `dev.ediano.etherbit.Tiling`.
 //
 // O contrato trafega a configuração como JSON string (ver ADR de nomenclatura D-Bus): o schema
 // evolui só no daemon (serde); aqui a extensão apenas faz JSON.parse/serializa de volta.
@@ -9,13 +9,13 @@ import Gio from 'gi://Gio';
 // Re-exportado aqui para que extension.ts/indicator.ts sigam importando de './dbus.js'.
 export { DEFAULT_CONFIG, parseConfig, type TilingConfig } from './config.js';
 
-export const BUS_NAME = 'org.etherbit.Tiling';
-export const OBJECT_PATH = '/org/etherbit/Tiling';
+export const BUS_NAME = 'dev.ediano.etherbit.Tiling';
+export const OBJECT_PATH = '/dev/ediano/etherbit/Tiling';
 
 // Introspecção: fonte de verdade compartilhada com o `#[interface]` do daemon.
 const IFACE_XML = `
 <node>
-  <interface name="org.etherbit.Tiling">
+  <interface name="dev.ediano.etherbit.Tiling">
     <method name="GetConfig">
       <arg type="s" direction="out" name="config_json"/>
     </method>
@@ -34,6 +34,11 @@ const IFACE_XML = `
     <method name="SetAutostart">
       <arg type="b" direction="in" name="enabled"/>
     </method>
+    <method name="SyncWindows">
+      <arg type="s" direction="in" name="windows_json"/>
+      <arg type="s" direction="in" name="monitors_json"/>
+      <arg type="s" direction="out" name="layout_json"/>
+    </method>
     <signal name="ConfigChanged">
       <arg type="s" name="config_json"/>
     </signal>
@@ -47,6 +52,8 @@ export interface TilingProxy {
   SetActiveBorderSync(enabled: boolean, color: string, width: number): void;
   SetIgnoreListSync(appIds: string[]): void;
   SetAutostartSync(enabled: boolean): void;
+  /// Envia as janelas/monitores atuais e recebe o `layout_json` (retângulos-alvo) do daemon.
+  SyncWindowsSync(windowsJson: string, monitorsJson: string): [string];
   connectSignal(
     name: 'ConfigChanged',
     callback: (proxy: TilingProxy, sender: string, params: [string]) => void,

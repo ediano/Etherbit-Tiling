@@ -3,6 +3,11 @@ name = "etherbit-tiling-daemon"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# UI própria do daemon via wgpu (painel de configurações rápidas), com fallback por software.
+# Desligada por padrão: mantém o daemon leve e o CI sem necessidade de GPU. Ver src/render.rs.
+wgpu-ui = ["dep:wgpu"]
+
 [dependencies]
 etherbit-tiling-core = { path = "../../core" }
 zbus = { version = "5", features = ["tokio"] }
@@ -12,3 +17,4 @@ serde_json = "1"
 toml = "0.8"
 directories = "5"
 anyhow = "1"
+wgpu = { version = "22", optional = true }

@@ -11,11 +11,14 @@ contrato e não por convenção implícita.
 
 ## Decisão
 - **Barramento:** sessão (`session bus`). O daemon roda na sessão do usuário; nada de system bus.
-- **Bus name / interface:** `org.etherbit.Tiling`
-- **Object path:** `/org/etherbit/Tiling`
-- **UUID da extensão:** `tiling@etherbit.org` — idêntico no `metadata.json`, no diretório de
-  instalação (`~/.local/share/gnome-shell/extensions/tiling@etherbit.org/`) e no
+- **Bus name / interface:** `dev.ediano.etherbit.Tiling`
+- **Object path:** `/dev/ediano/etherbit/Tiling`
+- **UUID da extensão:** `etherbit.tiling@ediano.dev` — idêntico no `metadata.json`, no diretório de
+  instalação (`~/.local/share/gnome-shell/extensions/etherbit.tiling@ediano.dev/`) e no
   `gnome-extensions enable`. O `.desktop` de autostart usa o mesmo nome.
+  > Migrado de `org.etherbit.*` / `tiling@etherbit.org` para o domínio próprio `ediano.dev` —
+  > ver ADR [0017](0017-dominio-proprio-ediano-dev.md). A decisão de *forma* (DNS reverso, nomes
+  > alinhados, contrato JSON) permanece; só mudaram os valores do domínio.
 - **Contrato da configuração via JSON string:** `GetConfig` retorna `s` (JSON) e o sinal
   `ConfigChanged(s)` carrega o mesmo JSON. O schema evolui só no daemon (serde); a extensão faz
   `JSON.parse`. Métodos de escrita usam tipos D-Bus simples (`SetGaps(uu)`,
@@ -28,4 +31,4 @@ contrato e não por convenção implícita.
   `#[interface]` do daemon e replicado no `makeProxyWrapper` da extensão. Mudou um lado, muda o outro.
 - JSON string reduz boilerplate de `GVariant` e permite evoluir o schema sem renegociar o XML; em
   troca, abre mão de introspecção tipada por campo.
-- Nomes alinhados (`org.etherbit.Tiling` ↔ `tiling@etherbit.org`) facilitam rastrear o serviço.
+- Nomes alinhados (`dev.ediano.etherbit.Tiling` ↔ `etherbit.tiling@ediano.dev`) facilitam rastrear o serviço.

@@ -66,10 +66,10 @@
                 Se preferir, execute os passos à mão — eles revertem exatamente o que a instalação fez:
               </p>
               <div class="code code--block" data-copy>
-                <code>gnome-extensions disable tiling@etherbit.org
+                <code>gnome-extensions disable etherbit.tiling@ediano.dev
 systemctl --user disable --now etherbit-tiling-daemon.service
 rm -f ~/.local/bin/etherbit-tiling-daemon
-rm -rf ~/.local/share/gnome-shell/extensions/tiling@etherbit.org
+rm -rf ~/.local/share/gnome-shell/extensions/etherbit.tiling@ediano.dev
 rm -f ~/.config/systemd/user/etherbit-tiling-daemon.service
 systemctl --user daemon-reload</code>
                 <button class="code__copy" type="button" data-copy-btn aria-label="Copiar comandos">Copiar</button>
@@ -107,7 +107,7 @@ systemctl --user daemon-reload</code>
             <p class="uninstall__note">
               <strong>Sua configuração é preservada por padrão.</strong> Os arquivos
               <code>~/.config/etherbit-tiling/</code> e (no GNOME) o
-              <code>~/.config/autostart/tiling@etherbit.org.desktop</code> não são removidos. Para
+              <code>~/.config/autostart/etherbit.tiling@ediano.dev.desktop</code> não são removidos. Para
               apagá-los também, rode o desinstalador com <code>ETHERBIT_PURGE=1</code> ou remova-os à
               mão. No <strong>Wayland</strong>: no GNOME, faça logout/login para descarregar a extensão;
               no KDE, o <code>qdbus … reconfigure</code> já descarrega o KWin Script.

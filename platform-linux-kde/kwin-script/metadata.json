@@ -4,7 +4,7 @@
     "Name": "Etherbit Tiling",
     "Description": "O tecido invisível que coloca suas janelas em órbita perfeita. Gerenciador automático de janelas (tiling) para KDE Plasma 6 sob Wayland.",
     "Icon": "view-grid-symbolic",
-    "Version": "1",
+    "Version": "2",
     "License": "MIT",
     "Website": "https://github.com/ediano/etherbit-tiling-releases",
     "Authors": [

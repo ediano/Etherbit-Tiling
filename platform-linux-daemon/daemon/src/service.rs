@@ -1,18 +1,20 @@
-// service.rs — interface D-Bus `org.etherbit.Tiling`.
+// service.rs — interface D-Bus `dev.ediano.etherbit.Tiling`.
 //
 // A extensão GNOME consome estes métodos para ler e alterar a configuração em tempo real.
 // Toda mutação persiste no disco e emite `ConfigChanged` para que múltiplos clientes fiquem
 // sincronizados. O contrato trafega a config como JSON string (ver ADR de nomenclatura D-Bus).
 
 use anyhow::Result;
+use etherbit_tiling_core::LayoutOptions;
 use zbus::object_server::SignalEmitter;
 use zbus::{fdo, interface};
 
 use crate::autostart;
 use crate::config::Config;
+use crate::protocol;
 
-pub const BUS_NAME: &str = "org.etherbit.Tiling";
-pub const OBJECT_PATH: &str = "/org/etherbit/Tiling";
+pub const BUS_NAME: &str = "dev.ediano.etherbit.Tiling";
+pub const OBJECT_PATH: &str = "/dev/ediano/etherbit/Tiling";
 
 /// Objeto servido no barramento de sessão.
 pub struct Tiling {
@@ -39,7 +41,7 @@ impl Tiling {
     }
 }
 
-#[interface(name = "org.etherbit.Tiling")]
+#[interface(name = "dev.ediano.etherbit.Tiling")]
 impl Tiling {
     /// Retorna a configuração atual serializada em JSON.
     async fn get_config(&self) -> String {
@@ -96,6 +98,25 @@ impl Tiling {
         self.config.autostart = enabled;
         self.persist()?;
         self.notify(&emitter).await
+    }
+
+    /// Decide o layout das janelas. A ponte (extensão/KWin) envia o conjunto atual de janelas e
+    /// as áreas úteis dos monitores como JSON; o daemon aplica o filtro cirúrgico (ignore_list),
+    /// chama o core (Ether Flow) e devolve os retângulos-alvo `[{id,x,y,width,height}]`.
+    ///
+    /// Request/response (sem estado de janelas no daemon): serve GNOME e KDE igualmente — o KWin
+    /// script não assina sinais, então usa o retorno deste método (pull).
+    async fn sync_windows(
+        &self,
+        windows_json: String,
+        monitors_json: String,
+    ) -> fdo::Result<String> {
+        let opts = LayoutOptions {
+            inner_gap: self.config.inner_gap,
+            outer_gap: self.config.outer_gap,
+        };
+        protocol::sync_windows(&windows_json, &monitors_json, &self.config.ignore_list, opts)
+            .map_err(|e| fdo::Error::InvalidArgs(format!("sync_windows: {e}")))
     }
 
     /// Sinal emitido sempre que a configuração muda. Carrega a config completa em JSON.

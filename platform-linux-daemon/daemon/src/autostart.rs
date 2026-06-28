@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use directories::BaseDirs;
 
 /// Nome do manifesto, alinhado ao UUID da extensão (ver ADR de nomenclatura D-Bus/UUID).
-const DESKTOP_FILE: &str = "tiling@etherbit.org.desktop";
+const DESKTOP_FILE: &str = "etherbit.tiling@ediano.dev.desktop";
 
 /// Caminho completo do `.desktop` em `~/.config/autostart`.
 fn desktop_path() -> Result<PathBuf> {
