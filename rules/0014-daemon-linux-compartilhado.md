@@ -9,7 +9,7 @@ adicionar a camada KDE (ADR [0013](0013-camada-kde-kwin-script.md)) surgiu a que
 **reaproveitado** num único workspace compartilhado?
 
 O daemon já é **agnóstico de ambiente de desktop**: apenas persiste a config em TOML
-(`~/.config/etherbit-tiling/config.toml`), expõe o serviço D-Bus `org.etherbit.Tiling` e gerencia o
+(`~/.config/tiling/config.toml`), expõe o serviço D-Bus `dev.ediano.etherbit.Tiling` e gerencia o
 autostart via `.desktop` + serviço `systemd --user`. Nada nele é específico do GNOME. Duplicá-lo
 significaria manter duas cópias quase idênticas (código, `Cargo.lock`, testes) em sincronia.
 

@@ -20,14 +20,14 @@ Etherbit-Tiling/
 │   └── daemon/               # Crate Rust (bin): etherbit-tiling-daemon — serviço D-Bus
 │       ├── Cargo.toml        #   zbus + tokio + serde/toml; depende de etherbit-tiling-core por path
 │       └── src/
-│           ├── main.rs       #     loop de background; sobe org.etherbit.Tiling
+│           ├── main.rs       #     loop de background; sobe dev.ediano.etherbit.Tiling
 │           ├── service.rs    #     interface D-Bus #[interface] (gaps, borda, ignore, autostart)
 │           ├── config.rs     #     Config (serde) persistida em ~/.config/etherbit-tiling/config.toml
 │           └── autostart.rs  #     manifesto .desktop em ~/.config/autostart
 ├── platform-linux-gnome/     # Camada GNOME (Wayland) — só a extension; usa o daemon
 │   └── extension/            # Extensão-ponte Vite + TypeScript (ESM): etherbit-tiling-extension
 │       ├── package.json      #   scripts: dev/build/typecheck/install:ext (pnpm)
-│       ├── metadata.json     #   uuid tiling@etherbit.org, shell-version 45–50
+│       ├── metadata.json     #   uuid etherbit.tiling@ediano.dev, shell-version 45–50
 │       ├── vite.config.ts    #   modo library; externaliza gi://, resource:///
 │       ├── tsconfig.json     #   ESM, tipos @girs/*
 │       ├── scripts/install.sh#   copia o bundle para a pasta local de extensões do GNOME

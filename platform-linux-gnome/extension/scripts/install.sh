@@ -10,7 +10,7 @@
 #   dbus-run-session -- gnome-shell --nested --wayland
 set -euo pipefail
 
-UUID="tiling@etherbit.org"
+UUID="etherbit.tiling@ediano.dev"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="${XDG_DATA_HOME:-$HOME/.local/share}/gnome-shell/extensions/$UUID"
 
@@ -36,6 +36,25 @@ if [ -d "$HERE/schemas" ]; then
   command -v glib-compile-schemas >/dev/null && glib-compile-schemas "$DEST/schemas"
 fi
 
-echo "Instalada em $DEST"
-echo "Wayland: faça logout/login para recarregar o Shell."
-echo "Depois, habilite o motor: gnome-extensions enable $UUID"
+# Habilitação blindada: injeta o UUID no perfil para o Shell carregar a extensão
+# automaticamente no próximo login Wayland (idempotente). Ver ADR rules/0016.
+command -v gsettings >/dev/null && gsettings set org.gnome.shell disable-user-extensions false 2>/dev/null || true
+if command -v gnome-extensions >/dev/null && gnome-extensions enable "$UUID" 2>/dev/null; then
+  :
+elif command -v gsettings >/dev/null; then
+  current="$(gsettings get org.gnome.shell enabled-extensions 2>/dev/null || echo '@as []')"
+  case "$current" in
+    *"'$UUID'"*) : ;;
+    *)
+      list="${current#@as }"
+      if [ "$list" = "[]" ] || [ -z "$list" ]; then
+        gsettings set org.gnome.shell enabled-extensions "['$UUID']" 2>/dev/null || true
+      else
+        gsettings set org.gnome.shell enabled-extensions "${list%]}, '$UUID']" 2>/dev/null || true
+      fi
+      ;;
+  esac
+fi
+
+echo "Instalada e habilitada em $DEST"
+echo "Wayland: faça logout/login — a extensão sobe automaticamente, sem 'gnome-extensions enable'."

@@ -38,23 +38,23 @@ cargo test          # testes do core
 ```bash
 cd platform-linux-daemon
 cargo build                          # compila etherbit-tiling-daemon (puxa etherbit-tiling-core por path)
-cargo run -p etherbit-tiling-daemon  # sobe o serviço D-Bus org.etherbit.Tiling no barramento de sessão
+cargo run -p etherbit-tiling-daemon  # sobe o serviço D-Bus dev.ediano.etherbit.Tiling no barramento de sessão
 ```
 
-O daemon registra a interface D-Bus `org.etherbit.Tiling` (ver
+O daemon registra a interface D-Bus `dev.ediano.etherbit.Tiling` (ver
 [rules/0009](../rules/0009-nomenclatura-dbus-uuid.md)) e fica em background até `Ctrl-C`. Ele exige um
 **barramento de sessão** ativo: num host GNOME real isso já existe; no Dev Container use
 `dbus-run-session -- cargo run -p etherbit-tiling-daemon` (instale `dbus` se necessário). Inspecione e
 exercite com `busctl --user`:
 
 ```bash
-busctl --user introspect org.etherbit.Tiling /org/etherbit/Tiling
-busctl --user call org.etherbit.Tiling /org/etherbit/Tiling org.etherbit.Tiling SetGaps uu 8 12
-busctl --user call org.etherbit.Tiling /org/etherbit/Tiling org.etherbit.Tiling GetConfig
+busctl --user introspect dev.ediano.etherbit.Tiling /dev/ediano/etherbit/Tiling
+busctl --user call dev.ediano.etherbit.Tiling /dev/ediano/etherbit/Tiling dev.ediano.etherbit.Tiling SetGaps uu 8 12
+busctl --user call dev.ediano.etherbit.Tiling /dev/ediano/etherbit/Tiling dev.ediano.etherbit.Tiling GetConfig
 ```
 
 A config persiste em `~/.config/etherbit-tiling/config.toml`; o autostart gerencia
-`~/.config/autostart/tiling@etherbit.org.desktop`. O daemon consome `etherbit-tiling-core` por path
+`~/.config/autostart/etherbit.tiling@ediano.dev.desktop`. O daemon consome `etherbit-tiling-core` por path
 (`../../core`), então seu build valida a integração com o core mesmo estando em outro workspace.
 
 ## Extension GNOME (TypeScript + Vite)
@@ -66,11 +66,11 @@ cd platform-linux-gnome/extension
 pnpm install
 pnpm typecheck      # checagem de tipos (tsc --noEmit)
 pnpm build          # bundle ESM de produção em dist/extension.js
-pnpm run install:ext  # build + copia para ~/.local/share/gnome-shell/extensions/tiling@etherbit.org/
+pnpm run install:ext  # build + copia para ~/.local/share/gnome-shell/extensions/etherbit.tiling@ediano.dev/
 ```
 
 O build usa Vite em modo *library* mantendo `gi://`/`resource:///` literais (ver
-[rules/0010](../rules/0010-tooling-extensao-e-zbus.md)). O UUID é `tiling@etherbit.org`.
+[rules/0010](../rules/0010-tooling-extensao-e-zbus.md)). O UUID é `etherbit.tiling@ediano.dev`.
 
 > **Shell fish:** encadeie comandos com `; and` em vez de `&&`. Ex.: `corepack enable; and pnpm --version`.
 
@@ -78,7 +78,7 @@ O build usa Vite em modo *library* mantendo `gi://`/`resource:///` literais (ver
 O GNOME Shell **não** recarrega extensões com `Alt+F2` `r` no Wayland (isso é só X11). Para aplicar:
 
 - **Sessão real:** faça **logout/login** após `pnpm run install:ext`, depois
-  `gnome-extensions enable tiling@etherbit.org`.
+  `gnome-extensions enable etherbit.tiling@ediano.dev`.
 - **Loop de dev:** rode um Shell **aninhado** isolado, sem derrubar sua sessão:
   ```bash
   dbus-run-session -- gnome-shell --nested --wayland
@@ -144,7 +144,7 @@ AppKit e da Accessibility API da Apple.
 1. **Container builda** após "Reopen in Container" (libdbus/pkg-config instalados).
 2. `cargo build` na raiz compila `etherbit-tiling-core` sem erros.
 3. Em `platform-linux-daemon/`, `cargo build` compila `etherbit-tiling-daemon`; com um barramento de
-   sessão (`dbus-run-session`), `cargo run -p etherbit-tiling-daemon` registra `org.etherbit.Tiling`.
+   sessão (`dbus-run-session`), `cargo run -p etherbit-tiling-daemon` registra `dev.ediano.etherbit.Tiling`.
 4. Na `extension/`, `pnpm install`, `pnpm typecheck` e `pnpm build` concluem; `dist/extension.js`
    preserva os imports `gi://`/`resource:///`.
 5. Em `platform-linux-kde/kwin-script/`, `pnpm install`, `pnpm typecheck`, `pnpm test` e `pnpm build`

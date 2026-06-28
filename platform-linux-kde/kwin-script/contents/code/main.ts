@@ -1,18 +1,27 @@
 // main.ts — ponte KWin (Wayland) ↔ daemon. Análogo KDE da extension.ts do GNOME.
 //
-// Um KWin Script roda no contexto do compositor: o corpo executa ao ser carregado e o motor é
-// destruído ao desabilitar (não há enable/disable explícito). Responsabilidades:
-//  - ler a config nativa do script (kwinrc) e propagá-la ao daemon (mantém o TOML/autostart);
-//  - escutar windowAdded/windowRemoved e reaplicar o layout, após o FILTRO CIRÚRGICO;
-//  - aplicar geometria via `window.frameGeometry`.
-// O cálculo definitivo (Ether Flow) será plugado no ponto marcado — hoje usamos um placeholder.
+// PONTE BURRA (ver ADR rules/0016): o script NÃO desenha nada e NÃO decide layout. Responsabilidades:
+//  - ler a config nativa do script (kwinrc) e propagá-la ao daemon (mantém TOML/autostart);
+//  - escutar windowAdded/windowRemoved/windowActivated e, a cada evento, coletar os metadados
+//    brutos das janelas + áreas úteis e pedir o layout ao daemon (`SyncWindows`);
+//  - APLICAR os retângulos devolvidos via `window.frameGeometry` (geométrico e instantâneo).
+//
+// Modelo PULL: o KWin script só CHAMA métodos D-Bus (não assina sinais), então usa o RETORNO de
+// `SyncWindows` — o mesmo método request/response que a extensão GNOME usa. Toda a matemática
+// (Ether Flow) e a resiliência gráfica vivem no Rust (core/daemon).
 
 import { DEFAULT_CONFIG, type TilingConfig } from './config.js';
-import { shouldTile, tileColumns, type WindowLike, type Rect } from './tiling.js';
+import {
+  serializeWindows,
+  serializeMonitors,
+  parseLayout,
+  type WindowSnapshot,
+  type MonitorSnapshot,
+} from './bridge.js';
 
-const BUS_NAME = 'org.etherbit.Tiling';
-const OBJECT_PATH = '/org/etherbit/Tiling';
-const IFACE = 'org.etherbit.Tiling';
+const BUS_NAME = 'dev.ediano.etherbit.Tiling';
+const OBJECT_PATH = '/dev/ediano/etherbit/Tiling';
+const IFACE = 'dev.ediano.etherbit.Tiling';
 
 /// Lê a config do kwinrc (entradas de contents/config/main.xml), com fallback nos padrões.
 function loadConfig(): TilingConfig {
@@ -28,69 +37,84 @@ function loadConfig(): TilingConfig {
 }
 
 /// Empurra a config lida do kwinrc para o daemon: ele persiste no TOML e gerencia o autostart.
-/// (callDBus só CHAMA métodos; não dá para assinar ConfigChanged aqui — kwinrc é a entrada.)
+/// (Os campos de borda são inertes — recurso removido; ver ADR rules/0016 — e não são enviados.)
 function pushConfigToDaemon(cfg: TilingConfig): void {
   callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetGaps', cfg.inner_gap, cfg.outer_gap);
+  callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetAutostart', cfg.autostart);
+}
+
+const config = loadConfig();
+pushConfigToDaemon(config);
+
+/// Coleta janelas + monitores, pede o layout ao daemon e aplica os retângulos (pull).
+function retile(): void {
+  const windows = workspace.windows;
+
+  // Indexação de saídas (monitores) consistente entre windows_json e monitors_json nesta chamada.
+  const outputs: KWinOutput[] = [];
+  const monitorIndex = (output: KWinOutput): number => {
+    let index = outputs.indexOf(output);
+    if (index === -1) {
+      index = outputs.length;
+      outputs.push(output);
+    }
+    return index;
+  };
+
+  // `id` é um handle OPACO válido só nesta chamada — o daemon apenas o ecoa de volta.
+  const byId = new Map<number, KWinWindow>();
+  const snapshots: WindowSnapshot[] = windows.map((win, i): WindowSnapshot => {
+    const id = i + 1;
+    byId.set(id, win);
+    const g = win.frameGeometry;
+    return {
+      id,
+      app_id: win.resourceClass || win.resourceName || '',
+      x: g.x,
+      y: g.y,
+      width: g.width,
+      height: g.height,
+      normal: win.normalWindow,
+      resizable: win.resizeable,
+      maximizable: win.maximizable,
+      monitor: monitorIndex(win.output),
+      workspace: 0,
+    };
+  });
+
+  const monitors: MonitorSnapshot[] = outputs.map((output, index): MonitorSnapshot => {
+    const area = workspace.clientArea(KWin.MaximizeArea, output, workspace.currentDesktop);
+    return { index, x: area.x, y: area.y, width: area.width, height: area.height };
+  });
+
   callDBus(
     BUS_NAME,
     OBJECT_PATH,
     IFACE,
-    'SetActiveBorder',
-    cfg.active_border,
-    cfg.border_color,
-    cfg.border_width,
-  );
-  callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetAutostart', cfg.autostart);
-}
-
-let config = loadConfig();
-pushConfigToDaemon(config);
-
-/// Reaplica o layout a todas as janelas tileáveis, agrupando por monitor.
-function retile(): void {
-  const tiled = workspace.windows.filter((w) =>
-    shouldTile(w as unknown as WindowLike, config.ignore_list),
-  );
-  if (tiled.length === 0) {
-    return;
-  }
-
-  // Agrupa por output (monitor) preservando a ordem de descoberta.
-  const outputs: KWinWindow['output'][] = [];
-  for (const w of tiled) {
-    if (!outputs.includes(w.output)) {
-      outputs.push(w.output);
-    }
-  }
-
-  for (const output of outputs) {
-    const group = tiled.filter((w) => w.output === output);
-    const area = workspace.clientArea(KWin.MaximizeArea, output, workspace.currentDesktop);
-
-    // TODO(Ether Flow): substituir `tileColumns` por uma decisão do core via daemon
-    // (enviar janelas/monitores e receber os retângulos-alvo). Placeholder por ora.
-    const rects: Rect[] = tileColumns(area, group.length, config.inner_gap, config.outer_gap);
-
-    group.forEach((win, i) => {
-      const rect = rects[i];
-      if (rect) {
-        win.frameGeometry = rect;
+    'SyncWindows',
+    serializeWindows(snapshots),
+    serializeMonitors(monitors),
+    (layoutJson: string) => {
+      for (const command of parseLayout(layoutJson)) {
+        const win = byId.get(command.id);
+        if (win) {
+          win.frameGeometry = {
+            x: command.x,
+            y: command.y,
+            width: command.width,
+            height: command.height,
+          };
+        }
       }
-    });
-  }
+    },
+  );
 }
 
-workspace.windowAdded.connect((win) => {
-  if (shouldTile(win as unknown as WindowLike, config.ignore_list)) {
-    retile();
-  }
-});
-
-workspace.windowRemoved.connect(() => {
-  retile();
-});
+workspace.windowAdded.connect(() => retile());
+workspace.windowRemoved.connect(() => retile());
+workspace.windowActivated.connect(() => retile());
 
 // Layout inicial para as janelas já abertas no momento do carregamento.
 retile();
 
-print('Etherbit Tiling (KWin): script carregado, servindo via', BUS_NAME);
+print('Etherbit Tiling (KWin): ponte carregada, servindo via', BUS_NAME);

@@ -10,7 +10,7 @@
 # (sem sudo). Wayland: o GNOME Shell só recarrega extensões após logout/login.
 set -euo pipefail
 
-UUID="tiling@etherbit.org"
+UUID="etherbit.tiling@ediano.dev"
 REPO="${ETHERBIT_RELEASE_REPO:-ediano/etherbit-tiling-releases}"
 TARBALL="etherbit-tiling-gnome.tar.gz"
 ASSET_URL="https://github.com/$REPO/releases/latest/download/$TARBALL"
@@ -104,12 +104,41 @@ else
   echo "aviso: systemctl indisponível — serviço instalado, mas não habilitado."
 fi
 
+# --- Habilitação blindada da extensão ------------------------------------------
+# Injeta o UUID no perfil do GNOME (gsettings) para que o Shell carregue a extensão
+# AUTOMATICAMENTE no próximo login Wayland — sem passo manual. Idempotente.
+enable_extension() {
+  # 1) Não bloquear extensões de usuário (o GNOME pode tê-las desabilitado em massa).
+  if command -v gsettings >/dev/null; then
+    gsettings set org.gnome.shell disable-user-extensions false 2>/dev/null || true
+  fi
+  # 2) Caminho preferido: gnome-extensions ajusta o gsettings correto e valida o UUID.
+  if command -v gnome-extensions >/dev/null && gnome-extensions enable "$UUID" 2>/dev/null; then
+    return 0
+  fi
+  # 3) Fallback: injeta o UUID em `enabled-extensions` de forma idempotente.
+  if command -v gsettings >/dev/null; then
+    local current list
+    current="$(gsettings get org.gnome.shell enabled-extensions 2>/dev/null || echo '@as []')"
+    case "$current" in
+      *"'$UUID'"*) return 0 ;; # já presente
+    esac
+    list="${current#@as }"
+    if [ "$list" = "[]" ] || [ -z "$list" ]; then
+      gsettings set org.gnome.shell enabled-extensions "['$UUID']" 2>/dev/null || true
+    else
+      gsettings set org.gnome.shell enabled-extensions "${list%]}, '$UUID']" 2>/dev/null || true
+    fi
+  fi
+}
+echo ">> Habilitando a extensão no perfil do usuário ($UUID)"
+enable_extension || echo "aviso: não foi possível habilitar agora; habilite com 'gnome-extensions enable $UUID'."
+
 # --- Fim -----------------------------------------------------------------------
 echo
 echo "Instalação concluída."
 echo "  • Daemon:    $BIN_DIR/etherbit-tiling-daemon"
-echo "  • Extensão:  $EXT_DIR"
+echo "  • Extensão:  $EXT_DIR (habilitada no perfil)"
 echo "  • Serviço:   $SYSTEMD_DIR/$SERVICE"
 echo
-echo "Wayland: faça logout/login para o GNOME Shell carregar a extensão."
-echo "Depois habilite o motor: gnome-extensions enable $UUID"
+echo "Wayland: faça logout/login — a extensão e o daemon sobem automaticamente, sem passo manual."

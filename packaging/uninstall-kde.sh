@@ -12,7 +12,7 @@ BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
 SYSTEMD_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 SERVICE="etherbit-tiling-daemon.service"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/etherbit-tiling"
-AUTOSTART="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/tiling@etherbit.org.desktop"
+AUTOSTART="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/etherbit.tiling@ediano.dev.desktop"
 
 # --- KWin Script (desabilitar + remover) ---------------------------------------
 if command -v kwriteconfig6 >/dev/null; then

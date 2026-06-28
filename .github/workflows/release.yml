@@ -121,6 +121,10 @@ jobs:
             > Baixe os artefatos **desta** release, nos **Assets** abaixo. Cada release contém a
             > sua própria versão — não dependa de _latest_.
 
+            > **Atualizando de uma versão anterior?** Em saltos _major_, o identificador da
+            > extensão/serviço pode mudar — rode o `uninstall-*.sh` da versão antiga (Assets da
+            > release que você tem) **antes** de instalar a nova.
+
             ### GNOME (Wayland)
             1. Baixe `etherbit-tiling-gnome.tar.gz` nos Assets desta release.
             2. Extraia: `tar -xzf etherbit-tiling-gnome.tar.gz`

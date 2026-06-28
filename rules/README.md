@@ -25,6 +25,8 @@ arqueologia de commits.
 | [0013](0013-camada-kde-kwin-script.md) | Camada KDE via KWin Script (Wayland-only) | ✅ Aceita |
 | [0014](0014-daemon-linux-compartilhado.md) | Daemon Linux compartilhado entre GNOME e KDE | ✅ Aceita |
 | [0015](0015-notas-release-sem-url.md) | Notas de release sem URLs (download manual de assets versionados) | ✅ Aceita |
+| [0016](0016-extensao-ponte-burra-render-no-daemon.md) | Extensão "ponte burra", layout no core e renderização no daemon | ✅ Aceita |
+| [0017](0017-dominio-proprio-ediano-dev.md) | Migração para domínio próprio (`ediano.dev`) | ✅ Aceita |
 
 ## Como adicionar uma nova decisão
 1. Copie o formato de um ADR existente.

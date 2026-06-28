@@ -2,7 +2,11 @@
 //
 // Segue a regra do macOS: o indicador só existe enquanto o motor está ativo. No Linux o motor
 // liga/desliga junto com a extensão (ver ADR de nomenclatura/decisões), então o indicador é
-// criado em enable() e destruído em disable(). Dá acesso rápido a gaps, borda ativa e autostart.
+// criado em enable() e destruído em disable(). Dá acesso rápido a gaps e autostart.
+//
+// Controle leve por ora; a UI de configurações migrará para a janela própria do daemon (wgpu)
+// no futuro (ver ADR rules/0016). NÃO há controle de "borda ativa" — recurso removido (a borda
+// não é desenhável por um cliente Wayland; só pelo compositor).
 
 import GObject from 'gi://GObject';
 import St from 'gi://St';
@@ -18,7 +22,6 @@ const MAX_GAP = 50;
 /// Callbacks disparados pelas interações do usuário no menu.
 export interface IndicatorHandlers {
   onGaps: (inner: number, outer: number) => void;
-  onActiveBorder: (enabled: boolean) => void;
   onAutostart: (enabled: boolean) => void;
 }
 
@@ -26,7 +29,6 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
   private _handlers: IndicatorHandlers;
   private _innerSlider!: Slider;
   private _outerSlider!: Slider;
-  private _borderSwitch!: PopupMenu.PopupSwitchMenuItem;
   private _autostartSwitch!: PopupMenu.PopupSwitchMenuItem;
   // Evita reentrância: ao refletir a config do daemon não queremos re-disparar handlers.
   private _syncing = false;
@@ -52,12 +54,6 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
 
     this._menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-    this._borderSwitch = new PopupMenu.PopupSwitchMenuItem('Borda ativa', false);
-    this._borderSwitch.connect('toggled', (_item, state) => {
-      if (!this._syncing) this._handlers.onActiveBorder(state);
-    });
-    this._menu.addMenuItem(this._borderSwitch);
-
     this._autostartSwitch = new PopupMenu.PopupSwitchMenuItem('Iniciar com o sistema', false);
     this._autostartSwitch.connect('toggled', (_item, state) => {
       if (!this._syncing) this._handlers.onAutostart(state);
@@ -70,7 +66,6 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
     this._syncing = true;
     this._innerSlider.value = Math.min(config.inner_gap / MAX_GAP, 1);
     this._outerSlider.value = Math.min(config.outer_gap / MAX_GAP, 1);
-    this._borderSwitch.setToggleState(config.active_border);
     this._autostartSwitch.setToggleState(config.autostart);
     this._syncing = false;
   }

@@ -61,7 +61,7 @@ O desenvolvimento do **core (Rust)** e da **extension (TypeScript/Vite)** roda d
 # 2. Build do core (workspace raiz, agnóstico):
 cargo build
 # 3. Build/execução do daemon Linux (workspace próprio, compartilhado por GNOME/KDE):
-cd platform-linux-daemon && cargo build                         # ou: cargo run -p etherbit-tiling-daemon (sobe o D-Bus org.etherbit.Tiling)
+cd platform-linux-daemon && cargo build                         # ou: cargo run -p etherbit-tiling-daemon (sobe o D-Bus dev.ediano.etherbit.Tiling)
 # 4. Build/instalação da extensão GNOME (pnpm via corepack):
 cd platform-linux-gnome/extension && pnpm install && pnpm run install:ext
 # 5. Build/instalação do KWin Script KDE (Plasma 6/Wayland; reusa o daemon):

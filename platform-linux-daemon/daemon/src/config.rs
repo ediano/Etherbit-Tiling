@@ -47,7 +47,7 @@ impl Default for Config {
 impl Config {
     /// Caminho do arquivo de configuração (`~/.config/etherbit-tiling/config.toml`).
     pub fn path() -> Result<PathBuf> {
-        let dirs = ProjectDirs::from("org", "etherbit", "tiling")
+        let dirs = ProjectDirs::from("dev", "ediano", "tiling")
             .context("não foi possível resolver os diretórios do projeto (XDG)")?;
         Ok(dirs.config_dir().join("config.toml"))
     }
