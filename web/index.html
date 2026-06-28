@@ -7,7 +7,7 @@
     <title>Etherbit Tiling — O tecido invisível que coloca suas janelas em órbita perfeita</title>
     <meta
       name="description"
-      content="Gerenciador automático de janelas (tiling) com algoritmo agnóstico em Rust. Suporte nativo a macOS (Swift) e Linux/GNOME 45+ (Wayland). Zero espaço desperdiçado, organização automática."
+      content="Gerenciador automático de janelas (tiling) com algoritmo agnóstico em Rust. Suporte nativo a macOS (Swift) e Linux — GNOME 45+ e KDE Plasma 6 (Wayland). Zero espaço desperdiçado, organização automática."
     />
     <meta name="theme-color" content="#0e1116" />
     <meta name="robots" content="index, follow" />
@@ -34,7 +34,7 @@
     <meta name="twitter:title" content="Etherbit Tiling — janelas em órbita perfeita" />
     <meta
       name="twitter:description"
-      content="Tiling automático, agnóstico de SO, nativo e resiliente. macOS (Swift) + Linux/GNOME (Wayland)."
+      content="Tiling automático, agnóstico de SO, nativo e resiliente. macOS (Swift) + Linux GNOME/KDE (Wayland)."
     />
     <meta name="twitter:image" content="https://etherbit-tiling.vercel.app/og-image.png" />
 
@@ -48,7 +48,7 @@
         "name": "Etherbit Tiling",
         "applicationCategory": "UtilitiesApplication",
         "operatingSystem": "Linux",
-        "description": "Gerenciador automático de janelas (tiling) com algoritmo agnóstico em Rust (Ether Flow). Daemon Rust + extensão no Linux/GNOME 45+ (Wayland).",
+        "description": "Gerenciador automático de janelas (tiling) com algoritmo agnóstico em Rust (Ether Flow). Daemon Rust + extensão GNOME 45+ ou KWin Script no KDE Plasma 6 (Wayland).",
         "url": "https://etherbit-tiling.vercel.app/",
         "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
       }
@@ -81,7 +81,7 @@
       <!-- ───────────────────────── Hero ───────────────────────── -->
       <section class="hero">
         <div class="container hero__inner">
-          <p class="eyebrow">Linux/GNOME · Wayland · agnóstico de sistema</p>
+          <p class="eyebrow">Linux GNOME &amp; KDE · Wayland · agnóstico de sistema</p>
           <h1 class="hero__title">Etherbit Tiling</h1>
           <p class="hero__subtitle">
             O tecido invisível que coloca suas janelas em órbita perfeita.
@@ -199,6 +199,28 @@
               </a>
               <p class="card__note">
                 GNOME 45–48 · Wayland · <a class="card__link" href="/desinstalar.html">Como desinstalar</a>
+              </p>
+            </article>
+
+            <!-- Linux · KDE -->
+            <article class="card">
+              <div class="card__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="32" height="32"><path d="M12 2c-2 0-3 1.7-3 3.6 0 1.2.1 2.2-.6 3.4-.8 1.2-2.4 2.7-2.4 5.4 0 .9.3 1.6.3 2.3-.3.5-1.2 1-1.2 1.7 0 .9 1 1 2 1.3 1 .3 1.7.9 2.6.9.5 0 .9-.3 1.2-.7.4.1.9.1 1.3.1s.9 0 1.3-.1c.3.4.7.7 1.2.7.9 0 1.6-.6 2.6-.9 1-.3 2-.4 2-1.3 0-.7-.9-1.2-1.2-1.7 0-.7.3-1.4.3-2.3 0-2.7-1.6-4.2-2.4-5.4-.7-1.2-.6-2.2-.6-3.4C15 3.7 14 2 12 2zm-1.4 4.2c.4 0 .7.4.7.9s-.3.9-.7.9-.7-.4-.7-.9.3-.9.7-.9zm2.8 0c.4 0 .7.4.7.9s-.3.9-.7.9-.7-.4-.7-.9.3-.9.7-.9z"/></svg>
+              </div>
+              <h3 class="card__title">Linux · KDE Plasma 6</h3>
+              <p class="card__desc">
+                Pacote unificado <strong>.tar.gz</strong> (Daemon Rust + KWin Script) para
+                <strong>Wayland</strong>. Instale em um comando:
+              </p>
+              <div class="code" data-copy>
+                <code id="install-cmd-kde">curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/install-kde.sh | bash</code>
+                <button class="code__copy" type="button" data-copy-btn aria-label="Copiar comando">Copiar</button>
+              </div>
+              <a class="btn btn--ghost card__cta" href="https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/etherbit-tiling-kde.tar.gz" target="_blank" rel="noopener noreferrer">
+                Baixar .tar.gz
+              </a>
+              <p class="card__note">
+                Plasma 6 · Wayland · <a class="card__link" href="/desinstalar.html">Como desinstalar</a>
               </p>
             </article>
 

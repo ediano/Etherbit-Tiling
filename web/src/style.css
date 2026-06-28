@@ -587,11 +587,22 @@ h4 {
   margin: 44px auto 0;
 }
 
+/* Título do ambiente (GNOME / KDE) que agrupa os passos. */
+.uninstall__body > h2 {
+  font-size: 1.5rem;
+  margin: 40px 0 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.uninstall__body > h2:first-child {
+  margin-top: 0;
+}
+
 .uninstall__step {
   margin-bottom: 32px;
 
-  & h2 {
-    font-size: 1.3rem;
+  & h3 {
+    font-size: 1.15rem;
     margin-bottom: 6px;
   }
 
