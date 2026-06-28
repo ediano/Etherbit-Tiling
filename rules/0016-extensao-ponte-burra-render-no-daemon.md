@@ -71,6 +71,16 @@ esta ADR em vez de revogá-la (status permanece **✅ Aceita**).
   reordena e dispara o relayout. **Resize manual proporcional persistente exigiria estado e fica como
   trabalho futuro (novo ADR).**
 
+## Emenda (2026): Abas, atalhos globais e drag-to-group → ver [0018](0018-abas-atalhos-globais-drag-to-group.md)
+
+A barra de abas é a **segunda exceção** de "desenho na ponte" (após o preview de drop): GNOME usa um
+`St.Widget` (`St.BoxLayout`); o KDE, por limitação do KWin *Script* (sem overlay QML confiável), usa
+apresentação nativa (aba ativa visível, inativas minimizadas, troca dirigida por ativação). A
+matemática (slots/stacks, `detect_drop_target`) segue 100% no core, e o estado novo (stacks, aba
+ativa, grupos com tiling desligado) vive na **ponte** — o daemon **permanece sem estado**. Detalhes,
+contrato D-Bus evoluído e atalhos em [0018](0018-abas-atalhos-globais-drag-to-group.md). Status deste
+ADR permanece **✅ Aceita** (o 0018 o estende, não o revoga).
+
 ## Consequências
 - **Resiliência estrutural:** como a extensão não renderiza layout e aplica geometria instantânea, o
   congelamento em LLVMpipe deixa de ocorrer — sem precisar detectar render por software no compositor.

@@ -7,8 +7,9 @@
 pub mod layout;
 
 pub use layout::{
-    compute_layout, detect_drop_zone, is_tileable, DropPreview, DropZone, LayoutOptions,
-    PreviewRect, WindowInfo, WindowRect, WorkArea,
+    compute_layout, compute_layout_with, detect_drop_target, detect_drop_zone, is_tileable,
+    DropPreview, DropZone, LayoutOptions, LayoutResult, PreviewRect, StackDescriptor, StackGroup,
+    TabBarRect, WindowInfo, WindowRect, WorkArea,
 };
 
 pub fn version() -> &'static str {

@@ -37,12 +37,14 @@ const IFACE_XML = `
     <method name="SyncWindows">
       <arg type="s" direction="in" name="windows_json"/>
       <arg type="s" direction="in" name="monitors_json"/>
+      <arg type="s" direction="in" name="state_json"/>
       <arg type="s" direction="out" name="layout_json"/>
     </method>
     <method name="ResolveDropZone">
       <arg type="i" direction="in" name="x"/>
       <arg type="i" direction="in" name="y"/>
       <arg type="s" direction="in" name="monitors_json"/>
+      <arg type="s" direction="in" name="target_json"/>
       <arg type="s" direction="out" name="preview_json"/>
     </method>
     <signal name="ConfigChanged">
@@ -58,10 +60,17 @@ export interface TilingProxy {
   SetActiveBorderSync(enabled: boolean, color: string, width: number): void;
   SetIgnoreListSync(appIds: string[]): void;
   SetAutostartSync(enabled: boolean): void;
-  /// Envia as janelas/monitores atuais e recebe o `layout_json` (retângulos-alvo) do daemon.
-  SyncWindowsSync(windowsJson: string, monitorsJson: string): [string];
-  /// Resolve a zona de drop sob `(x, y)` e recebe o `preview_json`.
-  ResolveDropZoneSync(x: number, y: number, monitorsJson: string): [string];
+  /// Envia janelas/monitores + estado (stacks/grupos desligados) e recebe o `layout_json`
+  /// (`{ rects, tab_bars }`) do daemon.
+  SyncWindowsSync(windowsJson: string, monitorsJson: string, stateJson: string): [string];
+  /// Resolve o destino de drop sob `(x, y)`. `targetJson` é o retângulo da janela sob o cursor
+  /// (ou `""`), usado para detectar empilhamento. Recebe o `preview_json`.
+  ResolveDropZoneSync(
+    x: number,
+    y: number,
+    monitorsJson: string,
+    targetJson: string,
+  ): [string];
   connectSignal(
     name: 'ConfigChanged',
     callback: (proxy: TilingProxy, sender: string, params: [string]) => void,

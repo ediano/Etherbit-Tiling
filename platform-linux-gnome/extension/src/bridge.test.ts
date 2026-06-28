@@ -4,12 +4,22 @@ import {
   serializeWindows,
   serializeMonitors,
   parseLayout,
+  parseTabBars,
   parsePreview,
   orderKey,
   appendToOrder,
   removeFromOrder,
   sortByOrder,
   reorderForDrop,
+  serializeState,
+  serializeTarget,
+  removeIdFromStacks,
+  toggleStackGroup,
+  addToStack,
+  setActiveMember,
+  toggleGroupDisabled,
+  parseOrderKey,
+  type Stack,
   type WindowSnapshot,
   type MonitorSnapshot,
 } from './bridge.js';
@@ -62,6 +72,127 @@ describe('parseLayout', () => {
   it('descarta números não finitos', () => {
     // JSON não tem NaN/Infinity nativos; null cai fora do filtro numérico.
     expect(parseLayout('[{"id":1,"x":null,"y":0,"width":10,"height":10}]')).toEqual([]);
+  });
+
+  it('lê os rects do formato objeto novo { rects, tab_bars }', () => {
+    const json = '{"rects":[{"id":1,"x":12,"y":40,"width":484,"height":748}],"tab_bars":[]}';
+    expect(parseLayout(json)).toEqual([{ id: 1, x: 12, y: 40, width: 484, height: 748 }]);
+  });
+});
+
+describe('parseTabBars', () => {
+  const bar = {
+    stack_id: 1,
+    x: 12,
+    y: 12,
+    width: 976,
+    height: 28,
+    content: { x: 12, y: 40, width: 976, height: 748 },
+    members: [1, 2, 3],
+    active: 2,
+  };
+
+  it('parseia as barras de abas do formato objeto', () => {
+    const json = JSON.stringify({ rects: [], tab_bars: [bar] });
+    expect(parseTabBars(json)).toEqual([bar]);
+  });
+
+  it('formato legado (array) → sem barras', () => {
+    expect(parseTabBars('[{"id":1,"x":0,"y":0,"width":1,"height":1}]')).toEqual([]);
+  });
+
+  it('descarta barra malformada (content ausente / members não numérico)', () => {
+    const json = JSON.stringify({
+      tab_bars: [{ ...bar, content: undefined }, { ...bar, members: ['x'] }],
+    });
+    expect(parseTabBars(json)).toEqual([]);
+  });
+
+  it('retorna vazio para JSON inválido', () => {
+    expect(parseTabBars('not json')).toEqual([]);
+  });
+});
+
+describe('estado de abas (stacks) e tiling por grupo', () => {
+  it('parseOrderKey reverte orderKey', () => {
+    expect(parseOrderKey(orderKey(2, 3))).toEqual([2, 3]);
+  });
+
+  it('toggleStackGroup empilha todos os ids e depois desfaz', () => {
+    const stacks = new Map<string, Stack[]>();
+    const key = orderKey(0, 0);
+    expect(toggleStackGroup(stacks, key, [1, 2, 3], 2)).toBe(true);
+    expect(stacks.get(key)).toEqual([{ members: [1, 2, 3], active: 2 }]);
+    // segunda chamada desfaz o grupo
+    expect(toggleStackGroup(stacks, key, [1, 2, 3], 2)).toBe(true);
+    expect(stacks.has(key)).toBe(false);
+  });
+
+  it('toggleStackGroup é no-op com menos de 2 janelas', () => {
+    const stacks = new Map<string, Stack[]>();
+    expect(toggleStackGroup(stacks, orderKey(0, 0), [1], 1)).toBe(false);
+  });
+
+  it('addToStack cria stack novo e depois adiciona à pilha do alvo', () => {
+    const stacks = new Map<string, Stack[]>();
+    const key = orderKey(0, 0);
+    expect(addToStack(stacks, key, 1, 2)).toBe(true);
+    expect(stacks.get(key)).toEqual([{ members: [1, 2], active: 2 }]);
+    // arrastar 3 sobre 1 (que já está no stack) adiciona 3 a ele e o torna ativo
+    expect(addToStack(stacks, key, 1, 3)).toBe(true);
+    expect(stacks.get(key)).toEqual([{ members: [1, 2, 3], active: 3 }]);
+  });
+
+  it('addToStack move o arrastado de um stack anterior', () => {
+    const stacks = new Map<string, Stack[]>([[orderKey(0, 0), [{ members: [1, 2, 5], active: 1 }]]]);
+    // arrasta 5 sobre 2... 5 sai do stack e volta (no-op de pertencimento), vira ativo
+    expect(addToStack(stacks, orderKey(0, 0), 2, 5)).toBe(true);
+    expect(stacks.get(orderKey(0, 0))).toEqual([{ members: [1, 2, 5], active: 5 }]);
+  });
+
+  it('setActiveMember muda a aba ativa do stack que contém o membro', () => {
+    const stacks = new Map<string, Stack[]>([[orderKey(0, 0), [{ members: [1, 2, 3], active: 1 }]]]);
+    expect(setActiveMember(stacks, 3)).toBe(true);
+    expect(stacks.get(orderKey(0, 0))?.[0]?.active).toBe(3);
+    expect(setActiveMember(stacks, 3)).toBe(false); // já ativa
+  });
+
+  it('removeIdFromStacks dissolve stack que fica com 1 membro', () => {
+    const stacks = new Map<string, Stack[]>([[orderKey(0, 0), [{ members: [1, 2], active: 2 }]]]);
+    expect(removeIdFromStacks(stacks, 2)).toBe(true);
+    // sobrou 1 membro → stack dissolvido → grupo vazio removido
+    expect(stacks.has(orderKey(0, 0))).toBe(false);
+  });
+
+  it('toggleGroupDisabled liga e desliga o grupo', () => {
+    const disabled = new Set<string>();
+    const key = orderKey(0, 1);
+    toggleGroupDisabled(disabled, key);
+    expect(disabled.has(key)).toBe(true);
+    toggleGroupDisabled(disabled, key);
+    expect(disabled.has(key)).toBe(false);
+  });
+
+  it('serializeState emite stacks (≥2 membros) e grupos desligados', () => {
+    const stacks = new Map<string, Stack[]>([
+      [orderKey(0, 0), [{ members: [1, 2], active: 2 }]],
+      [orderKey(1, 0), [{ members: [9], active: 9 }]], // 1 membro → não serializa
+    ]);
+    const disabled = new Set<string>([orderKey(0, 1)]);
+    expect(JSON.parse(serializeState(stacks, disabled))).toEqual({
+      stacks: [{ monitor: 0, workspace: 0, members: [1, 2], active: 2 }],
+      disabled_groups: [[0, 1]],
+    });
+  });
+
+  it('serializeTarget devolve "" sem alvo e JSON com alvo', () => {
+    expect(serializeTarget(null)).toBe('');
+    expect(JSON.parse(serializeTarget({ x: 1, y: 2, width: 3, height: 4 }))).toEqual({
+      x: 1,
+      y: 2,
+      width: 3,
+      height: 4,
+    });
   });
 });
 
