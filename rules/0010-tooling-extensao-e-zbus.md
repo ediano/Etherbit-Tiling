@@ -13,7 +13,7 @@ e **como** o daemon implementa D-Bus, evitando armadilhas (bundlar módulos do S
   regex e **nunca** bundlados — permanecem literais no bundle. `minify: false` para não manglar
   nomes de classe usados por `GObject.registerClass`. Alvo `firefox115` (SM 115+, ES2022).
 - **Tipos via `@girs/*` numa única geração ESTÁVEL e coerente.** `@girs/gnome-shell@48.0.4` fixa a
-  baseline (GNOME 48, dentro da faixa suportada 45–48) e os pacotes de lib (`gobject-2.0`, `gio-2.0`,
+  baseline (GNOME 48, dentro da faixa suportada 45–50) e os pacotes de lib (`gobject-2.0`, `gio-2.0`,
   `glib-2.0`, `st-16`, `meta-16`, `clutter-16`, `shell-16`, `gjs`) são pinados em **versão exata** na
   geração estável **`-4.0.4`** (sem `alpha`/`beta`/`rc`). São apenas `devDependencies` (não vão no
   bundle). `@girs/shell-16` entra explicitamente (devDep + `tsconfig.json` `types`) porque a
