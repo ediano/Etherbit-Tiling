@@ -25,6 +25,7 @@ import {
   serializeTarget,
   parseLayout,
   parseTabBars,
+  parseFloating,
   parseLayoutTrees,
   parsePreview,
   resizeDeltaFrom,
@@ -86,6 +87,8 @@ const disabled = new Set<string>();
 const groupTiled = new Map<string, string[]>();
 /// internalIds que NÓS minimizamos como abas inativas (para restaurar depois).
 const stackHidden = new Set<string>();
+/// internalIds que NÓS elevamos (keepAbove) por auto-floating — para baixar ao voltarem ao grid.
+const floatingAbove = new Set<string>();
 /// Árvores BSP persistentes por `(monitor, desktop)`, com folhas em internalId (forma canônica).
 /// O core reconcilia e devolve a versão atualizada a cada SyncWindows/MoveWindow.
 let trees = new Map<string, TreeNode | null>();
@@ -227,6 +230,7 @@ function retile(): void {
       transportOf.set(entry.stableId, id);
       transportToStable.set(id, entry.stableId);
       const g = entry.win.frameGeometry;
+      const min = entry.win.minSize;
       snapshots.push({
         id,
         app_id: entry.win.resourceClass || entry.win.resourceName || '',
@@ -239,6 +243,8 @@ function retile(): void {
         maximizable: entry.win.maximizable,
         monitor: entry.monitor,
         workspace: entry.desktop,
+        min_width: min ? Math.max(0, Math.round(min.width)) : 0,
+        min_height: min ? Math.max(0, Math.round(min.height)) : 0,
       });
     }
   }
@@ -262,6 +268,9 @@ function retile(): void {
       trees = parseLayoutTrees(layoutJson, transportToStable);
       const commands = parseLayout(layoutJson);
       const tabBars = parseTabBars(layoutJson);
+      // Janelas isoladas por auto-floating (mínimo não cabe): aplicar e ELEVAR (keepAbove).
+      const floating = parseFloating(layoutJson);
+      const floatingHere = new Set<string>();
 
       // Abas inativas a ocultar (minimizar): todo membro de stack que não é o ativo (por internalId).
       const shouldHide = new Set<string>();
@@ -308,8 +317,35 @@ function retile(): void {
             }
           }
         }
+        // Aplica a geometria das flutuantes (centralizadas pelo core) e as eleva acima do grid.
+        for (const command of floating) {
+          const win = byId.get(command.id);
+          if (win) {
+            win.frameGeometry = {
+              x: command.x,
+              y: command.y,
+              width: command.width,
+              height: command.height,
+            };
+            win.keepAbove = true;
+            floatingHere.add(windowId(win));
+          }
+        }
+        // Baixa quem deixou de flutuar (voltou ao grid): remove o keepAbove que nós pusemos.
+        for (const sid of floatingAbove) {
+          if (!floatingHere.has(sid)) {
+            const w = stableToWin.get(sid);
+            if (w) {
+              w.keepAbove = false;
+            }
+          }
+        }
       } finally {
         applying = false;
+      }
+      floatingAbove.clear();
+      for (const sid of floatingHere) {
+        floatingAbove.add(sid);
       }
       stackHidden.clear();
       for (const sid of shouldHide) {

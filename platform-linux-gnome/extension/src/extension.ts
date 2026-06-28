@@ -31,6 +31,7 @@ import {
   serializeTarget,
   parseLayout,
   parseTabBars,
+  parseFloating,
   parseLayoutTrees,
   parsePreview,
   resizeDeltaFrom,
@@ -97,10 +98,12 @@ export default class EtherbitTilingExtension extends Extension {
   //  - `_disabledGroups`: grupos com tiling desligado (Super+Y);
   //  - `_groupTiled`: ids tiláveis por grupo no último layout (base do Super+S);
   //  - `_stackHidden`: ids que NÓS minimizamos (abas inativas), para restaurar depois.
+  //  - `_floatingAbove`: ids que NÓS elevamos (auto-floating), para baixar ao voltarem ao grid.
   private _stacks = new Map<string, Stack[]>();
   private _disabledGroups = new Set<string>();
   private _groupTiled = new Map<string, number[]>();
   private _stackHidden = new Set<number>();
+  private _floatingAbove = new Set<number>();
   // Barras de abas desenhadas (recriadas a cada relayout). Settings do gschema (atalhos).
   private _tabBars: St.Widget[] = [];
   private _settings: Gio.Settings | null = null;
@@ -439,6 +442,9 @@ export default class EtherbitTilingExtension extends Extension {
 
     const commands = parseLayout(layoutJson);
     const tabBars = parseTabBars(layoutJson);
+    // Janelas isoladas por auto-floating (mínimo não cabe): aplicar e ELEVAR acima do grid.
+    const floating = parseFloating(layoutJson);
+    const floatingIds = new Set<number>(floating.map((c) => c.id));
 
     // Abas inativas a ocultar (minimizar): todo membro de stack que não é o ativo.
     const shouldHide = new Set<number>();
@@ -479,10 +485,27 @@ export default class EtherbitTilingExtension extends Extension {
           byId.get(id)?.minimize();
         }
       }
+      // Baixa quem deixou de flutuar (voltou ao grid): remove o "always-on-top" que nós pusemos.
+      for (const id of this._floatingAbove) {
+        if (!floatingIds.has(id)) {
+          byId.get(id)?.unmake_above();
+        }
+      }
+      // Aplica a geometria das flutuantes (centralizadas pelo core) e as eleva acima das tiladas.
+      for (const command of floating) {
+        const window = byId.get(command.id);
+        if (!window) {
+          continue;
+        }
+        window.move_resize_frame(false, command.x, command.y, command.width, command.height);
+        window.make_above();
+        window.raise();
+      }
     } finally {
       this._applying = false;
     }
     this._stackHidden = shouldHide;
+    this._floatingAbove = floatingIds;
 
     // Ids tiláveis por grupo (singles + membros de stacks) — base do toggle de abas (Super+S).
     this._groupTiled = this._collectGroupTiled(commands, tabBars, byId);
@@ -836,9 +859,10 @@ export default class EtherbitTilingExtension extends Extension {
     this._tabBars = [];
   }
 
-  /// Restaura (desminiminiza) todas as janelas que ocultamos como abas inativas.
+  /// Restaura o estado que NÓS impusemos: desminimiza abas inativas e baixa (remove always-on-top)
+  /// as janelas que elevamos por auto-floating. Chamado no disable/cleanup.
   private _restoreHiddenWindows(): void {
-    if (this._stackHidden.size === 0) {
+    if (this._stackHidden.size === 0 && this._floatingAbove.size === 0) {
       return;
     }
     const byId = new Map<number, Meta.Window>();
@@ -851,7 +875,11 @@ export default class EtherbitTilingExtension extends Extension {
     for (const id of this._stackHidden) {
       byId.get(id)?.unminimize();
     }
+    for (const id of this._floatingAbove) {
+      byId.get(id)?.unmake_above();
+    }
     this._stackHidden.clear();
+    this._floatingAbove.clear();
   }
 
   /// Metadados brutos de uma janela (espelham o WindowDto do daemon). A filtragem é do core.
@@ -859,6 +887,7 @@ export default class EtherbitTilingExtension extends Extension {
     const frame = window.get_frame_rect();
     const wmClass = window.get_wm_class() ?? window.get_wm_class_instance() ?? '';
     const workspace = window.get_workspace();
+    const [minWidth, minHeight] = this._minSize(window);
     return {
       id: window.get_stable_sequence(),
       app_id: wmClass,
@@ -871,7 +900,25 @@ export default class EtherbitTilingExtension extends Extension {
       maximizable: window.can_maximize(),
       monitor: window.get_monitor(),
       workspace: workspace ? workspace.index() : 0,
+      min_width: minWidth,
+      min_height: minHeight,
     };
+  }
+
+  /// Tamanho mínimo (px de frame) imposto pelo app via `Meta.Window.get_min_size()` — funciona em
+  /// X11 (WM_NORMAL_HINTS) e Wayland (xdg_toplevel.set_min_size). Degrada para `[0, 0]` (sem
+  /// restrição) se o método não existir ou lançar — nunca derruba o snapshot.
+  private _minSize(window: Meta.Window): [number, number] {
+    try {
+      const fn = (window as unknown as { get_min_size?: () => [number, number] }).get_min_size;
+      if (typeof fn !== 'function') {
+        return [0, 0];
+      }
+      const [w, h] = fn.call(window);
+      return [Number.isFinite(w) ? Math.max(0, w) : 0, Number.isFinite(h) ? Math.max(0, h) : 0];
+    } catch {
+      return [0, 0];
+    }
   }
 
   /// Áreas úteis de cada monitor (já descontadas barras/docks do Shell).
