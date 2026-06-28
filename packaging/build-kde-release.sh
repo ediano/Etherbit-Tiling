@@ -2,7 +2,7 @@
 # build-kde-release.sh — compila e empacota o release de produção do Linux/KDE (Wayland).
 #
 # Gera `etherbit-tiling-kde.tar.gz` na raiz do repo contendo APENAS os artefatos de
-# produção: o binário do daemon (REUSADO de platform-linux-gnome — é agnóstico de DE) +
+# produção: o binário do daemon (REUSADO de platform-linux-daemon — é agnóstico de DE) +
 # a pasta KPackage do KWin Script + installer/uninstaller, sem código-fonte (.rs/.ts).
 #
 #   bash packaging/build-kde-release.sh <versao>
@@ -18,11 +18,11 @@ rm -rf "$ROOT/dist-release" "$ROOT/$STAGE_NAME.tar.gz"
 mkdir -p "$STAGE/bin" "$STAGE/kwin-script/contents/code" \
          "$STAGE/kwin-script/contents/config" "$STAGE/kwin-script/contents/ui"
 
-# --- Daemon (reuso do workspace GNOME; o binário é o mesmo) ---------------------
+# --- Daemon (reuso do workspace compartilhado; o binário é o mesmo) -------------
 echo ">> Compilando daemon (cargo build --release)"
-cargo build --release --manifest-path "$ROOT/platform-linux-gnome/Cargo.toml"
+cargo build --release --manifest-path "$ROOT/platform-linux-daemon/Cargo.toml"
 install -m 755 \
-  "$ROOT/platform-linux-gnome/target/release/etherbit-tiling-daemon" \
+  "$ROOT/platform-linux-daemon/target/release/etherbit-tiling-daemon" \
   "$STAGE/bin/etherbit-tiling-daemon"
 
 # --- KWin Script (build do bundle IIFE) ----------------------------------------

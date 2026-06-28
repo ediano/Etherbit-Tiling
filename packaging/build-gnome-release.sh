@@ -19,9 +19,9 @@ rm -rf "$ROOT/dist-release" "$ROOT/$STAGE_NAME.tar.gz"
 mkdir -p "$STAGE/bin" "$STAGE/extension"
 
 echo ">> Compilando daemon (cargo build --release)"
-cargo build --release --manifest-path "$ROOT/platform-linux-gnome/Cargo.toml"
+cargo build --release --manifest-path "$ROOT/platform-linux-daemon/Cargo.toml"
 install -m 755 \
-  "$ROOT/platform-linux-gnome/target/release/etherbit-tiling-daemon" \
+  "$ROOT/platform-linux-daemon/target/release/etherbit-tiling-daemon" \
   "$STAGE/bin/etherbit-tiling-daemon"
 
 echo ">> Compilando extensão (pnpm build)"

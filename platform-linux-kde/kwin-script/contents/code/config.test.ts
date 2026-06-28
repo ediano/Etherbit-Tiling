@@ -19,7 +19,7 @@ describe('parseConfig', () => {
 });
 
 describe('DEFAULT_CONFIG', () => {
-  // Espelho de `impl Default for Config` em platform-linux-gnome/daemon/src/config.rs.
+  // Espelho de `impl Default for Config` em platform-linux-daemon/daemon/src/config.rs.
   // Se o daemon mudar um padrão, ATUALIZE aqui — o daemon é a fonte de verdade.
   it('casa 1:1 com o Config::default() do daemon', () => {
     expect(DEFAULT_CONFIG).toEqual({
