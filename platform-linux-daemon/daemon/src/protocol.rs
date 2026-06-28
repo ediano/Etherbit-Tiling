@@ -9,10 +9,10 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use etherbit_tiling_core::{
-    compute_geometry, detect_drop_target, is_tileable, move_window as core_move_window, reconcile,
-    resize_window as core_resize_window, Axis, DropPreview, DropZone, Edge, LayoutOptions,
-    LayoutTree, Node, PreviewRect, StackDescriptor, TabBarRect, WindowInfo, WindowRect, WorkArea,
-    MIN_RATIO,
+    compute_constrained, detect_drop_target, is_tileable, move_window as core_move_window,
+    reconcile, resize_window as core_resize_window, Axis, DropPreview, DropZone, Edge,
+    LayoutOptions, LayoutTree, Node, PreviewRect, StackDescriptor, TabBarRect, WindowInfo,
+    WindowRect, WorkArea, MIN_RATIO,
 };
 
 /// Janela vinda da ponte. Espelha `windows_json` do contrato D-Bus.
@@ -35,6 +35,12 @@ pub struct WindowDto {
     pub monitor: u32,
     #[serde(default)]
     pub workspace: u32,
+    /// Largura mínima (px) do app (geometry hint). Ausente/0 = sem restrição (retrocompat).
+    #[serde(default)]
+    pub min_width: i32,
+    /// Altura mínima (px) do app (geometry hint). Ausente/0 = sem restrição (retrocompat).
+    #[serde(default)]
+    pub min_height: i32,
 }
 
 /// Área útil de um monitor. Espelha `monitors_json` do contrato D-Bus.
@@ -157,6 +163,10 @@ pub struct LayoutResultDto {
     pub tab_bars: Vec<TabBarDto>,
     #[serde(default)]
     pub trees: Vec<TreeDto>,
+    /// Janelas isoladas por auto-floating (mínimo não cabe no grid). A ponte aplica e ELEVA.
+    /// Ausente = vazio (retrocompat com ponte/daemon antigos).
+    #[serde(default)]
+    pub floating: Vec<RectDto>,
 }
 
 /// Inverso de `zone_label`: rótulo snake_case → zona do core (desconhecido → `None`).
@@ -237,6 +247,8 @@ impl From<WindowDto> for WindowInfo {
             maximizable: w.maximizable,
             monitor: w.monitor,
             workspace: w.workspace,
+            min_width: w.min_width,
+            min_height: w.min_height,
         }
     }
 }
@@ -372,6 +384,7 @@ pub fn sync_windows(
 
     let mut rects: Vec<RectDto> = Vec::new();
     let mut tab_bars: Vec<TabBarDto> = Vec::new();
+    let mut floating: Vec<RectDto> = Vec::new();
     let mut out_trees: Vec<TreeDto> = Vec::new();
 
     for (monitor, workspace) in group_order {
@@ -394,10 +407,16 @@ pub fn sync_windows(
                 // Reconcilia a árvore mesmo se o grupo estiver desligado (mantém a topologia).
                 let tree = reconcile(&prev, &group_ids, &stacks, focused_opt, area, &opts);
                 if !state.disabled_groups.contains(&(monitor, workspace)) {
-                    let res = compute_geometry(&tree, area, &opts, &stacks, &group_ids);
+                    // `compute_constrained` respeita os mínimos (splits assimétricos) e isola por
+                    // auto-floating quem não cabe — recebe a árvore COMPLETA e poda só p/ geometria.
+                    let res =
+                        compute_constrained(&tree, area, &opts, &stacks, &group_ids, &tileable);
                     rects.extend(res.rects.iter().map(RectDto::from));
                     tab_bars.extend(res.tab_bars.iter().map(TabBarDto::from));
+                    floating.extend(res.floating.iter().map(RectDto::from));
                 }
+                // Persiste a árvore COMPLETA (não a podada): a janela flutuante volta a tilar
+                // quando o espaço crescer, lembrando sua posição.
                 out_trees.push(tree_to_dto(monitor, workspace, &tree));
             }
             // Sem área conhecida para este monitor: não posiciona; preserva a árvore anterior.
@@ -405,7 +424,7 @@ pub fn sync_windows(
         }
     }
 
-    let dto = LayoutResultDto { rects, tab_bars, trees: out_trees };
+    let dto = LayoutResultDto { rects, tab_bars, trees: out_trees, floating };
     serde_json::to_string(&dto).context("falha ao serializar layout_json")
 }
 
@@ -756,5 +775,41 @@ mod tests {
         // Já um blob ausente (trees vazio) reconstrói normalmente.
         let ok = sync_windows(&windows, AREAS, r#"{"trees":[]}"#, &[], OPTS).expect("ok");
         assert_eq!(layout_of(&ok).rects.len(), 2);
+    }
+
+    /// `win_json` com tamanho mínimo (geometry hint) explícito.
+    fn win_json_min(id: u64, app: &str, min_width: i32, min_height: i32) -> String {
+        format!(
+            r#"{{"id":{id},"app_id":"{app}","x":0,"y":0,"width":100,"height":100,"normal":true,"resizable":true,"maximizable":true,"monitor":0,"workspace":0,"min_width":{min_width},"min_height":{min_height}}}"#
+        )
+    }
+
+    #[test]
+    fn sync_window_dto_default_min_zero() {
+        // JSON SEM min_width/min_height (ponte antiga) parseia: defaults 0 → sem restrição.
+        let dto: WindowDto = serde_json::from_str(&win_json(1, "a")).expect("parse");
+        assert_eq!(dto.min_width, 0);
+        assert_eq!(dto.min_height, 0);
+    }
+
+    #[test]
+    fn sync_emits_floating_for_oversized_min() {
+        // Janela com min_width maior que a área é isolada (floating) e some do grid tilado.
+        let windows = format!("[{},{}]", win_json_min(1, "store", 2000, 0), win_json(2, "b"));
+        let out = sync_windows(&windows, AREAS, "", &[], OPTS).expect("ok");
+        let res = layout_of(&out);
+        assert_eq!(res.floating.len(), 1);
+        assert_eq!(res.floating[0].id, 1);
+        // a flutuante NÃO aparece entre as tiladas; sobra só a 2 ocupando a área.
+        assert!(res.rects.iter().all(|r| r.id != 1));
+        assert_eq!(res.rects.iter().filter(|r| r.id == 2).count(), 1);
+    }
+
+    #[test]
+    fn layout_result_dto_floating_defaults_when_absent() {
+        // Resposta de daemon ANTIGO (sem `floating`) desserializa com lista vazia (retrocompat).
+        let legacy = r#"{"rects":[],"tab_bars":[],"trees":[]}"#;
+        let dto: LayoutResultDto = serde_json::from_str(legacy).expect("parse");
+        assert!(dto.floating.is_empty());
     }
 }

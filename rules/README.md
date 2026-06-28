@@ -30,6 +30,7 @@ arqueologia de commits.
 | [0018](0018-abas-atalhos-globais-drag-to-group.md) | Abas (StackNode), atalhos globais e agrupar por arraste | ✅ Aceita |
 | [0019](0019-arvore-bsp-persistente-resize-elastico.md) | Árvore BSP persistente, resize elástico, gap único e cantos arredondados | ✅ Aceita |
 | [0020](0020-resiliencia-ipc-dbus.md) | Resiliência de IPC (D-Bus): ativação, reconexão e wake handshake | ✅ Aceita |
+| [0021](0021-tamanhos-minimos-geometry-hints.md) | Tamanhos mínimos (geometry hints): splits assimétricos e auto-floating | ✅ Aceita |
 
 ## Como adicionar uma nova decisão
 1. Copie o formato de um ADR existente.

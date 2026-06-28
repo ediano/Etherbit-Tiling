@@ -14,6 +14,14 @@
 // 4 = 2×2, N = subdivisão infinita), nunca sobrepostas. Como é função pura da ordem de entrada, a
 // persistência de rearranjo/resize vive na ponte (a ordem) — o daemon permanece sem estado.
 
+use std::collections::HashMap;
+
+/// Tamanhos mínimos (px) por id de folha — `(min_width, min_height)`. Montado a partir dos hints
+/// geométricos das janelas (no GNOME, `Meta.Window.get_min_size()`; no KDE, `Window.minSize`). Uma
+/// folha-âncora de stack agrega o `max` dos mínimos dos membros (+ `tab_bar_height` na altura).
+/// Ausente ou `(0, 0)` = sem restrição. Aplicado SÓ na geometria (não muta os ratios da árvore).
+pub type MinSizes = HashMap<u64, (i32, i32)>;
+
 /// Metadados brutos de uma janela, agnósticos do compositor. `id` é uma chave estável na
 /// sessão (no GNOME, `Meta.Window.get_stable_sequence()`; no KDE, `internalId`/`windowId`),
 /// usada pela ponte para resolver o retângulo de volta à janela real.
@@ -34,6 +42,10 @@ pub struct WindowInfo {
     pub monitor: u32,
     /// Workspace/desktop atual da janela.
     pub workspace: u32,
+    /// Largura mínima (px) imposta pelo app (geometry hint); 0 = sem restrição.
+    pub min_width: i32,
+    /// Altura mínima (px) imposta pelo app (geometry hint); 0 = sem restrição.
+    pub min_height: i32,
 }
 
 /// Área útil de um monitor (já descontadas barras/docks do compositor).
@@ -151,6 +163,10 @@ pub struct TabBarRect {
 pub struct LayoutResult {
     pub rects: Vec<WindowRect>,
     pub tab_bars: Vec<TabBarRect>,
+    /// Janelas removidas do tiling por AUTO-FLOATING: quando os mínimos não cabem na árvore, a
+    /// janela mais restritiva é isolada e centralizada sobre o grid. A ponte aplica estes
+    /// retângulos e ELEVA a janela acima das tiladas (não a oculta). Vazio no caso comum.
+    pub floating: Vec<WindowRect>,
 }
 
 // ---- Árvore BSP PERSISTENTE (estado da ponte; o core só a transforma) ----
@@ -329,7 +345,7 @@ pub fn compute_layout_with(
         }
     }
 
-    LayoutResult { rects, tab_bars }
+    LayoutResult { rects, tab_bars, floating: Vec::new() }
 }
 
 /// Monta a sequência de slots de um grupo a partir dos `ids` (na ordem do grupo) e dos `stacks`.
@@ -629,6 +645,88 @@ fn geom_leaves(node: &Node, rect: Rectf, gap: f64, out: &mut Vec<(u64, Rectf)>) 
     }
 }
 
+/// Extensão MÍNIMA (px) que a subárvore `node` exige ao longo de `axis`, dados os mínimos por folha.
+/// Como num BSP os eixos são independentes (split horizontal divide a largura; vertical, a altura), o
+/// mínimo se propaga: split no MESMO eixo soma os filhos (+ gap na costura); split PERPENDICULAR usa o
+/// `max`. Uma folha contribui só com seu mínimo na direção consultada.
+fn min_extent(node: &Node, axis: Axis, gap: f64, min: &MinSizes) -> f64 {
+    match node {
+        Node::Leaf(id) => {
+            let (mw, mh) = min.get(id).copied().unwrap_or((0, 0));
+            match axis {
+                Axis::Horizontal => mw.max(0) as f64,
+                Axis::Vertical => mh.max(0) as f64,
+            }
+        }
+        Node::Split { axis: sa, first, second, .. } => {
+            let f = min_extent(first, axis, gap, min);
+            let s = min_extent(second, axis, gap, min);
+            if *sa == axis {
+                f + gap + s
+            } else {
+                f.max(s)
+            }
+        }
+    }
+}
+
+/// Como `split_rect`, mas CLAMPA a posição do corte para que cada lado receba ao menos seu mínimo
+/// (`min_first`/`min_second`, já no eixo do corte). É o "modo proporcional forçado": a janela restrita
+/// recebe seu mínimo e o vizinho maleável encolhe. Se nem os dois mínimos cabem (`min_first +
+/// min_second > avail`), cai no proporcional puro — mas esse caso já foi removido por `enforce_min_sizes`.
+fn split_rect_clamped(
+    rect: Rectf,
+    gap: f64,
+    axis: Axis,
+    ratio: f64,
+    min_first: f64,
+    min_second: f64,
+) -> (Rectf, Rectf) {
+    match axis {
+        Axis::Horizontal => {
+            let avail = (rect.w - gap).max(0.0);
+            let lo = min_first.clamp(0.0, avail);
+            let hi = (avail - min_second).max(0.0);
+            let w1 = if lo <= hi { (avail * ratio).clamp(lo, hi) } else { avail * ratio };
+            (
+                Rectf { x: rect.x, y: rect.y, w: w1, h: rect.h },
+                Rectf { x: rect.x + w1 + gap, y: rect.y, w: avail - w1, h: rect.h },
+            )
+        }
+        Axis::Vertical => {
+            let avail = (rect.h - gap).max(0.0);
+            let lo = min_first.clamp(0.0, avail);
+            let hi = (avail - min_second).max(0.0);
+            let h1 = if lo <= hi { (avail * ratio).clamp(lo, hi) } else { avail * ratio };
+            (
+                Rectf { x: rect.x, y: rect.y, w: rect.w, h: h1 },
+                Rectf { x: rect.x, y: rect.y + h1 + gap, w: rect.w, h: avail - h1 },
+            )
+        }
+    }
+}
+
+/// Como `geom_leaves`, mas em cada split CLAMPA o corte aos mínimos das duas subárvores (via
+/// `min_extent`). Com `min` vazio (todos os mínimos 0) o resultado é idêntico ao `geom_leaves` puro.
+fn geom_leaves_min(
+    node: &Node,
+    rect: Rectf,
+    gap: f64,
+    min: &MinSizes,
+    out: &mut Vec<(u64, Rectf)>,
+) {
+    match node {
+        Node::Leaf(id) => out.push((*id, rect)),
+        Node::Split { axis, ratio, first, second } => {
+            let mf = min_extent(first, *axis, gap, min);
+            let ms = min_extent(second, *axis, gap, min);
+            let (a, b) = split_rect_clamped(rect, gap, *axis, *ratio, mf, ms);
+            geom_leaves_min(first, a, gap, min, out);
+            geom_leaves_min(second, b, gap, min, out);
+        }
+    }
+}
+
 /// Renderiza um stack (conjunto de abas) num slot `srect`: barra no topo + conteúdo da aba ativa em
 /// `rects`; as inativas ficam de fora (a ponte as oculta). `group_ids` filtra os membros presentes.
 /// Compartilhado entre o BSP legado (`compute_layout_with`) e a árvore (`compute_geometry`).
@@ -692,15 +790,28 @@ pub fn compute_geometry(
     stacks: &[StackDescriptor],
     group_ids: &[u64],
 ) -> LayoutResult {
+    geometry_from_tree(tree, area, opts, stacks, group_ids, &MinSizes::new())
+}
+
+/// Núcleo de `compute_geometry`: percorre a árvore aplicando ratios e CLAMPANDO aos mínimos de `min`
+/// (com `min` vazio, geometria proporcional pura). Não decide auto-floating — só tila o que recebe.
+fn geometry_from_tree(
+    tree: &LayoutTree,
+    area: &WorkArea,
+    opts: &LayoutOptions,
+    stacks: &[StackDescriptor],
+    group_ids: &[u64],
+    min: &MinSizes,
+) -> LayoutResult {
     let mut rects = Vec::new();
     let mut tab_bars = Vec::new();
     let root = match &tree.root {
         Some(r) => r,
-        None => return LayoutResult { rects, tab_bars },
+        None => return LayoutResult { rects, tab_bars, floating: Vec::new() },
     };
     let inner = inner_rect(area, opts.outer_gap as f64);
     let mut leaves = Vec::new();
-    geom_leaves(root, inner, opts.inner_gap as f64, &mut leaves);
+    geom_leaves_min(root, inner, opts.inner_gap as f64, min, &mut leaves);
     for (id, r) in leaves {
         if let Some(desc) = stack_anchored_at(id, stacks, group_ids) {
             render_stack(desc, r, group_ids, opts, &mut rects, &mut tab_bars);
@@ -714,7 +825,125 @@ pub fn compute_geometry(
             });
         }
     }
-    LayoutResult { rects, tab_bars }
+    LayoutResult { rects, tab_bars, floating: Vec::new() }
+}
+
+/// Monta o mapa de tamanhos mínimos por FOLHA do grupo a partir das janelas e dos stacks. Uma folha
+/// solta carrega o mínimo da própria janela; uma folha-âncora de stack carrega o `max` dos mínimos
+/// dos membros presentes (+ `tab_bar_height` na altura, pois a barra come o topo do slot). Membros
+/// não-âncora não viram folha, então saem do mapa.
+fn build_min_sizes(
+    windows: &[WindowInfo],
+    stacks: &[StackDescriptor],
+    group_ids: &[u64],
+    opts: &LayoutOptions,
+) -> MinSizes {
+    let mut map: MinSizes = HashMap::new();
+    for w in windows {
+        if group_ids.contains(&w.id) {
+            map.insert(w.id, (w.min_width.max(0), w.min_height.max(0)));
+        }
+    }
+    for s in stacks {
+        let present: Vec<u64> =
+            s.member_ids.iter().copied().filter(|m| group_ids.contains(m)).collect();
+        let Some((&anchor, rest)) = present.split_first() else { continue };
+        let mut mw = 0;
+        let mut mh = 0;
+        for m in &present {
+            if let Some(w) = windows.iter().find(|w| w.id == *m) {
+                mw = mw.max(w.min_width.max(0));
+                mh = mh.max(w.min_height.max(0));
+            }
+        }
+        map.insert(anchor, (mw, mh + opts.tab_bar_height as i32));
+        for m in rest {
+            map.remove(m);
+        }
+    }
+    map
+}
+
+/// Remove da árvore (para fins de GEOMETRIA) as folhas cujos mínimos tornam o layout inviável,
+/// devolvendo a árvore podada + os ids isolados (AUTO-FLOATING). Inviável = em algum eixo o mínimo
+/// total da raiz excede a área interna (num BSP os eixos são independentes, então basta checar largura
+/// e altura da raiz). A cada passo isola a folha que mais pesa no(s) eixo(s) violado(s) — desempate por
+/// MENOR id (determinístico) — e repete até caber. PURA e idempotente: NÃO persiste estado; a árvore
+/// COMPLETA continua sendo guardada pela ponte, então a janela volta a tilar quando o espaço cresce.
+fn enforce_min_sizes(
+    tree: &LayoutTree,
+    area: &WorkArea,
+    opts: &LayoutOptions,
+    min: &MinSizes,
+) -> (LayoutTree, Vec<u64>) {
+    let inner = inner_rect(area, opts.outer_gap as f64);
+    let gap = opts.inner_gap as f64;
+    let mut tree = tree.clone();
+    let mut floated: Vec<u64> = Vec::new();
+    loop {
+        let Some(root) = &tree.root else { break };
+        let over_w = min_extent(root, Axis::Horizontal, gap, min) > inner.w + 0.5;
+        let over_h = min_extent(root, Axis::Vertical, gap, min) > inner.h + 0.5;
+        if !over_w && !over_h {
+            break;
+        }
+        let victim = collect_leaf_ids(&tree).into_iter().max_by_key(|id| {
+            let (mw, mh) = min.get(id).copied().unwrap_or((0, 0));
+            let axis_weight = if over_w { mw.max(0) as i64 } else { 0 }
+                + if over_h { mh.max(0) as i64 } else { 0 };
+            // peso no eixo violado, depois área mínima; desempate por MENOR id (Reverse).
+            (axis_weight, (mw.max(0) as i64) * (mh.max(0) as i64), std::cmp::Reverse(*id))
+        });
+        let Some(victim) = victim else { break };
+        tree = collapse_leaf(tree, victim);
+        floated.push(victim);
+    }
+    (tree, floated)
+}
+
+/// Retângulo de uma janela em modo flutuante: tamanho atual clampado a `[mínimo, área interna]` (nunca
+/// abaixo do mínimo, mesmo que estoure a área), centralizado na área interna do monitor.
+fn floating_rect(
+    area: &WorkArea,
+    opts: &LayoutOptions,
+    win: &WindowInfo,
+    min: &MinSizes,
+) -> WindowRect {
+    let inner = inner_rect(area, opts.outer_gap as f64);
+    let (mw, mh) =
+        min.get(&win.id).copied().unwrap_or((win.min_width.max(0), win.min_height.max(0)));
+    let w = (win.width as f64).clamp(mw as f64, inner.w.max(mw as f64));
+    let h = (win.height as f64).clamp(mh as f64, inner.h.max(mh as f64));
+    WindowRect {
+        id: win.id,
+        x: round(inner.x + (inner.w - w) / 2.0),
+        y: round(inner.y + (inner.h - h) / 2.0),
+        width: round(w),
+        height: round(h),
+    }
+}
+
+/// Calcula a geometria RESPEITANDO os tamanhos mínimos das janelas (geometry hints). Monta os mínimos
+/// por folha, isola as janelas que estrangulam o grid (auto-floating) e tila o restante com splits
+/// assimétricos. É o ponto de entrada usado pelo daemon; `compute_geometry` é o caso sem restrições.
+/// A árvore de ENTRADA (completa) deve ser persistida pela ponte — a poda aqui é só para a geometria.
+pub fn compute_constrained(
+    tree: &LayoutTree,
+    area: &WorkArea,
+    opts: &LayoutOptions,
+    stacks: &[StackDescriptor],
+    group_ids: &[u64],
+    windows: &[WindowInfo],
+) -> LayoutResult {
+    let min = build_min_sizes(windows, stacks, group_ids, opts);
+    let (geom_tree, floated) = enforce_min_sizes(tree, area, opts, &min);
+    let mut res = geometry_from_tree(&geom_tree, area, opts, stacks, group_ids, &min);
+    for id in floated {
+        if let Some(w) = windows.iter().find(|w| w.id == id) {
+            res.floating.push(floating_rect(area, opts, w, &min));
+        }
+    }
+    res
 }
 
 /// `true` se a árvore contém a folha `id`.
@@ -1063,7 +1292,14 @@ mod tests {
             maximizable: true,
             monitor,
             workspace: 0,
+            min_width: 0,
+            min_height: 0,
         }
+    }
+
+    /// `win` com tamanho mínimo (geometry hint) explícito, para os testes de splits assimétricos.
+    fn win_min(id: u64, min_width: i32, min_height: i32) -> WindowInfo {
+        WindowInfo { min_width, min_height, ..win(id, 0) }
     }
 
     fn area_1000x800() -> WorkArea {
@@ -1722,5 +1958,139 @@ mod tests {
         let after = compute_geometry(&resized, &area, &opts(), &[], &[1, 2]);
         let w2 = after.rects.iter().find(|r| r.id == 2).unwrap().width;
         assert!(w2 > 0, "vizinha nunca colapsa a zero");
+    }
+
+    // ---- Tamanhos mínimos (geometry hints): splits assimétricos + auto-floating ----
+
+    #[test]
+    fn min_extent_soma_no_mesmo_eixo_e_max_no_perpendicular() {
+        // Split HORIZONTAL de (1,2): largura = min1 + gap + min2; altura = max(min1, min2).
+        let tree = LayoutTree {
+            root: Some(Node::Split {
+                axis: Axis::Horizontal,
+                ratio: 0.5,
+                first: Box::new(Node::Leaf(1)),
+                second: Box::new(Node::Leaf(2)),
+            }),
+        };
+        let mut min = MinSizes::new();
+        min.insert(1, (300, 200));
+        min.insert(2, (100, 150));
+        let root = tree.root.as_ref().unwrap();
+        assert_eq!(min_extent(root, Axis::Horizontal, 8.0, &min), 300.0 + 8.0 + 100.0);
+        assert_eq!(min_extent(root, Axis::Vertical, 8.0, &min), 200.0);
+    }
+
+    #[test]
+    fn split_respeita_min_da_primeira_e_espreme_vizinha() {
+        // Janela 1 com min_width 700 num par 50/50: recebe seu mínimo; a 2 encolhe (modo forçado).
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let windows = vec![win_min(1, 700, 0), win(2, 0)];
+        let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows);
+        let r1 = res.rects.iter().find(|r| r.id == 1).unwrap();
+        let r2 = res.rects.iter().find(|r| r.id == 2).unwrap();
+        assert!(res.floating.is_empty());
+        assert_eq!(r1.width, 700);
+        // avail = inner(976) - gap(8) = 968 → a vizinha fica com 968 - 700 = 268.
+        assert_eq!(r2.width, 268);
+        assert_eq!(r1.width + r2.width, 968);
+    }
+
+    #[test]
+    fn min_nao_muta_o_ratio_persistido() {
+        // O clamp é SÓ de geometria: a árvore mantém ratio 0.5 (geometria sem restrição volta 50/50).
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let windows = vec![win_min(1, 700, 0), win(2, 0)];
+        let _ = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows);
+        let plain = compute_geometry(&tree, &area, &opts(), &[], &[1, 2]);
+        assert_eq!(plain.rects.iter().find(|r| r.id == 1).unwrap().width, 484);
+    }
+
+    #[test]
+    fn min_volta_ao_normal_quando_a_area_cresce() {
+        // Em tela larga, 700px < metade proporcional → o mínimo não força; volta a 50/50.
+        let area = WorkArea { index: 0, x: 0, y: 0, width: 4000, height: 800 };
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let windows = vec![win_min(1, 700, 0), win(2, 0)];
+        let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows);
+        let r1 = res.rects.iter().find(|r| r.id == 1).unwrap();
+        let r2 = res.rects.iter().find(|r| r.id == 2).unwrap();
+        assert_eq!(r1.width, r2.width, "espaço amplo → proporcional, sem clamp");
+    }
+
+    #[test]
+    fn auto_floata_janela_cujo_minimo_nao_cabe() {
+        // min_width 2000 > área: a janela sai do grid (floating) e a vizinha ocupa tudo.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let windows = vec![win_min(1, 2000, 0), win(2, 0)];
+        let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows);
+        assert_eq!(res.rects.len(), 1);
+        assert_eq!(res.rects[0].id, 2);
+        assert_eq!(res.rects[0].width, 976, "a vizinha ocupa a área interna inteira");
+        assert_eq!(res.floating.len(), 1);
+        assert_eq!(res.floating[0].id, 1);
+        assert_eq!(res.floating[0].width, 2000, "a flutuante mantém ao menos seu mínimo");
+    }
+
+    #[test]
+    fn auto_floating_e_idempotente() {
+        // Rodar duas vezes com as mesmas entradas dá exatamente o mesmo resultado (sem thrash).
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], None, &area, &opts());
+        let windows = vec![win_min(1, 2000, 0), win(2, 0), win(3, 0)];
+        let a = compute_constrained(&tree, &area, &opts(), &[], &[1, 2, 3], &windows);
+        let b = compute_constrained(&tree, &area, &opts(), &[], &[1, 2, 3], &windows);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn stack_min_agrega_max_dos_membros_mais_tab_bar() {
+        // A folha-âncora de um stack carrega o MAX dos mínimos dos membros (+ tab_bar na altura);
+        // membros não-âncora saem do mapa (não viram folha própria).
+        let windows = vec![win_min(1, 300, 200), win_min(2, 500, 100)];
+        let stacks = vec![StackDescriptor { member_ids: vec![1, 2], active_id: 1 }];
+        let m = build_min_sizes(&windows, &stacks, &[1, 2], &opts());
+        assert_eq!(m.get(&1), Some(&(500, 200 + 28)));
+        assert_eq!(m.get(&2), None);
+    }
+
+    #[test]
+    fn resize_abaixo_do_min_satura_geometria_mas_preserva_o_resize() {
+        // Encolher a 1 abaixo do seu min: a geometria satura no mínimo, mas o resize (ratio) valeu.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let resized = resize_window(&tree, &area, &opts(), 1, Edge::Right, -300);
+        // sem restrição: a 1 encolheu para 184 (o resize funcionou).
+        let plain = compute_geometry(&resized, &area, &opts(), &[], &[1, 2]);
+        assert_eq!(plain.rects.iter().find(|r| r.id == 1).unwrap().width, 184);
+        // com min 600: a geometria satura em 600 (sem quebrar a UI), a vizinha fica com 368.
+        let windows = vec![win_min(1, 600, 0), win(2, 0)];
+        let res = compute_constrained(&resized, &area, &opts(), &[], &[1, 2], &windows);
+        assert_eq!(res.rects.iter().find(|r| r.id == 1).unwrap().width, 600);
+        assert_eq!(res.rects.iter().find(|r| r.id == 2).unwrap().width, 368);
+    }
+
+    #[test]
+    fn constrained_nunca_sobrepoe_com_mins_variados() {
+        // Quatro janelas com mínimos diversos: os retângulos tilados nunca se sobrepõem.
+        let area = area_1000x800();
+        let ids = [1u64, 2, 3, 4];
+        let tree = reconcile(&LayoutTree::default(), &ids, &[], None, &area, &opts());
+        let windows = vec![win_min(1, 400, 300), win_min(2, 200, 0), win(3, 0), win_min(4, 0, 250)];
+        let res = compute_constrained(&tree, &area, &opts(), &[], &ids, &windows);
+        let rs = &res.rects;
+        for i in 0..rs.len() {
+            for j in (i + 1)..rs.len() {
+                let (a, b) = (&rs[i], &rs[j]);
+                let disjoint = a.x + a.width <= b.x
+                    || b.x + b.width <= a.x
+                    || a.y + a.height <= b.y
+                    || b.y + b.height <= a.y;
+                assert!(disjoint, "rects {} e {} se sobrepõem", a.id, b.id);
+            }
+        }
     }
 }

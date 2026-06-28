@@ -16,6 +16,12 @@ interface QPoint {
   y: number;
 }
 
+/** Tamanho (QSizeF) — usado por `KWinWindow.minSize` (geometry hints). */
+interface QSize {
+  width: number;
+  height: number;
+}
+
 /** Saída/monitor. Tratado como opaco — só repassado a `clientArea`. */
 type KWinOutput = unknown;
 
@@ -42,8 +48,12 @@ interface KWinWindow {
   readonly moveable: boolean;
   readonly minimizable: boolean;
   readonly maximizable: boolean;
+  /** Tamanho mínimo (WM_NORMAL_HINTS / xdg set_min_size); 0×0 = sem restrição. */
+  readonly minSize: QSize;
   /** Minimizada. É GRAVÁVEL: usamos para OCULTAR as abas inativas de um stack. */
   minimized: boolean;
+  /** Sempre-acima. É GRAVÁVEL: usamos para ELEVAR janelas em auto-floating sobre o grid. */
+  keepAbove: boolean;
   /** Desktops virtuais aos quais a janela pertence (vazio = em todos). */
   readonly desktops: KWinVirtualDesktop[];
   readonly skipTaskbar: boolean;

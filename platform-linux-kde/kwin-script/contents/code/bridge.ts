@@ -18,6 +18,9 @@ export interface WindowSnapshot {
   maximizable: boolean;
   monitor: number;
   workspace: number;
+  /// Tamanho mínimo imposto pelo app (geometry hint); 0 = sem restrição.
+  min_width: number;
+  min_height: number;
 }
 
 /// Espelha o `MonitorDto` do daemon (área útil de um monitor).
@@ -88,6 +91,38 @@ export function parseLayout(json: string): LayoutCommand[] {
   }
   const commands: LayoutCommand[] = [];
   for (const entry of rects) {
+    if (isLayoutCommand(entry)) {
+      commands.push({
+        id: entry.id,
+        x: entry.x,
+        y: entry.y,
+        width: entry.width,
+        height: entry.height,
+      });
+    }
+  }
+  return commands;
+}
+
+/// Parse defensivo das janelas FLUTUANTES (auto-floating) do `layout_json`. Lê `floating` — janelas
+/// que o core isolou do grid por não caberem com seu mínimo. Ausente (daemon antigo) ou array legado
+/// → vazio. A ponte aplica estes retângulos E eleva as janelas (keepAbove) acima das tiladas.
+export function parseFloating(json: string): LayoutCommand[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  if (Array.isArray(parsed) || typeof parsed !== 'object' || parsed === null) {
+    return [];
+  }
+  const raw = (parsed as Record<string, unknown>).floating;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const commands: LayoutCommand[] = [];
+  for (const entry of raw) {
     if (isLayoutCommand(entry)) {
       commands.push({
         id: entry.id,

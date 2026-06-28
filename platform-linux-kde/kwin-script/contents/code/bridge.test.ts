@@ -5,6 +5,7 @@ import {
   serializeMonitors,
   parseLayout,
   parseTabBars,
+  parseFloating,
   parseLayoutTrees,
   parsePreview,
   orderKey,
@@ -40,6 +41,8 @@ const win: WindowSnapshot = {
   maximizable: true,
   monitor: 0,
   workspace: 0,
+  min_width: 0,
+  min_height: 0,
 };
 
 describe('serializeWindows / serializeMonitors', () => {
@@ -72,6 +75,31 @@ describe('parseLayout', () => {
   it('lê os rects do formato objeto novo { rects, tab_bars }', () => {
     const json = '{"rects":[{"id":2,"x":1,"y":2,"width":3,"height":4}],"tab_bars":[]}';
     expect(parseLayout(json)).toEqual([{ id: 2, x: 1, y: 2, width: 3, height: 4 }]);
+  });
+});
+
+describe('parseFloating', () => {
+  it('lê as janelas flutuantes do formato objeto { floating }', () => {
+    const json = JSON.stringify({
+      rects: [],
+      tab_bars: [],
+      floating: [{ id: 7, x: 100, y: 50, width: 800, height: 600 }],
+    });
+    expect(parseFloating(json)).toEqual([{ id: 7, x: 100, y: 50, width: 800, height: 600 }]);
+  });
+
+  it('ausente (daemon antigo) → vazio', () => {
+    expect(parseFloating('{"rects":[],"tab_bars":[]}')).toEqual([]);
+  });
+
+  it('formato legado (array) → vazio', () => {
+    expect(parseFloating('[{"id":1,"x":0,"y":0,"width":1,"height":1}]')).toEqual([]);
+  });
+
+  it('descarta entradas malformadas e JSON inválido', () => {
+    expect(parseFloating('not json')).toEqual([]);
+    const json = '{"floating":[{"id":1,"x":0,"y":0,"width":10,"height":10},{"id":"x"}]}';
+    expect(parseFloating(json)).toEqual([{ id: 1, x: 0, y: 0, width: 10, height: 10 }]);
   });
 });
 
