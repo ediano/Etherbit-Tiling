@@ -315,7 +315,6 @@ export default class EtherbitTilingExtension extends Extension {
       const [previewJson] = this._proxy.ResolveDropZoneSync(
         x,
         y,
-        this._draggedId,
         serializeMonitors(this._collectMonitors()),
       );
       this._updatePreview(parsePreview(previewJson));

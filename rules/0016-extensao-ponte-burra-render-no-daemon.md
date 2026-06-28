@@ -46,8 +46,8 @@ que ela ocupará ao soltar. Isso reabre a questão "quem desenha?" — e a respo
 esta ADR em vez de revogá-la (status permanece **✅ Aceita**).
 
 - **A matemática continua 100% no Rust.** O core ganha `detect_drop_zone(area, x, y, opts)` (zona +
-  retângulo, FRAÇÕES da área) e o daemon expõe `ResolveDropZone(x, y, window_id, monitors_json) ->
-  preview_json` (request/response, **modelo pull**, espelhável GNOME/KDE). A extensão **não decide**
+  retângulo, FRAÇÕES da área) e o daemon expõe `ResolveDropZone(x, y, monitors_json) ->
+  preview_json` (request/response, **modelo pull**, espelhável GNOME/KDE). A ponte **não decide**
   a zona — só envia o ponto do cursor e recebe o retângulo pronto.
 - **O preview é desenhado pela EXTENSÃO**, não pelo daemon. Sob Wayland/GNOME (Mutter, **sem
   `wlr-layer-shell`**) apenas o compositor pode sobrepor janelas alheias; a extensão roda **dentro**
@@ -58,6 +58,12 @@ esta ADR em vez de revogá-la (status permanece **✅ Aceita**).
   **único `St.Widget` estático, não-reativo, sem animação e efêmero** (existe só durante o grab de
   movimento), reposicionado por `set_position/set_size`. Custo desprezível. A proibição de **animação
   em JS** permanece de pé.
+- **KDE (KWin Script):** mesma matemática (chama `ResolveDropZone`), mas o indicador usa o primitivo
+  **nativo** `workspace.showOutline(rect)` / `hideOutline()` — não há equivalente ao `St.Widget`
+  preenchido, e uma caixa QML seria peso/fragilidade fora da "ponte burra". O arrasto é rastreado por
+  eventos (`Window.interactiveMoveResizeStarted/Stepped/Finished`), sem polling. **Diferença de
+  apresentação aceita:** GNOME = caixa preenchida semi-transparente; KDE = *outline* nativo (o mesmo
+  do quick-tile). Paridade funcional total.
 - **O daemon permanece SEM ESTADO.** O motor de layout evoluiu de colunas para uma **divisão binária
   (BSP) determinística** (grades simétricas infinitas, isoladas por `(monitor, workspace)`), que é
   função pura da **ordem** das janelas. Essa ordem (estado leve) vive na **ponte**, não no daemon —
@@ -72,9 +78,10 @@ esta ADR em vez de revogá-la (status permanece **✅ Aceita**).
   estático/efêmero (um ator reposicionado, sem loop de render) e não recria esse risco.
 - **Core agnóstico de fato:** `etherbit-tiling-core` deixa de ser stub e passa a conter o Ether Flow
   (hoje, layout em colunas como placeholder), testável isoladamente. Reafirma o ADR 0002.
-- **Paridade GNOME/KDE:** o mesmo método `SyncWindows` e o módulo puro espelhado `bridge.ts` (como
-  `config.ts` já é espelhado) cobrem as duas camadas. No KDE o `id` da janela é um handle opaco válido
-  por chamada; no GNOME usa-se `get_stable_sequence()`.
+- **Paridade GNOME/KDE:** o mesmo método `SyncWindows`/`ResolveDropZone` e o módulo puro espelhado
+  `bridge.ts` (como `config.ts` já é espelhado) cobrem as duas camadas. O `id` enviado ao daemon
+  segue opaco por chamada; a **ordem estável** (que torna o BSP determinístico e o drop persistente)
+  usa uma chave estável de sessão: `get_stable_sequence()` no GNOME e `internalId` no KDE.
 - **Limitação registrada:** desenhar bordas/efeitos sobre janelas de terceiros exigiria o Etherbit ser
   o compositor (modelo COSMIC), fora do escopo de extensão/KWin Script.
 - **wgpu opcional:** mantém o daemon leve e o CI sem GPU (feature desligada); habilita-se localmente com

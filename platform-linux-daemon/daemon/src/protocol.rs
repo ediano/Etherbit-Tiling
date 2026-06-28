@@ -155,14 +155,10 @@ pub fn sync_windows(
 /// escolhe a área útil que CONTÉM o ponto e delega ao core (`detect_drop_zone`). Sem área contendo
 /// o ponto → zona `"none"` (retângulo zerado). O daemon permanece sem estado: a ponte envia os
 /// monitores a cada chamada, como em `SyncWindows`.
-///
-/// `window_id` entra no contrato agora (estabilidade) mas é reservado — futuro: excluir a própria
-/// janela arrastada do cálculo sensível à pilha.
 pub fn resolve_drop_zone(
     monitors_json: &str,
     x: i32,
     y: i32,
-    _window_id: u64,
     opts: LayoutOptions,
 ) -> Result<String> {
     let monitors: Vec<MonitorDto> =
@@ -237,14 +233,14 @@ mod tests {
 
     #[test]
     fn resolve_left_zone_in_single_monitor() {
-        let out = resolve_drop_zone(AREAS, 20, 400, 0, OPTS).expect("ok");
+        let out = resolve_drop_zone(AREAS, 20, 400, OPTS).expect("ok");
         let p: PreviewDto = serde_json::from_str(&out).unwrap();
         assert_eq!(p, PreviewDto { zone: "left".into(), x: 12, y: 12, width: 484, height: 776 });
     }
 
     #[test]
     fn resolve_center_zone_matches_single_window() {
-        let out = resolve_drop_zone(AREAS, 500, 400, 0, OPTS).expect("ok");
+        let out = resolve_drop_zone(AREAS, 500, 400, OPTS).expect("ok");
         let p: PreviewDto = serde_json::from_str(&out).unwrap();
         assert_eq!(p.zone, "center");
         // Idêntico ao single-window do layout (consistência preview ↔ destino real).
@@ -258,7 +254,7 @@ mod tests {
 
     #[test]
     fn resolve_point_outside_any_monitor_is_none() {
-        let out = resolve_drop_zone(AREAS, 5000, 400, 0, OPTS).expect("ok");
+        let out = resolve_drop_zone(AREAS, 5000, 400, OPTS).expect("ok");
         let p: PreviewDto = serde_json::from_str(&out).unwrap();
         assert_eq!(p, PreviewDto { zone: "none".into(), x: 0, y: 0, width: 0, height: 0 });
     }
@@ -267,13 +263,13 @@ mod tests {
     fn resolve_picks_correct_monitor() {
         // Dois monitores lado a lado; ponto perto da borda esquerda do SEGUNDO → Left local dele.
         let areas = r#"[{"index":0,"x":0,"y":0,"width":1000,"height":800},{"index":1,"x":1000,"y":0,"width":1000,"height":800}]"#;
-        let out = resolve_drop_zone(areas, 1020, 400, 0, OPTS).expect("ok");
+        let out = resolve_drop_zone(areas, 1020, 400, OPTS).expect("ok");
         let p: PreviewDto = serde_json::from_str(&out).unwrap();
         assert_eq!(p, PreviewDto { zone: "left".into(), x: 1012, y: 12, width: 484, height: 776 });
     }
 
     #[test]
     fn resolve_rejects_invalid_json() {
-        assert!(resolve_drop_zone("nope", 20, 400, 0, OPTS).is_err());
+        assert!(resolve_drop_zone("nope", 20, 400, OPTS).is_err());
     }
 }
