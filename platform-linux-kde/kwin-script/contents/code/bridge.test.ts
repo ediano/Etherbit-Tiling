@@ -5,6 +5,7 @@ import {
   serializeMonitors,
   parseLayout,
   parseTabBars,
+  parseLayoutTrees,
   parsePreview,
   orderKey,
   appendToOrder,
@@ -18,7 +19,11 @@ import {
   addToStack,
   setActiveMember,
   toggleGroupDisabled,
+  treeToTransport,
+  treeFromTransport,
   type Stack,
+  type TreeNode,
+  type TransportNode,
   type WindowSnapshot,
   type MonitorSnapshot,
 } from './bridge.js';
@@ -142,19 +147,57 @@ describe('estado de abas (stacks, ids string) e tiling por grupo', () => {
       ['a', 1],
       ['b', 2],
     ]);
-    expect(JSON.parse(serializeState(stacks, disabled, transportOf))).toEqual({
+    const trees = new Map<string, TreeNode | null>([[orderKey(0, 0), { win: 'a' }]]);
+    expect(JSON.parse(serializeState(stacks, disabled, transportOf, trees, 'b'))).toEqual({
       stacks: [{ monitor: 0, workspace: 0, members: [1, 2], active: 2 }],
       disabled_groups: [[1, 2]],
+      trees: [{ monitor: 0, workspace: 0, root: { win: 1 } }],
+      focused_id: 2,
     });
   });
 
   it('serializeState omite stack que fica com < 2 membros traduzíveis', () => {
     const stacks = new Map<string, Stack[]>([[orderKey(0, 0), [{ members: ['a', 'z'], active: 'a' }]]]);
     const transportOf = new Map<string, number>([['a', 1]]);
-    expect(JSON.parse(serializeState(stacks, new Set(), transportOf))).toEqual({
+    expect(JSON.parse(serializeState(stacks, new Set(), transportOf, new Map(), ''))).toEqual({
       stacks: [],
       disabled_groups: [],
+      trees: [],
+      focused_id: 0,
     });
+  });
+
+  it('árvore: round-trip internalId ↔ transporte e colapso de folha intraduzível', () => {
+    const transportOf = new Map<string, number>([
+      ['a', 1],
+      ['b', 2],
+    ]);
+    const toStable = new Map<number, string>([
+      [1, 'a'],
+      [2, 'b'],
+    ]);
+    const tree: TreeNode = {
+      split: { axis: 'h', ratio: 0.5, first: { win: 'a' }, second: { win: 'b' } },
+    };
+    const transport = treeToTransport(tree, transportOf);
+    expect(transport).toEqual({
+      split: { axis: 'h', ratio: 0.5, first: { win: 1 }, second: { win: 2 } },
+    });
+    expect(treeFromTransport(transport as TransportNode, toStable)).toEqual(tree);
+    // 'b' sem transporte → o nó colapsa para a folha 'a'.
+    const partial = treeToTransport(tree, new Map([['a', 1]]));
+    expect(partial).toEqual({ win: 1 });
+  });
+
+  it('parseLayoutTrees traduz transporte → internalId por grupo', () => {
+    const toStable = new Map<number, string>([[1, 'a']]);
+    const json = JSON.stringify({
+      rects: [],
+      tab_bars: [],
+      trees: [{ monitor: 0, workspace: 0, root: { win: 1 } }],
+    });
+    const trees = parseLayoutTrees(json, toStable);
+    expect(trees.get(orderKey(0, 0))).toEqual({ win: 'a' });
   });
 
   it('serializeTarget devolve "" sem alvo e JSON com alvo', () => {

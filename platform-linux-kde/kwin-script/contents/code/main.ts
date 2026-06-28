@@ -25,18 +25,19 @@ import {
   serializeTarget,
   parseLayout,
   parseTabBars,
+  parseLayoutTrees,
   parsePreview,
   orderKey,
   appendToOrder,
   removeFromOrder,
   removeIdFromStacks,
   sortByOrder,
-  reorderForDrop,
   toggleStackGroup,
   toggleGroupDisabled,
   addToStack,
   setActiveMember,
   type Stack,
+  type TreeNode,
   type WindowSnapshot,
   type MonitorSnapshot,
   type DropPreview,
@@ -79,6 +80,13 @@ const disabled = new Set<string>();
 const groupTiled = new Map<string, string[]>();
 /// internalIds que NÓS minimizamos como abas inativas (para restaurar depois).
 const stackHidden = new Set<string>();
+/// Árvores BSP persistentes por `(monitor, desktop)`, com folhas em internalId (forma canônica).
+/// O core reconcilia e devolve a versão atualizada a cada SyncWindows/MoveWindow.
+let trees = new Map<string, TreeNode | null>();
+/// Mapas de transporte do ÚLTIMO retile (internalId ↔ id opaco), reusados no drop (sem retile no meio
+/// do arrasto, eles seguem válidos para as janelas pré-existentes).
+let lastTransportOf = new Map<string, number>();
+let lastTransportToStable = new Map<number, string>();
 
 /// `internalId` da janela em arrasto (null fora de um move).
 let draggedId: string | null = null;
@@ -190,6 +198,7 @@ function retile(): void {
   const byId = new Map<number, KWinWindow>();
   const stableToWin = new Map<string, KWinWindow>();
   const transportOf = new Map<string, number>();
+  const transportToStable = new Map<number, string>();
   const snapshots: WindowSnapshot[] = [];
   for (const [key, arr] of groups) {
     const sortedIds = sortByOrder(
@@ -207,6 +216,7 @@ function retile(): void {
       byId.set(id, entry.win);
       stableToWin.set(entry.stableId, entry.win);
       transportOf.set(entry.stableId, id);
+      transportToStable.set(id, entry.stableId);
       const g = entry.win.frameGeometry;
       snapshots.push({
         id,
@@ -224,6 +234,12 @@ function retile(): void {
     }
   }
 
+  // Guarda os mapas de transporte para o drop (MoveWindow) reusar durante o arrasto.
+  lastTransportOf = transportOf;
+  lastTransportToStable = transportToStable;
+  const aw = workspace.activeWindow;
+  const focusedStable = aw ? windowId(aw) : '';
+
   callDBus(
     BUS_NAME,
     OBJECT_PATH,
@@ -231,8 +247,10 @@ function retile(): void {
     'SyncWindows',
     serializeWindows(snapshots),
     serializeMonitors(monitorsFrom(outputs)),
-    serializeState(stacks, disabled, transportOf),
+    serializeState(stacks, disabled, transportOf, trees, focusedStable),
     (layoutJson: string) => {
+      // Persiste as árvores reconciliadas (traduzidas de volta para internalId).
+      trees = parseLayoutTrees(layoutJson, transportToStable);
       const commands = parseLayout(layoutJson);
       const tabBars = parseTabBars(layoutJson);
 
@@ -423,27 +441,54 @@ function onMoveStep(): void {
   );
 }
 
-/// Fim do arrasto: esconde o outline, consolida (empilha se zona `stack`, senão swap) e re-tila.
+/// Fim do arrasto: esconde o outline e consolida o drop. Zona `stack` → empilha em abas; zona de lado
+/// → MoveWindow (move+split na árvore persistente, traduzindo ids via os mapas do último retile).
 function onMoveFinish(win: KWinWindow): void {
   workspace.hideOutline();
-  if (draggedId !== null) {
-    const cursor = workspace.cursorPos;
-    const target = windowUnderPointObj(cursor.x, cursor.y, draggedId);
-    if (target) {
-      const targetId = windowId(target);
-      const monitor = collectOutputs().indexOf(win.output);
-      const key = orderKey(monitor < 0 ? 0 : monitor, desktopIndexOf(win));
-      if (lastZone === 'stack') {
-        addToStack(stacks, key, targetId, draggedId);
-      } else {
-        reorderForDrop(order, key, draggedId, targetId);
-      }
-    }
-  }
+  const dragged = draggedId;
+  const zone = lastZone;
   draggedId = null;
   lastCursor = null;
   resolving = false;
   lastZone = 'none';
+
+  if (dragged === null) {
+    retile();
+    return;
+  }
+  const cursor = workspace.cursorPos;
+  const target = windowUnderPointObj(cursor.x, cursor.y, dragged);
+  if (!target) {
+    retile();
+    return;
+  }
+  const targetId = windowId(target);
+  if (zone === 'stack') {
+    const monitor = collectOutputs().indexOf(win.output);
+    const key = orderKey(monitor < 0 ? 0 : monitor, desktopIndexOf(win));
+    addToStack(stacks, key, targetId, dragged);
+    retile();
+    return;
+  }
+  const draggedT = lastTransportOf.get(dragged);
+  const targetT = lastTransportOf.get(targetId);
+  if (zone !== 'none' && zone !== 'center' && draggedT !== undefined && targetT !== undefined) {
+    callDBus(
+      BUS_NAME,
+      OBJECT_PATH,
+      IFACE,
+      'MoveWindow',
+      serializeState(stacks, disabled, lastTransportOf, trees, dragged),
+      draggedT,
+      targetT,
+      zone,
+      (treesJson: string) => {
+        trees = parseLayoutTrees(treesJson, lastTransportToStable);
+        retile();
+      },
+    );
+    return;
+  }
   retile();
 }
 

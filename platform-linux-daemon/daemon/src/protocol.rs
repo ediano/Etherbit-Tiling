@@ -9,9 +9,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use etherbit_tiling_core::{
-    compute_geometry, detect_drop_target, is_tileable, reconcile, Axis, DropPreview, DropZone,
-    LayoutOptions, LayoutTree, Node, PreviewRect, StackDescriptor, TabBarRect, WindowInfo,
-    WindowRect, WorkArea, MIN_RATIO,
+    compute_geometry, detect_drop_target, is_tileable, move_window as core_move_window, reconcile,
+    Axis, DropPreview, DropZone, LayoutOptions, LayoutTree, Node, PreviewRect, StackDescriptor,
+    TabBarRect, WindowInfo, WindowRect, WorkArea, MIN_RATIO,
 };
 
 /// Janela vinda da ponte. Espelha `windows_json` do contrato D-Bus.
@@ -154,6 +154,30 @@ pub struct TabBarDto {
 pub struct LayoutResultDto {
     pub rects: Vec<RectDto>,
     pub tab_bars: Vec<TabBarDto>,
+    #[serde(default)]
+    pub trees: Vec<TreeDto>,
+}
+
+/// Inverso de `zone_label`: rótulo snake_case → zona do core (desconhecido → `None`).
+fn parse_zone(s: &str) -> DropZone {
+    match s {
+        "left" => DropZone::Left,
+        "right" => DropZone::Right,
+        "top" => DropZone::Top,
+        "bottom" => DropZone::Bottom,
+        "top_left" => DropZone::TopLeft,
+        "top_right" => DropZone::TopRight,
+        "bottom_left" => DropZone::BottomLeft,
+        "bottom_right" => DropZone::BottomRight,
+        "center" => DropZone::Center,
+        "stack" => DropZone::Stack,
+        _ => DropZone::None,
+    }
+}
+
+/// Saída de `move_window`: só as árvores atualizadas (a ponte persiste e re-sincroniza a geometria).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TreesDto {
     #[serde(default)]
     pub trees: Vec<TreeDto>,
 }
@@ -409,6 +433,26 @@ fn parse_target(target_json: &str) -> Result<Option<PreviewRect>> {
     Ok(Some(PreviewRect { x: g.x, y: g.y, width: g.width, height: g.height }))
 }
 
+/// Aplica um drag-to-tile: move `dragged_id` para junto de `target_id` no lado da `zone`, rachando a
+/// folha do alvo na árvore do grupo que o contém. É tree-only: devolve apenas as árvores atualizadas
+/// (`{"trees":[...]}`) — a ponte persiste e re-sincroniza a geometria via `SyncWindows`. Aplica a
+/// todos os grupos; só o que contém o alvo muda (o core trata o resto como no-op).
+pub fn move_window(
+    state_json: &str,
+    dragged_id: u64,
+    target_id: u64,
+    zone: &str,
+) -> Result<String> {
+    let state = parse_state(state_json)?;
+    let zone = parse_zone(zone);
+    let trees = parse_trees(&state);
+    let dtos: Vec<TreeDto> = trees
+        .iter()
+        .map(|(m, w, t)| tree_to_dto(*m, *w, &core_move_window(t, dragged_id, target_id, zone)))
+        .collect();
+    serde_json::to_string(&TreesDto { trees: dtos }).context("falha ao serializar trees_json")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,6 +653,31 @@ mod tests {
         let a1 = r1.rects.iter().find(|r| r.id == 1).expect("1 na 1ª");
         let b1 = r2.rects.iter().find(|r| r.id == 1).expect("1 na 2ª");
         assert_eq!(a1, b1, "janela 1 estável ao abrir a 3ª focando a 2");
+    }
+
+    #[test]
+    fn move_window_mutates_tree_and_returns_trees() {
+        // Constrói a árvore de [1,2,3], depois move 3 para a esquerda de 1 via move_window.
+        let w = format!("[{},{},{}]", win_json(1, "a"), win_json(2, "b"), win_json(3, "c"));
+        let first = sync_windows(&w, AREAS, "", &[], OPTS).expect("ok");
+        let r1 = layout_of(&first);
+        let trees_json = serde_json::to_string(&r1.trees).unwrap();
+        let state = format!(r#"{{"trees":{trees_json}}}"#);
+        let out = move_window(&state, 3, 1, "left").expect("move ok");
+        let moved: TreesDto = serde_json::from_str(&out).expect("trees válidas");
+        assert_eq!(moved.trees.len(), 1);
+        // Re-sincroniza com as árvores movidas: 3 deve estar à esquerda de 1.
+        let state2 = format!(r#"{{"trees":{}}}"#, serde_json::to_string(&moved.trees).unwrap());
+        let second = sync_windows(&w, AREAS, &state2, &[], OPTS).expect("ok");
+        let r2 = layout_of(&second);
+        let a1 = r2.rects.iter().find(|r| r.id == 1).unwrap();
+        let a3 = r2.rects.iter().find(|r| r.id == 3).unwrap();
+        assert!(a3.x < a1.x, "3 à esquerda de 1 após move");
+    }
+
+    #[test]
+    fn move_window_rejects_invalid_state() {
+        assert!(move_window("{bad", 1, 2, "left").is_err());
     }
 
     #[test]

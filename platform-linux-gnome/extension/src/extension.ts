@@ -29,19 +29,20 @@ import {
   serializeTarget,
   parseLayout,
   parseTabBars,
+  parseLayoutTrees,
   parsePreview,
   orderKey,
   appendToOrder,
   removeFromOrder,
   removeIdFromStacks,
   sortByOrder,
-  reorderForDrop,
   toggleStackGroup,
   toggleGroupDisabled,
   addToStack,
   setActiveMember,
   type Stack,
   type TabBar,
+  type TreeNode,
   type WindowSnapshot,
   type MonitorSnapshot,
 } from './bridge.js';
@@ -77,9 +78,13 @@ export default class EtherbitTilingExtension extends Extension {
   // Suprime reentrância enquanto aplicamos geometria (evita laço de feedback).
   private _applying = false;
 
-  // Ordem estável das janelas por `(monitor, workspace)` — torna o BSP determinístico e o
-  // rearranjo do drop persistente sem estado no daemon.
+  // Ordem estável das janelas por `(monitor, workspace)` — determina a ordem de inserção de janelas
+  // NOVAS na árvore (e o bootstrap balanceado). A topologia/proporções persistem em `_trees`.
   private _order = new Map<string, number[]>();
+
+  // Árvores BSP persistentes por `(monitor, workspace)` — estado da ponte; o daemon segue sem estado.
+  // Atualizadas a cada SyncWindows/MoveWindow (o core reconcilia e devolve a versão nova).
+  private _trees = new Map<string, TreeNode | null>();
 
   // Estado leve novo (também vive na ponte; o daemon segue sem estado):
   //  - `_stacks`: janelas empilhadas em abas, por `(monitor, workspace)`;
@@ -326,17 +331,23 @@ export default class EtherbitTilingExtension extends Extension {
       }
     }
 
+    const focus = global.display.focus_window;
+    const focusedId = focus ? focus.get_stable_sequence() : 0;
+
     let layoutJson: string;
     try {
       [layoutJson] = this._proxy.SyncWindowsSync(
         serializeWindows(snapshots),
         serializeMonitors(this._collectMonitors()),
-        serializeState(this._stacks, this._disabledGroups),
+        serializeState(this._stacks, this._disabledGroups, this._trees, focusedId),
       );
     } catch (error) {
       console.error(`Etherbit Tiling: SyncWindows falhou: ${error}`);
       return;
     }
+
+    // Persiste as árvores reconciliadas pelo core para reenviar no próximo sync (estabilidade).
+    this._trees = parseLayoutTrees(layoutJson);
 
     const commands = parseLayout(layoutJson);
     const tabBars = parseTabBars(layoutJson);
@@ -522,11 +533,11 @@ export default class EtherbitTilingExtension extends Extension {
     }
   }
 
-  /// Fim do arrasto: consolida o rearranjo (swap do arrastado com a janela sob o ponteiro) e
-  /// encerra o overlay. O `_scheduleRelayout()` (chamado pelo handler) re-tila todo o BSP a partir
-  /// da nova ordem — recálculo instantâneo de todas as janelas.
+  /// Fim do arrasto: consolida o drop. Zona `stack` → empilha em abas; zona de lado → MoveWindow
+  /// (move+split na árvore: o arrastado racha a folha do alvo no lado sobrevoado). O
+  /// `_scheduleRelayout()` (chamado pelo handler) re-tila a partir das árvores atualizadas.
   private _onGrabEnd(window: Meta.Window | null): void {
-    if (this._draggedId && window) {
+    if (this._draggedId && window && this._proxy) {
       const [x, y] = global.get_pointer();
       const target = this._windowUnderPointObj(x, y, this._draggedId);
       if (target) {
@@ -534,11 +545,21 @@ export default class EtherbitTilingExtension extends Extension {
         const workspace = window.get_workspace();
         const key = orderKey(window.get_monitor(), workspace ? workspace.index() : 0);
         if (this._lastPreviewZone === 'stack') {
-          // Solto na faixa superior da janela-alvo → empilha em abas.
+          // Solto na faixa superior da janela-alvo → empilha em abas (estado de stacks).
           addToStack(this._stacks, key, targetId, this._draggedId);
-        } else {
-          // Solto em outro lugar sobre a janela → troca de posição (swap).
-          reorderForDrop(this._order, key, this._draggedId, targetId);
+        } else if (this._lastPreviewZone !== 'none' && this._lastPreviewZone !== 'center') {
+          // Solto sobre um lado da janela → move+split na árvore (persistente).
+          try {
+            const [treesJson] = this._proxy.MoveWindowSync(
+              serializeState(this._stacks, this._disabledGroups, this._trees, this._draggedId),
+              this._draggedId,
+              targetId,
+              this._lastPreviewZone,
+            );
+            this._trees = parseLayoutTrees(treesJson);
+          } catch (error) {
+            console.error(`Etherbit Tiling: MoveWindow falhou: ${error}`);
+          }
         }
       }
     }

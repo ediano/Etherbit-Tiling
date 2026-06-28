@@ -46,6 +46,13 @@ const IFACE_XML = `
       <arg type="s" direction="in" name="target_json"/>
       <arg type="s" direction="out" name="preview_json"/>
     </method>
+    <method name="MoveWindow">
+      <arg type="s" direction="in" name="state_json"/>
+      <arg type="t" direction="in" name="dragged_id"/>
+      <arg type="t" direction="in" name="target_id"/>
+      <arg type="s" direction="in" name="zone"/>
+      <arg type="s" direction="out" name="trees_json"/>
+    </method>
     <signal name="ConfigChanged">
       <arg type="s" name="config_json"/>
     </signal>
@@ -69,6 +76,15 @@ export interface TilingProxy {
     y: number,
     monitorsJson: string,
     targetJson: string,
+  ): [string];
+  /// Drag-to-tile: move `draggedId` para junto de `targetId` no lado `zone`. Recebe o `stateJson`
+  /// (com as árvores) e devolve `{"trees":[...]}` para a ponte persistir; a geometria vem do
+  /// `SyncWindows` seguinte.
+  MoveWindowSync(
+    stateJson: string,
+    draggedId: number,
+    targetId: number,
+    zone: string,
   ): [string];
   connectSignal(
     name: 'ConfigChanged',

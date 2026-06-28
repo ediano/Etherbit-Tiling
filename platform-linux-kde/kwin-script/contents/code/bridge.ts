@@ -291,6 +291,51 @@ export interface Stack {
   active: string;
 }
 
+/// Árvore BSP persistente com ids INTERNOS (internalId string) — a forma canônica guardada na ponte.
+export type TreeNode =
+  | { win: string }
+  | { split: { axis: 'h' | 'v'; ratio: number; first: TreeNode; second: TreeNode } };
+
+/// Árvore com ids de TRANSPORTE (números), como trafega no contrato D-Bus (igual ao GNOME).
+export type TransportNode =
+  | { win: number }
+  | { split: { axis: 'h' | 'v'; ratio: number; first: TransportNode; second: TransportNode } };
+
+/// internalId-tree → transport-tree. Folha sem transporte (janela fechada) é COLAPSADA (o irmão
+/// sobe), espelhando o `collapse_leaf` do core — nunca envia id intraduzível.
+export function treeToTransport(
+  node: TreeNode,
+  transportOf: Map<string, number>,
+): TransportNode | null {
+  if ('win' in node) {
+    const t = transportOf.get(node.win);
+    return t === undefined ? null : { win: t };
+  }
+  const first = treeToTransport(node.split.first, transportOf);
+  const second = treeToTransport(node.split.second, transportOf);
+  if (first && second) {
+    return { split: { axis: node.split.axis, ratio: node.split.ratio, first, second } };
+  }
+  return first ?? second;
+}
+
+/// transport-tree → internalId-tree. Folha sem internalId conhecido é COLAPSADA (o irmão sobe).
+export function treeFromTransport(
+  node: TransportNode,
+  toStable: Map<number, string>,
+): TreeNode | null {
+  if ('win' in node) {
+    const s = toStable.get(node.win);
+    return s === undefined ? null : { win: s };
+  }
+  const first = treeFromTransport(node.split.first, toStable);
+  const second = treeFromTransport(node.split.second, toStable);
+  if (first && second) {
+    return { split: { axis: node.split.axis, ratio: node.split.ratio, first, second } };
+  }
+  return first ?? second;
+}
+
 /// Reverte `orderKey`: `"monitor:workspace"` → `[monitor, workspace]`.
 export function parseOrderKey(key: string): [number, number] {
   const [m, w] = key.split(':');
@@ -303,6 +348,8 @@ export function serializeState(
   stacks: Map<string, Stack[]>,
   disabled: Set<string>,
   transportOf: Map<string, number>,
+  trees: Map<string, TreeNode | null>,
+  focusedStable: string,
 ): string {
   const stackDtos: Array<{
     monitor: number;
@@ -331,7 +378,53 @@ export function serializeState(
   for (const key of disabled) {
     disabledDtos.push(parseOrderKey(key));
   }
-  return JSON.stringify({ stacks: stackDtos, disabled_groups: disabledDtos });
+  // Árvores por grupo, traduzidas para ids de transporte (o core reconcilia e devolve a versão nova).
+  const treeDtos: Array<{ monitor: number; workspace: number; root: TransportNode | null }> = [];
+  for (const [key, root] of trees) {
+    const [monitor, workspace] = parseOrderKey(key);
+    treeDtos.push({ monitor, workspace, root: root ? treeToTransport(root, transportOf) : null });
+  }
+  const focused_id = transportOf.get(focusedStable) ?? 0;
+  return JSON.stringify({
+    stacks: stackDtos,
+    disabled_groups: disabledDtos,
+    trees: treeDtos,
+    focused_id,
+  });
+}
+
+/// Lê as árvores devolvidas pelo daemon (transporte) e as traduz para internalId para a ponte
+/// PERSISTIR por grupo. Defensivo: entradas malformadas são puladas; folhas intraduzíveis colapsam.
+export function parseLayoutTrees(
+  json: string,
+  toStable: Map<number, string>,
+): Map<string, TreeNode | null> {
+  const out = new Map<string, TreeNode | null>();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return out;
+  }
+  if (typeof parsed !== 'object' || parsed === null) {
+    return out;
+  }
+  const raw = (parsed as Record<string, unknown>).trees;
+  if (!Array.isArray(raw)) {
+    return out;
+  }
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) {
+      continue;
+    }
+    const e = entry as Record<string, unknown>;
+    if (!isFiniteNumber(e.monitor) || !isFiniteNumber(e.workspace)) {
+      continue;
+    }
+    const root = e.root == null ? null : treeFromTransport(e.root as TransportNode, toStable);
+    out.set(orderKey(e.monitor, e.workspace), root);
+  }
+  return out;
 }
 
 /// Serializa o retângulo da janela sob o cursor para o `target_json` do `ResolveDropZone` (`""` se

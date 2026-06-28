@@ -745,22 +745,24 @@ fn collapse_leaf(tree: LayoutTree, id: u64) -> LayoutTree {
     LayoutTree { root: tree.root.and_then(|r| walk(r, id)) }
 }
 
-/// Racha a folha `target` em duas: ela própria (`first`) e `new_id` (`second`), com ratio 0.5 no
-/// `axis` dado. As demais folhas não se mexem.
-fn split_leaf(node: Node, target: u64, new_id: u64, axis: Axis) -> Node {
+/// Racha a folha `target` em duas (ratio 0.5, eixo `axis`): `new_id` fica em `first` se
+/// `new_first`, senão em `second`. As demais folhas não se mexem.
+fn split_leaf_into(node: Node, target: u64, new_id: u64, axis: Axis, new_first: bool) -> Node {
     match node {
-        Node::Leaf(id) if id == target => Node::Split {
-            axis,
-            ratio: 0.5,
-            first: Box::new(Node::Leaf(target)),
-            second: Box::new(Node::Leaf(new_id)),
-        },
+        Node::Leaf(id) if id == target => {
+            let (first, second) = if new_first {
+                (Node::Leaf(new_id), Node::Leaf(target))
+            } else {
+                (Node::Leaf(target), Node::Leaf(new_id))
+            };
+            Node::Split { axis, ratio: 0.5, first: Box::new(first), second: Box::new(second) }
+        }
         Node::Leaf(id) => Node::Leaf(id),
         Node::Split { axis: a, ratio, first, second } => Node::Split {
             axis: a,
             ratio,
-            first: Box::new(split_leaf(*first, target, new_id, axis)),
-            second: Box::new(split_leaf(*second, target, new_id, axis)),
+            first: Box::new(split_leaf_into(*first, target, new_id, axis, new_first)),
+            second: Box::new(split_leaf_into(*second, target, new_id, axis, new_first)),
         },
     }
 }
@@ -807,7 +809,31 @@ fn insert_one(
         .find(|(id, _)| *id == target)
         .map(|(_, r)| if r.w >= r.h { Axis::Horizontal } else { Axis::Vertical })
         .unwrap_or(Axis::Horizontal);
-    LayoutTree { root: Some(split_leaf(root, target, new_id, axis)) }
+    LayoutTree { root: Some(split_leaf_into(root, target, new_id, axis, false)) }
+}
+
+/// Move a janela `dragged` para junto de `target`, rachando a folha do alvo no lado da `zone`
+/// (`Left/Right` → corte horizontal; `Top/Bottom` → vertical; o arrastado fica do lado indicado).
+/// Remove o arrastado de onde estava (o irmão sobe) e o reinsere com ratio 0.5. Zonas que não são
+/// um lado (`Center`/`Stack`/`None`/cantos) ou alvo ausente → árvore inalterada (nunca perde janela).
+pub fn move_window(tree: &LayoutTree, dragged: u64, target: u64, zone: DropZone) -> LayoutTree {
+    if dragged == target {
+        return tree.clone();
+    }
+    let (axis, dragged_first) = match zone {
+        DropZone::Left => (Axis::Horizontal, true),
+        DropZone::Right => (Axis::Horizontal, false),
+        DropZone::Top => (Axis::Vertical, true),
+        DropZone::Bottom => (Axis::Vertical, false),
+        _ => return tree.clone(),
+    };
+    // Remove o arrastado; se o alvo não está nesta árvore, desfaz (mantém a árvore original).
+    let removed = collapse_leaf(tree.clone(), dragged);
+    let root = match removed.root {
+        Some(r) if node_contains(&r, target) => r,
+        _ => return tree.clone(),
+    };
+    LayoutTree { root: Some(split_leaf_into(root, target, dragged, axis, dragged_first)) }
 }
 
 /// Constrói uma árvore BALANCEADA a partir de `ids` (ordem preservada), aspect-aware e com ratio
@@ -1470,5 +1496,31 @@ mod tests {
         let res = compute_geometry(&LayoutTree::default(), &area, &opts(), &[], &[]);
         assert!(res.rects.is_empty());
         assert!(res.tab_bars.is_empty());
+    }
+
+    #[test]
+    fn move_window_splits_target_on_zone_side() {
+        // [1,2,3] balanceada; mover 3 para a ESQUERDA de 1 → 3 fica à esquerda de 1.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], None, &area, &opts());
+        let moved = move_window(&tree, 3, 1, DropZone::Left);
+        let geo = compute_geometry(&moved, &area, &opts(), &[], &[1, 2, 3]);
+        assert_eq!(geo.rects.len(), 3);
+        let r1 = geo.rects.iter().find(|r| r.id == 1).unwrap();
+        let r3 = geo.rects.iter().find(|r| r.id == 3).unwrap();
+        // 3 à esquerda de 1 (mesma faixa vertical, x menor).
+        assert!(r3.x < r1.x);
+        assert_eq!(r3.y, r1.y);
+        assert_eq!(r3.height, r1.height);
+    }
+
+    #[test]
+    fn move_window_noop_for_center_and_missing_target() {
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        // Center → inalterado.
+        assert_eq!(move_window(&tree, 2, 1, DropZone::Center), tree);
+        // Alvo ausente → inalterado (não perde a janela arrastada).
+        assert_eq!(move_window(&tree, 2, 99, DropZone::Left), tree);
     }
 }

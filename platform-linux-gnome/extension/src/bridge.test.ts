@@ -5,6 +5,7 @@ import {
   serializeMonitors,
   parseLayout,
   parseTabBars,
+  parseLayoutTrees,
   parsePreview,
   orderKey,
   appendToOrder,
@@ -20,6 +21,7 @@ import {
   toggleGroupDisabled,
   parseOrderKey,
   type Stack,
+  type TreeNode,
   type WindowSnapshot,
   type MonitorSnapshot,
 } from './bridge.js';
@@ -173,16 +175,40 @@ describe('estado de abas (stacks) e tiling por grupo', () => {
     expect(disabled.has(key)).toBe(false);
   });
 
-  it('serializeState emite stacks (≥2 membros) e grupos desligados', () => {
+  it('serializeState emite stacks (≥2 membros), grupos desligados, árvores e foco', () => {
     const stacks = new Map<string, Stack[]>([
       [orderKey(0, 0), [{ members: [1, 2], active: 2 }]],
       [orderKey(1, 0), [{ members: [9], active: 9 }]], // 1 membro → não serializa
     ]);
     const disabled = new Set<string>([orderKey(0, 1)]);
-    expect(JSON.parse(serializeState(stacks, disabled))).toEqual({
+    const trees = new Map<string, TreeNode | null>([[orderKey(0, 0), { win: 7 }]]);
+    expect(JSON.parse(serializeState(stacks, disabled, trees, 5))).toEqual({
       stacks: [{ monitor: 0, workspace: 0, members: [1, 2], active: 2 }],
       disabled_groups: [[0, 1]],
+      trees: [{ monitor: 0, workspace: 0, root: { win: 7 } }],
+      focused_id: 5,
     });
+  });
+
+  it('parseLayoutTrees lê as árvores por grupo e ignora entradas malformadas', () => {
+    const json = JSON.stringify({
+      rects: [],
+      tab_bars: [],
+      trees: [
+        { monitor: 0, workspace: 0, root: { win: 3 } },
+        { monitor: 1, workspace: 0, root: null },
+        { workspace: 0, root: { win: 9 } }, // sem monitor → ignorada
+      ],
+    });
+    const trees = parseLayoutTrees(json);
+    expect(trees.get(orderKey(0, 0))).toEqual({ win: 3 });
+    expect(trees.get(orderKey(1, 0))).toBeNull();
+    expect(trees.size).toBe(2);
+  });
+
+  it('parseLayoutTrees é defensivo (JSON inválido → vazio)', () => {
+    expect(parseLayoutTrees('not json').size).toBe(0);
+    expect(parseLayoutTrees('{}').size).toBe(0);
   });
 
   it('serializeTarget devolve "" sem alvo e JSON com alvo', () => {

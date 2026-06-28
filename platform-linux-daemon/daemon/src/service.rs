@@ -147,6 +147,20 @@ impl Tiling {
             .map_err(|e| fdo::Error::InvalidArgs(format!("resolve_drop_zone: {e}")))
     }
 
+    /// Aplica um drag-to-tile: move `dragged_id` para junto de `target_id` no lado da `zone`
+    /// (left/right/top/bottom). Recebe o `state_json` (com as árvores) e devolve `{"trees":[...]}`
+    /// atualizado para a ponte persistir; a geometria vem do `SyncWindows` seguinte. Sem estado.
+    async fn move_window(
+        &self,
+        state_json: String,
+        dragged_id: u64,
+        target_id: u64,
+        zone: String,
+    ) -> fdo::Result<String> {
+        protocol::move_window(&state_json, dragged_id, target_id, &zone)
+            .map_err(|e| fdo::Error::InvalidArgs(format!("move_window: {e}")))
+    }
+
     /// Sinal emitido sempre que a configuração muda. Carrega a config completa em JSON.
     #[zbus(signal)]
     async fn config_changed(emitter: &SignalEmitter<'_>, config_json: String) -> zbus::Result<()>;
