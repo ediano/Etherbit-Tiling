@@ -19,6 +19,9 @@ interface QPoint {
 /** Saída/monitor. Tratado como opaco — só repassado a `clientArea`. */
 type KWinOutput = unknown;
 
+/** Desktop virtual do KWin (Plasma 6). Tratado como opaco — só comparado por identidade/índice. */
+type KWinVirtualDesktop = unknown;
+
 /** Janela gerenciada pelo KWin (subconjunto relevante ao tiling). */
 interface KWinWindow {
   /** Geometria do quadro da janela. É GRAVÁVEL: atribuir reposiciona/redimensiona. */
@@ -39,6 +42,10 @@ interface KWinWindow {
   readonly moveable: boolean;
   readonly minimizable: boolean;
   readonly maximizable: boolean;
+  /** Minimizada. É GRAVÁVEL: usamos para OCULTAR as abas inativas de um stack. */
+  minimized: boolean;
+  /** Desktops virtuais aos quais a janela pertence (vazio = em todos). */
+  readonly desktops: KWinVirtualDesktop[];
   readonly skipTaskbar: boolean;
   readonly skipPager: boolean;
   readonly transient: boolean;
@@ -91,7 +98,9 @@ declare const enum ClientAreaOption {
 interface KWinWorkspace {
   readonly windows: KWinWindow[];
   readonly activeWindow: KWinWindow | null;
-  readonly currentDesktop: unknown;
+  readonly currentDesktop: KWinVirtualDesktop;
+  /** Todos os desktops virtuais, na ordem; usado para indexar `win.desktops`. */
+  readonly desktops: KWinVirtualDesktop[];
 
   /** Posição atual do cursor (QPoint), em coordenadas absolutas do stage. */
   readonly cursorPos: QPoint;
@@ -134,6 +143,17 @@ declare function callDBus(
 
 /** Lê um valor da config nativa do script (kwinrc), com fallback. */
 declare function readConfig<T>(key: string, defaultValue: T): T;
+
+/**
+ * Registra um atalho de teclado global no KWin. `keySequence` é a tecla padrão (ex.: "Meta+S"),
+ * editável depois em Configurações do Sistema → Atalhos. Dispara `callback` ao pressionar.
+ */
+declare function registerShortcut(
+  title: string,
+  text: string,
+  keySequence: string,
+  callback: () => void,
+): boolean;
 
 /** Saída de depuração — visível em `journalctl -f QT_CATEGORY=kwin_scripting`. */
 declare function print(...args: unknown[]): void;

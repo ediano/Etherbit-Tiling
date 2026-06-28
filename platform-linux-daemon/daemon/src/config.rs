@@ -28,6 +28,8 @@ pub struct Config {
     pub ignore_list: Vec<String>,
     /// Iniciar o Etherbit com o sistema (gerencia o `.desktop` em ~/.config/autostart).
     pub autostart: bool,
+    /// Altura (px) da barra de abas desenhada no topo de um quadrante empilhado.
+    pub tab_bar_height: u32,
 }
 
 impl Default for Config {
@@ -40,6 +42,7 @@ impl Default for Config {
             border_width: 2,
             ignore_list: Vec::new(),
             autostart: false,
+            tab_bar_height: 28,
         }
     }
 }
@@ -95,6 +98,7 @@ mod tests {
         assert_eq!(cfg.border_width, 2);
         assert!(cfg.ignore_list.is_empty());
         assert!(!cfg.autostart);
+        assert_eq!(cfg.tab_bar_height, 28);
     }
 
     #[test]
@@ -109,6 +113,7 @@ mod tests {
             "border_width",
             "ignore_list",
             "autostart",
+            "tab_bar_height",
         ] {
             assert!(value.get(field).is_some(), "campo ausente: {field}");
         }
@@ -124,6 +129,7 @@ mod tests {
             border_width: 3,
             ignore_list: vec!["obs".to_string(), "microsoft-word".to_string()],
             autostart: true,
+            tab_bar_height: 32,
         };
         let raw = toml::to_string_pretty(&cfg).expect("serializa TOML");
         let back: Config = toml::from_str(&raw).expect("desserializa TOML");
@@ -134,6 +140,7 @@ mod tests {
         assert_eq!(back.border_width, cfg.border_width);
         assert_eq!(back.ignore_list, cfg.ignore_list);
         assert_eq!(back.autostart, cfg.autostart);
+        assert_eq!(back.tab_bar_height, cfg.tab_bar_height);
     }
 
     #[test]

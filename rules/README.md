@@ -27,6 +27,7 @@ arqueologia de commits.
 | [0015](0015-notas-release-sem-url.md) | Notas de release sem URLs (download manual de assets versionados) | ✅ Aceita |
 | [0016](0016-extensao-ponte-burra-render-no-daemon.md) | Extensão "ponte burra", layout no core e renderização no daemon | ✅ Aceita |
 | [0017](0017-dominio-proprio-ediano-dev.md) | Migração para domínio próprio (`ediano.dev`) | ✅ Aceita |
+| [0018](0018-abas-atalhos-globais-drag-to-group.md) | Abas (StackNode), atalhos globais e agrupar por arraste | ✅ Aceita |
 
 ## Como adicionar uma nova decisão
 1. Copie o formato de um ADR existente.

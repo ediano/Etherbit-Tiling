@@ -7,8 +7,10 @@
 //    APLICA os retângulos-alvo devolvidos via `move_resize_frame` (geométrico e instantâneo).
 // Toda a matemática (Ether Flow) e a resiliência gráfica vivem no Rust (core/daemon).
 
+import type Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
+import Shell from 'gi://Shell';
 import St from 'gi://St';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -23,17 +25,31 @@ import {
 import {
   serializeWindows,
   serializeMonitors,
+  serializeState,
+  serializeTarget,
   parseLayout,
+  parseTabBars,
   parsePreview,
   orderKey,
   appendToOrder,
   removeFromOrder,
+  removeIdFromStacks,
   sortByOrder,
   reorderForDrop,
+  toggleStackGroup,
+  toggleGroupDisabled,
+  addToStack,
+  setActiveMember,
+  type Stack,
+  type TabBar,
   type WindowSnapshot,
   type MonitorSnapshot,
 } from './bridge.js';
 import { EtherbitIndicator } from './indicator.js';
+
+/// Nomes das chaves de atalho no gschema (schemas/org.gnome.shell.extensions.etherbit-tiling.gschema.xml).
+const KEY_TOGGLE_TILING = 'toggle-tiling';
+const KEY_TOGGLE_TABBING = 'toggle-tabbing';
 
 /// Período do loop que amostra o cursor durante o arrasto (~60 FPS).
 const DRAG_TICK_MS = 16;
@@ -65,11 +81,26 @@ export default class EtherbitTilingExtension extends Extension {
   // rearranjo do drop persistente sem estado no daemon.
   private _order = new Map<string, number[]>();
 
+  // Estado leve novo (também vive na ponte; o daemon segue sem estado):
+  //  - `_stacks`: janelas empilhadas em abas, por `(monitor, workspace)`;
+  //  - `_disabledGroups`: grupos com tiling desligado (Super+Y);
+  //  - `_groupTiled`: ids tiláveis por grupo no último layout (base do Super+S);
+  //  - `_stackHidden`: ids que NÓS minimizamos (abas inativas), para restaurar depois.
+  private _stacks = new Map<string, Stack[]>();
+  private _disabledGroups = new Set<string>();
+  private _groupTiled = new Map<string, number[]>();
+  private _stackHidden = new Set<number>();
+  // Barras de abas desenhadas (recriadas a cada relayout). Settings do gschema (atalhos).
+  private _tabBars: St.Widget[] = [];
+  private _settings: Gio.Settings | null = null;
+
   // Estado do arrasto + overlay de preview da drop zone.
   private _dragSource = 0;
   private _draggedId = 0;
   private _previewActor: St.Widget | null = null;
   private _lastPointer: [number, number] | null = null;
+  // Zona resolvida no último tick do arrasto (define stack vs swap ao soltar).
+  private _lastPreviewZone = 'none';
   // Em voo: evita empilhar chamadas D-Bus síncronas mais rápido que a resposta.
   private _resolving = false;
 
@@ -140,7 +171,29 @@ export default class EtherbitTilingExtension extends Extension {
       this._scheduleRelayout(),
     );
 
-    // 5) Layout inicial para as janelas já abertas.
+    // 5) Atalhos globais (Super+Y = tiling por workspace; Super+S = agrupar em abas). As teclas
+    // vivem no gschema; aqui só ligamos o disparo aos handlers que mutam o estado e re-tilam.
+    try {
+      this._settings = this.getSettings();
+      Main.wm.addKeybinding(
+        KEY_TOGGLE_TILING,
+        this._settings,
+        Meta.KeyBindingFlags.NONE,
+        Shell.ActionMode.NORMAL,
+        () => this._toggleTilingShortcut(),
+      );
+      Main.wm.addKeybinding(
+        KEY_TOGGLE_TABBING,
+        this._settings,
+        Meta.KeyBindingFlags.NONE,
+        Shell.ActionMode.NORMAL,
+        () => this._toggleTabbingShortcut(),
+      );
+    } catch (error) {
+      console.error(`Etherbit Tiling: falha ao registrar atalhos: ${error}`);
+    }
+
+    // 6) Layout inicial para as janelas já abertas.
     this._scheduleRelayout();
   }
 
@@ -150,9 +203,23 @@ export default class EtherbitTilingExtension extends Extension {
       this._relayoutSource = 0;
     }
 
+    // Remove os atalhos globais.
+    if (this._settings) {
+      Main.wm.removeKeybinding(KEY_TOGGLE_TILING);
+      Main.wm.removeKeybinding(KEY_TOGGLE_TABBING);
+      this._settings = null;
+    }
+
+    // Restaura janelas que minimizamos como abas inativas e descarta as barras de abas.
+    this._restoreHiddenWindows();
+    this._destroyTabBars();
+
     // Encerra um arrasto em andamento (ex.: troca de extensão durante o drag) sem deixar lixo.
     this._stopDrag();
     this._order.clear();
+    this._stacks.clear();
+    this._disabledGroups.clear();
+    this._groupTiled.clear();
 
     for (const id of this._displayIds) {
       global.display.disconnect(id);
@@ -196,6 +263,8 @@ export default class EtherbitTilingExtension extends Extension {
           this._tracked.delete(id);
         }
         removeFromOrder(this._order, id);
+        removeIdFromStacks(this._stacks, id);
+        this._stackHidden.delete(id);
         this._scheduleRelayout();
       });
       this._tracked.set(id, { window, unmanagedId });
@@ -262,6 +331,7 @@ export default class EtherbitTilingExtension extends Extension {
       [layoutJson] = this._proxy.SyncWindowsSync(
         serializeWindows(snapshots),
         serializeMonitors(this._collectMonitors()),
+        serializeState(this._stacks, this._disabledGroups),
       );
     } catch (error) {
       console.error(`Etherbit Tiling: SyncWindows falhou: ${error}`);
@@ -269,16 +339,85 @@ export default class EtherbitTilingExtension extends Extension {
     }
 
     const commands = parseLayout(layoutJson);
+    const tabBars = parseTabBars(layoutJson);
+
+    // Abas inativas a ocultar (minimizar): todo membro de stack que não é o ativo.
+    const shouldHide = new Set<number>();
+    for (const bar of tabBars) {
+      for (const member of bar.members) {
+        if (member !== bar.active) {
+          shouldHide.add(member);
+        }
+      }
+    }
+
     this._applying = true;
     try {
+      // Restaura quem deixou de estar oculto (ex.: virou a aba ativa, ou o stack foi desfeito).
+      for (const id of this._stackHidden) {
+        if (!shouldHide.has(id)) {
+          byId.get(id)?.unminimize();
+        }
+      }
+      // Aplica a geometria das janelas visíveis (singles + aba ativa de cada stack).
       for (const command of commands) {
         const window = byId.get(command.id);
         // user_op=false: reposicionamento programático, instantâneo e puramente geométrico.
         window?.move_resize_frame(false, command.x, command.y, command.width, command.height);
       }
+      // Oculta as abas inativas recém-empilhadas.
+      for (const id of shouldHide) {
+        if (!this._stackHidden.has(id)) {
+          byId.get(id)?.minimize();
+        }
+      }
     } finally {
       this._applying = false;
     }
+    this._stackHidden = shouldHide;
+
+    // Ids tiláveis por grupo (singles + membros de stacks) — base do toggle de abas (Super+S).
+    this._groupTiled = this._collectGroupTiled(commands, tabBars, byId);
+
+    // Desenha as barras de abas a partir da geometria devolvida pelo core.
+    this._rebuildTabBars(tabBars, byId);
+  }
+
+  /// Mapeia, por grupo `(monitor, workspace)`, os ids tiláveis no último layout (singles + membros
+  /// de stacks), na ordem estável. É a base do `toggleStackGroup` no atalho Super+S.
+  private _collectGroupTiled(
+    commands: ReturnType<typeof parseLayout>,
+    tabBars: TabBar[],
+    byId: Map<number, Meta.Window>,
+  ): Map<string, number[]> {
+    const ids = new Set<number>();
+    for (const c of commands) {
+      ids.add(c.id);
+    }
+    for (const bar of tabBars) {
+      for (const m of bar.members) {
+        ids.add(m);
+      }
+    }
+    const groups = new Map<string, number[]>();
+    for (const id of ids) {
+      const window = byId.get(id);
+      if (!window) {
+        continue;
+      }
+      const workspace = window.get_workspace();
+      const key = orderKey(window.get_monitor(), workspace ? workspace.index() : 0);
+      const arr = groups.get(key);
+      if (arr) {
+        arr.push(id);
+      } else {
+        groups.set(key, [id]);
+      }
+    }
+    for (const [key, arr] of groups) {
+      groups.set(key, sortByOrder(this._order, key, arr));
+    }
+    return groups;
   }
 
   // ---- Arrasto + overlay de preview da drop zone ----
@@ -312,17 +451,34 @@ export default class EtherbitTilingExtension extends Extension {
     this._lastPointer = [x, y];
     this._resolving = true;
     try {
+      // Retângulo da janela sob o cursor (excluindo a arrastada) → o core decide se é empilhar.
+      const target = this._windowUnderPointObj(x, y, this._draggedId);
+      const targetRect = target ? this._frameRectOf(target) : null;
       const [previewJson] = this._proxy.ResolveDropZoneSync(
         x,
         y,
         serializeMonitors(this._collectMonitors()),
+        serializeTarget(targetRect),
       );
-      this._updatePreview(parsePreview(previewJson));
+      const preview = parsePreview(previewJson);
+      this._lastPreviewZone = preview?.zone ?? 'none';
+      this._updatePreview(preview);
     } catch (error) {
       console.error(`Etherbit Tiling: ResolveDropZone falhou: ${error}`);
     } finally {
       this._resolving = false;
     }
+  }
+
+  /// Retângulo de frame de uma janela no formato do contrato (`{x,y,width,height}`).
+  private _frameRectOf(window: Meta.Window): {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } {
+    const r = window.get_frame_rect();
+    return { x: r.x, y: r.y, width: r.width, height: r.height };
   }
 
   /// Mostra/posiciona o overlay para a zona resolvida; esconde quando não há zona (`none`/zerado).
@@ -372,18 +528,25 @@ export default class EtherbitTilingExtension extends Extension {
   private _onGrabEnd(window: Meta.Window | null): void {
     if (this._draggedId && window) {
       const [x, y] = global.get_pointer();
-      const targetId = this._windowUnderPoint(x, y, this._draggedId);
-      if (targetId !== null) {
+      const target = this._windowUnderPointObj(x, y, this._draggedId);
+      if (target) {
+        const targetId = target.get_stable_sequence();
         const workspace = window.get_workspace();
         const key = orderKey(window.get_monitor(), workspace ? workspace.index() : 0);
-        reorderForDrop(this._order, key, this._draggedId, targetId);
+        if (this._lastPreviewZone === 'stack') {
+          // Solto na faixa superior da janela-alvo → empilha em abas.
+          addToStack(this._stacks, key, targetId, this._draggedId);
+        } else {
+          // Solto em outro lugar sobre a janela → troca de posição (swap).
+          reorderForDrop(this._order, key, this._draggedId, targetId);
+        }
       }
     }
     this._stopDrag();
   }
 
-  /// Id da janela NORMAL cujo frame contém `(x, y)`, excluindo `excludeId` (a própria arrastada).
-  private _windowUnderPoint(x: number, y: number, excludeId: number): number | null {
+  /// Janela NORMAL cujo frame contém `(x, y)`, excluindo `excludeId` (a própria arrastada).
+  private _windowUnderPointObj(x: number, y: number, excludeId: number): Meta.Window | null {
     const workspace = global.workspace_manager.get_active_workspace();
     const windows = workspace ? workspace.list_windows() : [];
     for (const window of windows) {
@@ -393,7 +556,7 @@ export default class EtherbitTilingExtension extends Extension {
       }
       const r = window.get_frame_rect();
       if (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height) {
-        return id;
+        return window;
       }
     }
     return null;
@@ -408,7 +571,119 @@ export default class EtherbitTilingExtension extends Extension {
     this._destroyPreview();
     this._draggedId = 0;
     this._lastPointer = null;
+    this._lastPreviewZone = 'none';
     this._resolving = false;
+  }
+
+  // ---- Atalhos globais (Super+Y / Super+S) ----
+
+  /// Chave `(monitor, workspace)` do grupo "ativo": monitor da janela focada (ou 0) + workspace atual.
+  private _activeGroupKey(): string {
+    const workspace = global.workspace_manager.get_active_workspace();
+    const wsIndex = workspace ? workspace.index() : 0;
+    const focus = global.display.focus_window;
+    const monitor = focus ? focus.get_monitor() : 0;
+    return orderKey(monitor, wsIndex);
+  }
+
+  /// Super+Y: liga/desliga o tiling APENAS no grupo ativo. Os demais seguem intocados (isolados por
+  /// grupo no core). Ao desligar, as janelas voltam a flutuar (o core pula o grupo).
+  private _toggleTilingShortcut(): void {
+    toggleGroupDisabled(this._disabledGroups, this._activeGroupKey());
+    this._scheduleRelayout();
+  }
+
+  /// Super+S: empilha as janelas do grupo ativo em abas; se já houver stack, desfaz (ungroup).
+  private _toggleTabbingShortcut(): void {
+    const key = this._activeGroupKey();
+    const ids = this._groupTiled.get(key) ?? [];
+    const focus = global.display.focus_window;
+    const activeId = focus ? focus.get_stable_sequence() : (ids[0] ?? 0);
+    toggleStackGroup(this._stacks, key, ids, activeId);
+    this._scheduleRelayout();
+  }
+
+  // ---- Barra de abas (desenhada pela ponte; geometria vem do core) ----
+
+  /// Recria as barras de abas a partir das `TabBar` devolvidas pelo core. Recriar a cada relayout é
+  /// simples e barato (só existem quando há stacks). Cada aba mostra ícone + título nativos.
+  private _rebuildTabBars(tabBars: TabBar[], byId: Map<number, Meta.Window>): void {
+    this._destroyTabBars();
+    for (const bar of tabBars) {
+      const box = new St.BoxLayout({
+        style_class: 'etherbit-tab-bar',
+        reactive: true,
+        can_focus: false,
+      });
+      box.set_style(
+        'background-color: rgba(46, 52, 64, 0.92);' +
+          'border-radius: 8px; padding: 2px; spacing: 2px;',
+      );
+      for (const memberId of bar.members) {
+        box.add_child(this._makeTabButton(byId.get(memberId), memberId, memberId === bar.active));
+      }
+      box.set_position(bar.x, bar.y);
+      box.set_size(bar.width, bar.height);
+      Main.layoutManager.uiGroup.add_child(box);
+      this._tabBars.push(box);
+    }
+  }
+
+  /// Botão de uma aba: ícone (via Shell.WindowTracker) + título da janela. Clique → ativa a aba.
+  private _makeTabButton(
+    window: Meta.Window | undefined,
+    memberId: number,
+    isActive: boolean,
+  ): St.Button {
+    const content = new St.BoxLayout({ style_class: 'etherbit-tab-content' });
+    content.set_style('spacing: 6px; padding: 0 8px;');
+    const app = window ? Shell.WindowTracker.get_default().get_window_app(window) : null;
+    if (app) {
+      content.add_child(app.create_icon_texture(16));
+    }
+    content.add_child(new St.Label({ text: window?.get_title() ?? '' }));
+
+    const button = new St.Button({
+      style_class: isActive ? 'etherbit-tab etherbit-tab-active' : 'etherbit-tab',
+      x_expand: true,
+      child: content,
+    });
+    button.set_style(
+      isActive
+        ? 'background-color: rgba(94, 129, 172, 0.95); border-radius: 6px; color: #eceff4;'
+        : 'background-color: transparent; border-radius: 6px; color: #d8dee9;',
+    );
+    button.connect('clicked', () => {
+      if (setActiveMember(this._stacks, memberId)) {
+        this._scheduleRelayout();
+      }
+    });
+    return button;
+  }
+
+  private _destroyTabBars(): void {
+    for (const box of this._tabBars) {
+      box.destroy();
+    }
+    this._tabBars = [];
+  }
+
+  /// Restaura (desminiminiza) todas as janelas que ocultamos como abas inativas.
+  private _restoreHiddenWindows(): void {
+    if (this._stackHidden.size === 0) {
+      return;
+    }
+    const byId = new Map<number, Meta.Window>();
+    for (const actor of global.get_window_actors()) {
+      const w = actor.get_meta_window();
+      if (w) {
+        byId.set(w.get_stable_sequence(), w);
+      }
+    }
+    for (const id of this._stackHidden) {
+      byId.get(id)?.unminimize();
+    }
+    this._stackHidden.clear();
   }
 
   /// Metadados brutos de uma janela (espelham o WindowDto do daemon). A filtragem é do core.

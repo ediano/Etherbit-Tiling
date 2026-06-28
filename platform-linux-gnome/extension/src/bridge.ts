@@ -47,6 +47,20 @@ export interface DropPreview {
   height: number;
 }
 
+/// Espelha o `TabBarDto` do daemon: a faixa da barra de abas de um stack + o conteúdo da aba ativa.
+/// A ponte desenha a barra em `{x,y,width,height}` (título/ícone vêm da ponte) e posiciona a janela
+/// ativa em `content`. `members` é a ordem das abas; `active` é a aba visível.
+export interface TabBar {
+  stack_id: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  content: { x: number; y: number; width: number; height: number };
+  members: number[];
+  active: number;
+}
+
 /// Serializa as janelas para o `windows_json` do contrato D-Bus.
 export function serializeWindows(windows: WindowSnapshot[]): string {
   return JSON.stringify(windows);
@@ -57,8 +71,9 @@ export function serializeMonitors(monitors: MonitorSnapshot[]): string {
   return JSON.stringify(monitors);
 }
 
-/// Parse defensivo do `layout_json` do daemon. Descarta entradas malformadas (campos não
-/// numéricos / ausentes) em vez de lançar — uma resposta inválida nunca deve derrubar a ponte.
+/// Parse defensivo do `layout_json` do daemon — devolve os retângulos a aplicar. Aceita o formato
+/// novo (objeto `{ rects, tab_bars }`) e o LEGADO (array de rects, para tolerar um daemon antigo).
+/// Descarta entradas malformadas em vez de lançar — uma resposta inválida nunca derruba a ponte.
 export function parseLayout(json: string): LayoutCommand[] {
   let parsed: unknown;
   try {
@@ -66,11 +81,15 @@ export function parseLayout(json: string): LayoutCommand[] {
   } catch {
     return [];
   }
-  if (!Array.isArray(parsed)) {
+  // Novo formato: objeto com `rects`. Legado: o próprio array.
+  const rects = Array.isArray(parsed)
+    ? parsed
+    : (parsed as Record<string, unknown> | null)?.rects;
+  if (!Array.isArray(rects)) {
     return [];
   }
   const commands: LayoutCommand[] = [];
-  for (const entry of parsed) {
+  for (const entry of rects) {
     if (isLayoutCommand(entry)) {
       commands.push({
         id: entry.id,
@@ -82,6 +101,68 @@ export function parseLayout(json: string): LayoutCommand[] {
     }
   }
   return commands;
+}
+
+/// Parse defensivo das barras de abas do `layout_json` (objeto `{ rects, tab_bars }`). Formato
+/// legado (array) → sem barras. Descarta entradas malformadas em vez de lançar.
+export function parseTabBars(json: string): TabBar[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  if (Array.isArray(parsed) || typeof parsed !== 'object' || parsed === null) {
+    return [];
+  }
+  const raw = (parsed as Record<string, unknown>).tab_bars;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const bars: TabBar[] = [];
+  for (const entry of raw) {
+    const bar = toTabBar(entry);
+    if (bar) {
+      bars.push(bar);
+    }
+  }
+  return bars;
+}
+
+function toTabBar(value: unknown): TabBar | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const v = value as Record<string, unknown>;
+  const c = v.content as Record<string, unknown> | undefined;
+  if (
+    !isFiniteNumber(v.stack_id) ||
+    !isFiniteNumber(v.x) ||
+    !isFiniteNumber(v.y) ||
+    !isFiniteNumber(v.width) ||
+    !isFiniteNumber(v.height) ||
+    !isFiniteNumber(v.active) ||
+    !Array.isArray(v.members) ||
+    !v.members.every(isFiniteNumber) ||
+    typeof c !== 'object' ||
+    c === null ||
+    !isFiniteNumber(c.x) ||
+    !isFiniteNumber(c.y) ||
+    !isFiniteNumber(c.width) ||
+    !isFiniteNumber(c.height)
+  ) {
+    return null;
+  }
+  return {
+    stack_id: v.stack_id,
+    x: v.x,
+    y: v.y,
+    width: v.width,
+    height: v.height,
+    content: { x: c.x, y: c.y, width: c.width, height: c.height },
+    members: v.members as number[],
+    active: v.active,
+  };
 }
 
 function isLayoutCommand(value: unknown): value is LayoutCommand {
@@ -199,6 +280,164 @@ export function reorderForDrop(
     return true;
   }
   [list[di], list[ti]] = [list[ti] as number, list[di] as number];
+  return true;
+}
+
+// ---- Estado de abas (stacks) e de tiling por grupo (estado leve da ponte) ----
+//
+// Como a ordem, este estado vive na ponte (o daemon é sem estado): quais janelas estão empilhadas
+// (`Map<orderKey, Stack[]>`) e quais grupos `(monitor, workspace)` têm tiling desligado (`Set<orderKey>`).
+// É enviado a cada `SyncWindows` via `state_json`; o core decide a geometria. Helpers PUROS (testáveis).
+
+/// Um stack: membros na ordem das abas + a aba ativa (visível).
+export interface Stack {
+  members: number[];
+  active: number;
+}
+
+/// Reverte `orderKey`: `"monitor:workspace"` → `[monitor, workspace]`.
+export function parseOrderKey(key: string): [number, number] {
+  const [m, w] = key.split(':');
+  return [Number(m) || 0, Number(w) || 0];
+}
+
+/// Serializa o estado leve para o `state_json` do contrato D-Bus. Só stacks com ≥ 2 membros viajam
+/// (um stack de 1 não faz sentido). `disabled_groups` é um array de pares `[monitor, workspace]`.
+export function serializeState(stacks: Map<string, Stack[]>, disabled: Set<string>): string {
+  const stackDtos: Array<{
+    monitor: number;
+    workspace: number;
+    members: number[];
+    active: number;
+  }> = [];
+  for (const [key, list] of stacks) {
+    const [monitor, workspace] = parseOrderKey(key);
+    for (const s of list) {
+      if (s.members.length >= 2) {
+        stackDtos.push({ monitor, workspace, members: [...s.members], active: s.active });
+      }
+    }
+  }
+  const disabledDtos: Array<[number, number]> = [];
+  for (const key of disabled) {
+    disabledDtos.push(parseOrderKey(key));
+  }
+  return JSON.stringify({ stacks: stackDtos, disabled_groups: disabledDtos });
+}
+
+/// Serializa o retângulo da janela sob o cursor para o `target_json` do `ResolveDropZone` (`""` se
+/// não há janela-alvo).
+export function serializeTarget(
+  rect: { x: number; y: number; width: number; height: number } | null,
+): string {
+  return rect ? JSON.stringify(rect) : '';
+}
+
+/// Remove `id` de qualquer stack (de qualquer grupo), dissolvendo stacks que ficarem com < 2 membros
+/// e limpando grupos vazios. Usado ao fechar uma janela ou ao movê-la para outro stack. Retorna
+/// `true` se algo mudou.
+export function removeIdFromStacks(stacks: Map<string, Stack[]>, id: number): boolean {
+  let changed = false;
+  for (const [key, list] of stacks) {
+    for (const s of list) {
+      const idx = s.members.indexOf(id);
+      if (idx !== -1) {
+        s.members.splice(idx, 1);
+        if (s.active === id) {
+          s.active = s.members[0] ?? 0;
+        }
+        changed = true;
+      }
+    }
+    const kept = list.filter((s) => s.members.length >= 2);
+    if (kept.length !== list.length) {
+      changed = true;
+    }
+    if (kept.length === 0) {
+      stacks.delete(key);
+    } else {
+      stacks.set(key, kept);
+    }
+  }
+  return changed;
+}
+
+/// Toggle de agrupamento do grupo `key` (atalho Super+S). Se já existe stack no grupo → desfaz
+/// (ungroup). Senão → empilha TODOS os `ids` do grupo num único stack, com `active` visível.
+/// `ids` deve estar na ordem estável do grupo. Retorna `true` se mudou.
+export function toggleStackGroup(
+  stacks: Map<string, Stack[]>,
+  key: string,
+  ids: number[],
+  active: number,
+): boolean {
+  const existing = stacks.get(key);
+  if (existing && existing.length > 0) {
+    stacks.delete(key);
+    return true;
+  }
+  if (ids.length < 2) {
+    return false;
+  }
+  const activeId = ids.includes(active) ? active : (ids[0] as number);
+  stacks.set(key, [{ members: [...ids], active: activeId }]);
+  return true;
+}
+
+/// Empilha a janela arrastada na janela-alvo (drag-to-group). Se o alvo já está num stack do grupo,
+/// adiciona o arrastado a ele; senão cria um stack novo `[targetId, draggedId]`. A janela arrastada
+/// vira a aba ativa. Remove o arrastado de stacks anteriores. Retorna `true` se mudou.
+export function addToStack(
+  stacks: Map<string, Stack[]>,
+  key: string,
+  targetId: number,
+  draggedId: number,
+): boolean {
+  if (targetId === draggedId) {
+    return false;
+  }
+  // O arrastado pode vir de outro stack/grupo: tira de onde estava primeiro.
+  removeIdFromStacks(stacks, draggedId);
+  let list = stacks.get(key);
+  if (!list) {
+    list = [];
+    stacks.set(key, list);
+  }
+  const target = list.find((s) => s.members.includes(targetId));
+  if (target) {
+    if (!target.members.includes(draggedId)) {
+      target.members.push(draggedId);
+    }
+    target.active = draggedId;
+  } else {
+    list.push({ members: [targetId, draggedId], active: draggedId });
+  }
+  return true;
+}
+
+/// Define a aba ativa do stack que contém `member` (clique numa aba). Retorna `true` se mudou.
+export function setActiveMember(stacks: Map<string, Stack[]>, member: number): boolean {
+  for (const list of stacks.values()) {
+    for (const s of list) {
+      if (s.members.includes(member)) {
+        if (s.active !== member) {
+          s.active = member;
+          return true;
+        }
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
+/// Liga/desliga o tiling do grupo `key` (atalho Super+Y). Retorna `true` (sempre muda).
+export function toggleGroupDisabled(disabled: Set<string>, key: string): boolean {
+  if (disabled.has(key)) {
+    disabled.delete(key);
+  } else {
+    disabled.add(key);
+  }
   return true;
 }
 

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Atalhos globais do Etherbit Tiling. As teclas vivem aqui (editáveis pelo usuário); a extensão liga
+  cada chave a um handler via Main.wm.addKeybinding. Compilado por glib-compile-schemas no install.
+-->
+<schemalist gettext-domain="etherbit-tiling">
+  <schema id="org.gnome.shell.extensions.etherbit-tiling"
+          path="/org/gnome/shell/extensions/etherbit-tiling/">
+    <key name="toggle-tiling" type="as">
+      <default><![CDATA[['<Super>y']]]></default>
+      <summary>Liga/desliga o tiling no workspace atual</summary>
+      <description>
+        Ativa ou desativa o tiling automático apenas na área de trabalho atual; os demais
+        workspaces e monitores seguem organizados.
+      </description>
+    </key>
+    <key name="toggle-tabbing" type="as">
+      <default><![CDATA[['<Super>s']]]></default>
+      <summary>Agrupa/desagrupa as janelas do quadrante em abas</summary>
+      <description>
+        Empilha as janelas do quadrante ativo num grupo de abas (StackNode); pressionar de novo
+        desfaz o agrupamento, voltando à grade.
+      </description>
+    </key>
+  </schema>
+</schemalist>

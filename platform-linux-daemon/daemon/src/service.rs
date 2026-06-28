@@ -26,6 +26,15 @@ impl Tiling {
         Self { config }
     }
 
+    /// Opções de layout derivadas da config atual (gaps + altura da barra de abas).
+    fn layout_options(&self) -> LayoutOptions {
+        LayoutOptions {
+            inner_gap: self.config.inner_gap,
+            outer_gap: self.config.outer_gap,
+            tab_bar_height: self.config.tab_bar_height,
+        }
+    }
+
     /// Persiste a config e propaga o erro como `fdo::Error` (mapeado para D-Bus).
     fn persist(&self) -> fdo::Result<()> {
         self.config
@@ -110,25 +119,32 @@ impl Tiling {
         &self,
         windows_json: String,
         monitors_json: String,
+        state_json: String,
     ) -> fdo::Result<String> {
-        let opts =
-            LayoutOptions { inner_gap: self.config.inner_gap, outer_gap: self.config.outer_gap };
-        protocol::sync_windows(&windows_json, &monitors_json, &self.config.ignore_list, opts)
-            .map_err(|e| fdo::Error::InvalidArgs(format!("sync_windows: {e}")))
+        let opts = self.layout_options();
+        protocol::sync_windows(
+            &windows_json,
+            &monitors_json,
+            &state_json,
+            &self.config.ignore_list,
+            opts,
+        )
+        .map_err(|e| fdo::Error::InvalidArgs(format!("sync_windows: {e}")))
     }
 
-    /// Resolve a zona de drop sob o ponto `(x, y)`. A ponte chama isto em alta frequência durante o
-    /// arrasto e desenha o indicador com o retângulo devolvido. Request/response puro (daemon sem
-    /// estado): a ponte envia os monitores na chamada, como em `SyncWindows`.
+    /// Resolve o destino de um drop sob o ponto `(x, y)`. A ponte chama isto em alta frequência
+    /// durante o arrasto e desenha o indicador com o retângulo devolvido. `target_json` é o retângulo
+    /// da janela sob o cursor (ou `""`), usado para detectar empilhamento (zona `stack`).
+    /// Request/response puro (daemon sem estado): a ponte envia monitores e alvo na chamada.
     async fn resolve_drop_zone(
         &self,
         x: i32,
         y: i32,
         monitors_json: String,
+        target_json: String,
     ) -> fdo::Result<String> {
-        let opts =
-            LayoutOptions { inner_gap: self.config.inner_gap, outer_gap: self.config.outer_gap };
-        protocol::resolve_drop_zone(&monitors_json, x, y, opts)
+        let opts = self.layout_options();
+        protocol::resolve_drop_zone(&monitors_json, x, y, &target_json, opts)
             .map_err(|e| fdo::Error::InvalidArgs(format!("resolve_drop_zone: {e}")))
     }
 
