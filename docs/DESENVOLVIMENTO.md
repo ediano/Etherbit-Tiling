@@ -88,6 +88,33 @@ O GNOME Shell **não** recarrega extensões com `Alt+F2` `r` no Wayland (isso é
 > O Dev Container compila e empacota a extensão, mas **não roda o GNOME Shell**. A execução/teste de
 > runtime (indicador, eventos de janela, D-Bus) acontece num host GNOME 45+ sob Wayland.
 
+## KWin Script KDE (TypeScript + Vite)
+
+A camada KDE (Plasma 6 / **Wayland**) entrega apenas o **KWin Script**; o daemon é o mesmo do GNOME
+(ver [rules/0013](../rules/0013-camada-kde-kwin-script.md) e [rules/0014](../rules/0014-daemon-linux-compartilhado.md)).
+Usa **pnpm** (corepack) e espelha o tooling da extension, mas com bundle **IIFE** (o QJSEngine do KWin
+não tem `import`/`export` em runtime):
+
+```bash
+cd platform-linux-kde/kwin-script
+corepack enable
+pnpm install
+pnpm typecheck            # checagem de tipos (kwin-globals.d.ts)
+pnpm test                 # vitest sobre os módulos puros (config.ts, tiling.ts)
+pnpm build                # gera contents/code/main.js (IIFE)
+pnpm run install:script   # build + kpackagetool6 -i/-u + habilita + qdbus reconfigure
+```
+
+### Aplicar no Wayland
+`kpackagetool6 --type=KWin/Script -i .` instala em `~/.local/share/kwin/scripts/etherbit-tiling/`;
+`kwriteconfig6 --file kwinrc --group Plugins --key etherbit-tilingEnabled true` habilita; e
+`qdbus6 org.kde.KWin /KWin reconfigure` recarrega **sem logout** (substitui o `Alt+F2 r`, que é só X11).
+Config: *Configurações do Sistema → KWin Scripts → Etherbit Tiling (⚙)*.
+Logs: `journalctl -f QT_CATEGORY=kwin_scripting` (ou `QT_LOGGING_RULES="kwin_*.debug=true"`).
+
+> O Dev Container compila/testa o KWin Script, mas **não roda o KWin**. O teste de runtime (geometria,
+> eventos de janela, D-Bus) acontece numa sessão **KDE Plasma 6 sob Wayland**.
+
 ## Web (landing page global)
 
 O módulo `web/` é a landing page única e agnóstica (hub de downloads), em **Vite + HTML5/CSS3 puro**
@@ -120,9 +147,11 @@ AppKit e da Accessibility API da Apple.
    sessão (`dbus-run-session`), `cargo run -p etherbit-tiling-daemon` registra `org.etherbit.Tiling`.
 4. Na `extension/`, `pnpm install`, `pnpm typecheck` e `pnpm build` concluem; `dist/extension.js`
    preserva os imports `gi://`/`resource:///`.
-5. Em `web/`, `pnpm install` e `pnpm build` concluem; `dist/index.html` não referencia nenhum
+5. Em `platform-linux-kde/kwin-script/`, `pnpm install`, `pnpm typecheck`, `pnpm test` e `pnpm build`
+   concluem; `contents/code/main.js` é IIFE (sem `import`/`export` de nível superior).
+6. Em `web/`, `pnpm install` e `pnpm build` concluem; `dist/index.html` não referencia nenhum
    CSS/JS/fonte externo (sem CDN).
-5. `rust-analyzer`, `even-better-toml` e `eslint` aparecem instalados no container.
+7. `rust-analyzer`, `even-better-toml` e `eslint` aparecem instalados no container.
 
 ## Notas de versionamento
 

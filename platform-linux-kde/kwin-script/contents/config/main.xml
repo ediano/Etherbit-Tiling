@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- KConfigXT: schema da config nativa do KWin Script. As chaves abaixo são lidas em runtime
+     por readConfig('<name>', default) em contents/code/main.ts e editadas pela UI nativa
+     (Configurações do Sistema → KWin Scripts → ⚙). Os valores ficam em ~/.config/kwinrc.
+     Os defaults DEVEM casar com DEFAULT_CONFIG (e com Config::default() do daemon). -->
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0
+                          http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
+  <kcfgfile name=""/>
+  <group name="">
+    <entry name="innerGap" type="Int">
+      <label>Espaçamento entre janelas (px)</label>
+      <default>8</default>
+      <min>0</min>
+      <max>200</max>
+    </entry>
+    <entry name="outerGap" type="Int">
+      <label>Espaçamento da borda da tela (px)</label>
+      <default>12</default>
+      <min>0</min>
+      <max>200</max>
+    </entry>
+    <entry name="activeBorder" type="Bool">
+      <label>Destacar a janela focada com borda</label>
+      <default>true</default>
+    </entry>
+    <entry name="borderColor" type="String">
+      <label>Cor da borda da janela focada</label>
+      <default>#5e81ac</default>
+    </entry>
+    <entry name="borderWidth" type="Int">
+      <label>Espessura da borda (px)</label>
+      <default>2</default>
+      <min>0</min>
+      <max>20</max>
+    </entry>
+    <entry name="autostart" type="Bool">
+      <label>Iniciar o daemon com o sistema</label>
+      <default>false</default>
+    </entry>
+  </group>
+</kcfg>

@@ -68,6 +68,27 @@ jobs:
       - name: vitest
         run: pnpm test
 
+  # platform-linux-kde/kwin-script/ — TypeScript (vitest em ambiente node; bundle IIFE).
+  test-kwin-script:
+    name: Testes — kwin-script (TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: platform-linux-kde/kwin-script
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Habilita pnpm via corepack
+        run: corepack enable
+      - name: Instala dependências
+        run: pnpm install --frozen-lockfile
+      - name: Type-check (tsc)
+        run: pnpm run typecheck
+      - name: vitest
+        run: pnpm test
+
   # platform-macos/ — Swift. Liberar quando existir Package.swift (ver platform-macos/TESTES.md).
   # test-macos:
   #   name: Testes — macOS (Swift)
