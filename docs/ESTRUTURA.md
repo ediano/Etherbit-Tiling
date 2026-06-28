@@ -27,7 +27,7 @@ Etherbit-Tiling/
 ├── platform-linux-gnome/     # Camada GNOME (Wayland) — só a extension; usa o daemon
 │   └── extension/            # Extensão-ponte Vite + TypeScript (ESM): etherbit-tiling-extension
 │       ├── package.json      #   scripts: dev/build/typecheck/install:ext (pnpm)
-│       ├── metadata.json     #   uuid tiling@etherbit.org, shell-version 45–48
+│       ├── metadata.json     #   uuid tiling@etherbit.org, shell-version 45–50
 │       ├── vite.config.ts    #   modo library; externaliza gi://, resource:///
 │       ├── tsconfig.json     #   ESM, tipos @girs/*
 │       ├── scripts/install.sh#   copia o bundle para a pasta local de extensões do GNOME
