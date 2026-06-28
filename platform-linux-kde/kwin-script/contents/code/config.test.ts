@@ -12,9 +12,8 @@ describe('parseConfig', () => {
   });
 
   it('mescla JSON parcial com os padrões', () => {
-    const cfg = parseConfig('{"inner_gap": 20}');
-    expect(cfg.inner_gap).toBe(20);
-    expect(cfg.outer_gap).toBe(DEFAULT_CONFIG.outer_gap);
+    const cfg = parseConfig('{"gap": 20}');
+    expect(cfg.gap).toBe(20);
   });
 });
 
@@ -23,8 +22,7 @@ describe('DEFAULT_CONFIG', () => {
   // Se o daemon mudar um padrão, ATUALIZE aqui — o daemon é a fonte de verdade.
   it('casa 1:1 com o Config::default() do daemon', () => {
     expect(DEFAULT_CONFIG).toEqual({
-      inner_gap: 8,
-      outer_gap: 12,
+      gap: 8,
       active_border: true,
       border_color: '#5e81ac',
       border_width: 2,

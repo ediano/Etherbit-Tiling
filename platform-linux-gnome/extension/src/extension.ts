@@ -115,7 +115,7 @@ export default class EtherbitTilingExtension extends Extension {
 
     // 2) Indicador na barra (gaps + autostart). Sem controle de borda — recurso removido.
     this._indicator = new EtherbitIndicator({
-      onGaps: (inner, outer) => this._proxy?.SetGapsSync(inner, outer),
+      onGap: (gap) => this._proxy?.SetGapSync(gap),
       onAutostart: (enabled) => this._proxy?.SetAutostartSync(enabled),
     });
     Main.panel.addToStatusArea(this.uuid, this._indicator);

@@ -9,15 +9,9 @@
                           http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
   <kcfgfile name=""/>
   <group name="">
-    <entry name="innerGap" type="Int">
-      <label>Espaçamento entre janelas (px)</label>
+    <entry name="gap" type="Int">
+      <label>Espaçamento único: entre janelas e da borda da tela (px)</label>
       <default>8</default>
-      <min>0</min>
-      <max>200</max>
-    </entry>
-    <entry name="outerGap" type="Int">
-      <label>Espaçamento da borda da tela (px)</label>
-      <default>12</default>
       <min>0</min>
       <max>200</max>
     </entry>

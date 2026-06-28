@@ -5,8 +5,7 @@
 
 /// Espelha 1:1 a struct Config do daemon (etherbit-tiling-daemon).
 export interface TilingConfig {
-  inner_gap: number;
-  outer_gap: number;
+  gap: number;
   active_border: boolean;
   border_color: string;
   border_width: number;
@@ -15,8 +14,7 @@ export interface TilingConfig {
 }
 
 export const DEFAULT_CONFIG: TilingConfig = {
-  inner_gap: 8,
-  outer_gap: 12,
+  gap: 8,
   active_border: true,
   border_color: '#5e81ac',
   border_width: 2,

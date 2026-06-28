@@ -49,8 +49,7 @@ const IFACE = 'dev.ediano.etherbit.Tiling';
 /// Lê a config do kwinrc (entradas de contents/config/main.xml), com fallback nos padrões.
 function loadConfig(): TilingConfig {
   return {
-    inner_gap: readConfig('innerGap', DEFAULT_CONFIG.inner_gap),
-    outer_gap: readConfig('outerGap', DEFAULT_CONFIG.outer_gap),
+    gap: readConfig('gap', DEFAULT_CONFIG.gap),
     active_border: readConfig('activeBorder', DEFAULT_CONFIG.active_border),
     border_color: readConfig('borderColor', DEFAULT_CONFIG.border_color),
     border_width: readConfig('borderWidth', DEFAULT_CONFIG.border_width),
@@ -61,7 +60,7 @@ function loadConfig(): TilingConfig {
 
 /// Empurra a config lida do kwinrc para o daemon: ele persiste no TOML e gerencia o autostart.
 function pushConfigToDaemon(cfg: TilingConfig): void {
-  callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetGaps', cfg.inner_gap, cfg.outer_gap);
+  callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetGap', cfg.gap);
   callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetAutostart', cfg.autostart);
 }
 

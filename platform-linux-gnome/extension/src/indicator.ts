@@ -21,14 +21,13 @@ const MAX_GAP = 50;
 
 /// Callbacks disparados pelas interações do usuário no menu.
 export interface IndicatorHandlers {
-  onGaps: (inner: number, outer: number) => void;
+  onGap: (gap: number) => void;
   onAutostart: (enabled: boolean) => void;
 }
 
 class EtherbitIndicatorImpl extends PanelMenu.Button {
   private _handlers: IndicatorHandlers;
-  private _innerSlider!: Slider;
-  private _outerSlider!: Slider;
+  private _gapSlider!: Slider;
   private _autostartSwitch!: PopupMenu.PopupSwitchMenuItem;
   // Evita reentrância: ao refletir a config do daemon não queremos re-disparar handlers.
   private _syncing = false;
@@ -49,8 +48,7 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
       }),
     );
 
-    this._innerSlider = this._addSliderRow('Gap interno', () => this._emitGaps());
-    this._outerSlider = this._addSliderRow('Gap externo', () => this._emitGaps());
+    this._gapSlider = this._addSliderRow('Gap', () => this._emitGap());
 
     this._menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
@@ -64,8 +62,7 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
   /// Reflete a configuração vinda do daemon nos controles, sem disparar handlers.
   sync(config: TilingConfig): void {
     this._syncing = true;
-    this._innerSlider.value = Math.min(config.inner_gap / MAX_GAP, 1);
-    this._outerSlider.value = Math.min(config.outer_gap / MAX_GAP, 1);
+    this._gapSlider.value = Math.min(config.gap / MAX_GAP, 1);
     this._autostartSwitch.setToggleState(config.autostart);
     this._syncing = false;
   }
@@ -85,10 +82,9 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
     return slider;
   }
 
-  private _emitGaps(): void {
-    const inner = Math.round(this._innerSlider.value * MAX_GAP);
-    const outer = Math.round(this._outerSlider.value * MAX_GAP);
-    this._handlers.onGaps(inner, outer);
+  private _emitGap(): void {
+    const gap = Math.round(this._gapSlider.value * MAX_GAP);
+    this._handlers.onGap(gap);
   }
 }
 

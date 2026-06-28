@@ -26,11 +26,12 @@ impl Tiling {
         Self { config }
     }
 
-    /// Opções de layout derivadas da config atual (gaps + altura da barra de abas).
+    /// Opções de layout derivadas da config atual (gap único aplicado a inner e outer + altura da
+    /// barra de abas). O `gap` da config controla ambos os eixos e ambas as costuras.
     fn layout_options(&self) -> LayoutOptions {
         LayoutOptions {
-            inner_gap: self.config.inner_gap,
-            outer_gap: self.config.outer_gap,
+            inner_gap: self.config.gap,
+            outer_gap: self.config.gap,
             tab_bar_height: self.config.tab_bar_height,
         }
     }
@@ -57,15 +58,13 @@ impl Tiling {
         self.config.to_json()
     }
 
-    /// Ajusta os gaps (espaçamento) interno e externo.
-    async fn set_gaps(
+    /// Ajusta o gap único (espaçamento entre janelas e bordas, ambos os eixos).
+    async fn set_gap(
         &mut self,
-        inner: u32,
-        outer: u32,
+        gap: u32,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> fdo::Result<()> {
-        self.config.inner_gap = inner;
-        self.config.outer_gap = outer;
+        self.config.gap = gap;
         self.persist()?;
         self.notify(&emitter).await
     }

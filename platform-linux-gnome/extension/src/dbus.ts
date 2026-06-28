@@ -19,9 +19,8 @@ const IFACE_XML = `
     <method name="GetConfig">
       <arg type="s" direction="out" name="config_json"/>
     </method>
-    <method name="SetGaps">
-      <arg type="u" direction="in" name="inner"/>
-      <arg type="u" direction="in" name="outer"/>
+    <method name="SetGap">
+      <arg type="u" direction="in" name="gap"/>
     </method>
     <method name="SetActiveBorder">
       <arg type="b" direction="in" name="enabled"/>
@@ -56,7 +55,7 @@ const IFACE_XML = `
 /// Forma do proxy gerado por makeProxyWrapper que efetivamente usamos.
 export interface TilingProxy {
   GetConfigSync(): [string];
-  SetGapsSync(inner: number, outer: number): void;
+  SetGapSync(gap: number): void;
   SetActiveBorderSync(enabled: boolean, color: string, width: number): void;
   SetIgnoreListSync(appIds: string[]): void;
   SetAutostartSync(enabled: boolean): void;
