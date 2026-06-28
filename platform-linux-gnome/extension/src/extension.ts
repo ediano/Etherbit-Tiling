@@ -7,7 +7,8 @@
 //    APLICA os retângulos-alvo devolvidos via `move_resize_frame` (geométrico e instantâneo).
 // Toda a matemática (Ether Flow) e a resiliência gráfica vivem no Rust (core/daemon).
 
-import type Gio from 'gi://Gio';
+import type Clutter from 'gi://Clutter';
+import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
@@ -18,6 +19,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {
   createTilingProxy,
   parseConfig,
+  BUS_NAME,
   DEFAULT_CONFIG,
   type TilingConfig,
   type TilingProxy,
@@ -29,23 +31,26 @@ import {
   serializeTarget,
   parseLayout,
   parseTabBars,
+  parseLayoutTrees,
   parsePreview,
+  resizeDeltaFrom,
   orderKey,
   appendToOrder,
   removeFromOrder,
   removeIdFromStacks,
   sortByOrder,
-  reorderForDrop,
   toggleStackGroup,
   toggleGroupDisabled,
   addToStack,
   setActiveMember,
   type Stack,
   type TabBar,
+  type TreeNode,
   type WindowSnapshot,
   type MonitorSnapshot,
 } from './bridge.js';
 import { EtherbitIndicator } from './indicator.js';
+import { applyRoundedCorners, clearRoundedCorners } from './effects.js';
 
 /// Nomes das chaves de atalho no gschema (schemas/org.gnome.shell.extensions.etherbit-tiling.gschema.xml).
 const KEY_TOGGLE_TILING = 'toggle-tiling';
@@ -65,6 +70,8 @@ export default class EtherbitTilingExtension extends Extension {
   private _proxy: TilingProxy | null = null;
   private _config: TilingConfig = { ...DEFAULT_CONFIG };
   private _configChangedId = 0;
+  // Watch do nome do daemon no barramento: dispara re-sync ao (re)aparecer, drop ao sumir.
+  private _nameWatchId = 0;
 
   // Sinais do compositor que disparam um novo cálculo de layout.
   private _displayIds: number[] = [];
@@ -77,9 +84,13 @@ export default class EtherbitTilingExtension extends Extension {
   // Suprime reentrância enquanto aplicamos geometria (evita laço de feedback).
   private _applying = false;
 
-  // Ordem estável das janelas por `(monitor, workspace)` — torna o BSP determinístico e o
-  // rearranjo do drop persistente sem estado no daemon.
+  // Ordem estável das janelas por `(monitor, workspace)` — determina a ordem de inserção de janelas
+  // NOVAS na árvore (e o bootstrap balanceado). A topologia/proporções persistem em `_trees`.
   private _order = new Map<string, number[]>();
+
+  // Árvores BSP persistentes por `(monitor, workspace)` — estado da ponte; o daemon segue sem estado.
+  // Atualizadas a cada SyncWindows/MoveWindow (o core reconcilia e devolve a versão nova).
+  private _trees = new Map<string, TreeNode | null>();
 
   // Estado leve novo (também vive na ponte; o daemon segue sem estado):
   //  - `_stacks`: janelas empilhadas em abas, por `(monitor, workspace)`;
@@ -103,43 +114,119 @@ export default class EtherbitTilingExtension extends Extension {
   private _lastPreviewZone = 'none';
   // Em voo: evita empilhar chamadas D-Bus síncronas mais rápido que a resposta.
   private _resolving = false;
+  // Resize manual em curso: id + frame inicial (para derivar borda/delta ao soltar).
+  private _resizeStart: {
+    id: number;
+    rect: { x: number; y: number; width: number; height: number };
+  } | null = null;
 
-  override enable(): void {
-    // 1) Proxy D-Bus. Sem daemon no bus, o indicador fica em estado padrão e a ponte não roteia.
+  /// Garante um proxy vivo: cria (se ausente) e inscreve `ConfigChanged`. Devolve o proxy ou null.
+  /// A criação é barata e dispara a ATIVAÇÃO D-Bus do daemon na primeira chamada (ver ADR 0020).
+  private _ensureProxy(): TilingProxy | null {
+    if (this._proxy) {
+      return this._proxy;
+    }
     try {
-      this._proxy = createTilingProxy();
+      const proxy = createTilingProxy();
+      this._configChangedId = proxy.connectSignal('ConfigChanged', (_p, _s, [json]) => {
+        this._config = parseConfig(json);
+        this._indicator?.sync(this._config);
+        // Gaps/ignore_list/cantos podem ter mudado → recalcula o layout.
+        this._scheduleRelayout();
+      });
+      this._proxy = proxy;
+      return proxy;
     } catch (error) {
       console.error(`Etherbit Tiling: falha ao conectar no daemon: ${error}`);
       this._proxy = null;
+      return null;
     }
+  }
 
-    // 2) Indicador na barra (gaps + autostart). Sem controle de borda — recurso removido.
+  /// Descarta o proxy atual (canal morto): desconecta o sinal e zera, para `_ensureProxy` recriar.
+  private _dropProxy(): void {
+    if (this._proxy && this._configChangedId) {
+      try {
+        this._proxy.disconnectSignal(this._configChangedId);
+      } catch {
+        // proxy já morto — nada a desconectar.
+      }
+    }
+    this._configChangedId = 0;
+    this._proxy = null;
+  }
+
+  /// Executa uma chamada D-Bus com resiliência: garante o proxy e, em falha, recria + tenta UMA vez
+  /// (a recriação aciona a ativação D-Bus). Devolve o resultado ou null. Centraliza a captura de
+  /// desconexão exigida após ociosidade/suspensão.
+  private _call<T>(fn: (proxy: TilingProxy) => T): T | null {
+    let proxy = this._ensureProxy();
+    if (!proxy) {
+      return null;
+    }
+    try {
+      return fn(proxy);
+    } catch (error) {
+      console.error(`Etherbit Tiling: chamada D-Bus falhou, reconectando: ${error}`);
+      this._dropProxy();
+      proxy = this._ensureProxy();
+      if (!proxy) {
+        return null;
+      }
+      try {
+        return fn(proxy);
+      } catch (retryError) {
+        console.error(`Etherbit Tiling: reconexão falhou: ${retryError}`);
+        this._dropProxy();
+        return null;
+      }
+    }
+  }
+
+  /// Relê a config do daemon e reflete no indicador (no boot e a cada (re)aparecimento do daemon).
+  private _refreshConfig(): void {
+    const res = this._call((p) => p.GetConfigSync());
+    if (res) {
+      this._config = parseConfig(res[0]);
+      this._indicator?.sync(this._config);
+    }
+  }
+
+  /// O daemon (re)apareceu no barramento (boot, reativação ou wake): handshake + re-sincroniza.
+  private _onDaemonAppeared(): void {
+    this._call((p) => p.PingSync());
+    this._refreshConfig();
+    this._scheduleRelayout();
+  }
+
+  override enable(): void {
+    // 1) Proxy D-Bus (lazy + resiliente). Sem daemon no bus, opera em modo degradado até ele
+    //    (re)aparecer; toda chamada passa por `_call`, que reconecta sob demanda.
+    this._ensureProxy();
+
+    // 2) Indicador na barra. Cada ação roteia por `_call` (resiliente a queda do canal).
     this._indicator = new EtherbitIndicator({
-      onGaps: (inner, outer) => this._proxy?.SetGapsSync(inner, outer),
-      onAutostart: (enabled) => this._proxy?.SetAutostartSync(enabled),
+      onGap: (gap) => this._call((p) => p.SetGapSync(gap)),
+      onCornerRadius: (radius) =>
+        this._call((p) => p.SetRoundedCornersSync(this._config.rounded_corners, radius)),
+      onAutostart: (enabled) => this._call((p) => p.SetAutostartSync(enabled)),
+      onRoundedCorners: (enabled) =>
+        this._call((p) => p.SetRoundedCornersSync(enabled, this._config.corner_radius)),
     });
     Main.panel.addToStatusArea(this.uuid, this._indicator);
 
-    // 3) Config inicial + sincronização contínua via sinal ConfigChanged.
-    if (this._proxy) {
-      try {
-        const [json] = this._proxy.GetConfigSync();
-        this._config = parseConfig(json);
-        this._indicator.sync(this._config);
-      } catch (error) {
-        console.error(`Etherbit Tiling: GetConfig falhou: ${error}`);
-      }
+    // 3) Config inicial.
+    this._refreshConfig();
 
-      this._configChangedId = this._proxy.connectSignal(
-        'ConfigChanged',
-        (_proxy, _sender, [json]) => {
-          this._config = parseConfig(json);
-          this._indicator?.sync(this._config);
-          // Gaps/ignore_list podem ter mudado → recalcula o layout.
-          this._scheduleRelayout();
-        },
-      );
-    }
+    // 3b) Watch do nome do daemon: ao (re)aparecer (pós-wake/reativação), refaz o handshake e
+    //     re-sincroniza config + layout; ao sumir, descarta o proxy morto. Recuperação automática.
+    this._nameWatchId = Gio.bus_watch_name(
+      Gio.BusType.SESSION,
+      BUS_NAME,
+      Gio.BusNameWatcherFlags.NONE,
+      () => this._onDaemonAppeared(),
+      () => this._dropProxy(),
+    );
 
     // 4) Eventos nativos do Mutter que motivam um novo layout.
     this._displayIds.push(
@@ -237,14 +324,19 @@ export default class EtherbitTilingExtension extends Extension {
 
     for (const { window, unmanagedId } of this._tracked.values()) {
       window.disconnect(unmanagedId);
+      // Remove o efeito de cantos arredondados para deixar as janelas no estado original.
+      const actor = window.get_compositor_private() as Clutter.Actor | null;
+      if (actor) {
+        clearRoundedCorners(actor);
+      }
     }
     this._tracked.clear();
 
-    if (this._proxy && this._configChangedId) {
-      this._proxy.disconnectSignal(this._configChangedId);
-      this._configChangedId = 0;
+    if (this._nameWatchId) {
+      Gio.bus_unwatch_name(this._nameWatchId);
+      this._nameWatchId = 0;
     }
-    this._proxy = null;
+    this._dropProxy();
 
     this._indicator?.destroy();
     this._indicator = null;
@@ -286,7 +378,8 @@ export default class EtherbitTilingExtension extends Extension {
 
   /// Coleta janelas+monitores, pede o layout ao daemon e aplica os retângulos.
   private _relayout(): void {
-    if (!this._proxy) {
+    // Garante o canal (reconecta/ativa sob demanda); sem daemon alcançável, opera em modo degradado.
+    if (!this._ensureProxy()) {
       return;
     }
 
@@ -326,17 +419,23 @@ export default class EtherbitTilingExtension extends Extension {
       }
     }
 
-    let layoutJson: string;
-    try {
-      [layoutJson] = this._proxy.SyncWindowsSync(
+    const focus = global.display.focus_window;
+    const focusedId = focus ? focus.get_stable_sequence() : 0;
+
+    const res = this._call((p) =>
+      p.SyncWindowsSync(
         serializeWindows(snapshots),
         serializeMonitors(this._collectMonitors()),
-        serializeState(this._stacks, this._disabledGroups),
-      );
-    } catch (error) {
-      console.error(`Etherbit Tiling: SyncWindows falhou: ${error}`);
+        serializeState(this._stacks, this._disabledGroups, this._trees, focusedId),
+      ),
+    );
+    if (!res) {
       return;
     }
+    const layoutJson = res[0];
+
+    // Persiste as árvores reconciliadas pelo core para reenviar no próximo sync (estabilidade).
+    this._trees = parseLayoutTrees(layoutJson);
 
     const commands = parseLayout(layoutJson);
     const tabBars = parseTabBars(layoutJson);
@@ -364,6 +463,15 @@ export default class EtherbitTilingExtension extends Extension {
         const window = byId.get(command.id);
         // user_op=false: reposicionamento programático, instantâneo e puramente geométrico.
         window?.move_resize_frame(false, command.x, command.y, command.width, command.height);
+        // Cantos arredondados (efeito no ator) conforme a config — best-effort, nunca quebra.
+        const actor = window?.get_compositor_private() as Clutter.Actor | null;
+        if (actor) {
+          if (this._config.rounded_corners) {
+            applyRoundedCorners(actor, this._config.corner_radius);
+          } else {
+            clearRoundedCorners(actor);
+          }
+        }
       }
       // Oculta as abas inativas recém-empilhadas.
       for (const id of shouldHide) {
@@ -422,20 +530,30 @@ export default class EtherbitTilingExtension extends Extension {
 
   // ---- Arrasto + overlay de preview da drop zone ----
 
-  /// Início de um arrasto de MOVIMENTO de janela: passa a amostrar o cursor (~60 FPS) e a desenhar
-  /// a drop zone. Ignora resize e ambientes sem daemon (degradação suave).
+  /// Início de um grab: MOVIMENTO → amostra o cursor (~60 FPS) e desenha a drop zone; RESIZE →
+  /// captura o frame inicial para derivar borda/delta ao soltar. Sem daemon: degradação suave.
   private _onGrabBegin(window: Meta.Window | null, op: Meta.GrabOp): void {
-    if (!window || !this._proxy || op !== Meta.GrabOp.MOVING) {
+    if (!window || !this._ensureProxy()) {
       return;
     }
-    this._stopDrag(); // encerra qualquer arrasto pendente antes de iniciar outro
-    this._draggedId = window.get_stable_sequence();
-    this._lastPointer = null;
-    this._resolving = false;
-    this._dragSource = GLib.timeout_add(GLib.PRIORITY_DEFAULT, DRAG_TICK_MS, () => {
-      this._onDragTick();
-      return GLib.SOURCE_CONTINUE;
-    });
+    if (op === Meta.GrabOp.MOVING) {
+      this._stopDrag(); // encerra qualquer arrasto pendente antes de iniciar outro
+      this._resizeStart = null;
+      this._draggedId = window.get_stable_sequence();
+      this._lastPointer = null;
+      this._resolving = false;
+      this._dragSource = GLib.timeout_add(GLib.PRIORITY_DEFAULT, DRAG_TICK_MS, () => {
+        this._onDragTick();
+        return GLib.SOURCE_CONTINUE;
+      });
+      return;
+    }
+    // Qualquer outro grab numa janela = resize manual: guarda a geometria inicial.
+    const r = window.get_frame_rect();
+    this._resizeStart = {
+      id: window.get_stable_sequence(),
+      rect: { x: r.x, y: r.y, width: r.width, height: r.height },
+    };
   }
 
   /// Um tick do arrasto: lê o cursor, resolve a zona no daemon e atualiza o overlay. Faz throttle
@@ -522,9 +640,9 @@ export default class EtherbitTilingExtension extends Extension {
     }
   }
 
-  /// Fim do arrasto: consolida o rearranjo (swap do arrastado com a janela sob o ponteiro) e
-  /// encerra o overlay. O `_scheduleRelayout()` (chamado pelo handler) re-tila todo o BSP a partir
-  /// da nova ordem — recálculo instantâneo de todas as janelas.
+  /// Fim do arrasto: consolida o drop. Zona `stack` → empilha em abas; zona de lado → MoveWindow
+  /// (move+split na árvore: o arrastado racha a folha do alvo no lado sobrevoado). O
+  /// `_scheduleRelayout()` (chamado pelo handler) re-tila a partir das árvores atualizadas.
   private _onGrabEnd(window: Meta.Window | null): void {
     if (this._draggedId && window) {
       const [x, y] = global.get_pointer();
@@ -534,15 +652,65 @@ export default class EtherbitTilingExtension extends Extension {
         const workspace = window.get_workspace();
         const key = orderKey(window.get_monitor(), workspace ? workspace.index() : 0);
         if (this._lastPreviewZone === 'stack') {
-          // Solto na faixa superior da janela-alvo → empilha em abas.
+          // Solto na faixa superior da janela-alvo → empilha em abas (estado de stacks).
           addToStack(this._stacks, key, targetId, this._draggedId);
-        } else {
-          // Solto em outro lugar sobre a janela → troca de posição (swap).
-          reorderForDrop(this._order, key, this._draggedId, targetId);
+        } else if (this._lastPreviewZone !== 'none' && this._lastPreviewZone !== 'center') {
+          // Solto sobre um lado da janela → move+split na árvore (persistente).
+          const res = this._call((p) =>
+            p.MoveWindowSync(
+              serializeState(this._stacks, this._disabledGroups, this._trees, this._draggedId),
+              this._draggedId,
+              targetId,
+              this._lastPreviewZone,
+            ),
+          );
+          if (res) {
+            this._trees = parseLayoutTrees(res[0]);
+          }
         }
       }
+    } else if (
+      this._resizeStart &&
+      window &&
+      window.get_stable_sequence() === this._resizeStart.id
+    ) {
+      this._applyResize(window);
     }
+    this._resizeStart = null;
     this._stopDrag();
+  }
+
+  /// Fim de um resize manual: deriva a(s) borda(s) e o delta do frame inicial→final e aplica o resize
+  /// elástico na árvore via `ResizeWindow` (uma chamada por eixo). O `_scheduleRelayout()` re-tila.
+  private _applyResize(window: Meta.Window): void {
+    const start = this._resizeStart;
+    if (!start) {
+      return;
+    }
+    const r = window.get_frame_rect();
+    const deltas = resizeDeltaFrom(start.rect, {
+      x: r.x,
+      y: r.y,
+      width: r.width,
+      height: r.height,
+    });
+    const focus = global.display.focus_window;
+    const focusedId = focus ? focus.get_stable_sequence() : 0;
+    const monitorsJson = serializeMonitors(this._collectMonitors());
+    for (const d of deltas) {
+      const res = this._call((p) =>
+        p.ResizeWindowSync(
+          monitorsJson,
+          serializeState(this._stacks, this._disabledGroups, this._trees, focusedId),
+          start.id,
+          d.edge,
+          d.deltaPx,
+        ),
+      );
+      if (res) {
+        this._trees = parseLayoutTrees(res[0]);
+      }
+    }
   }
 
   /// Janela NORMAL cujo frame contém `(x, y)`, excluindo `excludeId` (a própria arrastada).

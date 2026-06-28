@@ -4,8 +4,10 @@
 // A extensão GNOME conversa com este daemon para ler/alterar a configuração; o algoritmo
 // agnóstico (Ether Flow, no crate `etherbit-tiling-core`) será plugado aqui em etapas futuras.
 
+mod activation;
 mod autostart;
 mod config;
+mod powermon;
 mod protocol;
 #[cfg(feature = "wgpu-ui")]
 mod render;
@@ -20,6 +22,12 @@ async fn main() -> Result<()> {
 
     // Reaplica o autostart na inicialização para manter o `.desktop` coerente com a config.
     autostart::apply(config.autostart)?;
+
+    // Instala (idempotente) o arquivo de ativação D-Bus, para o daemon ser RELANÇADO sob demanda se
+    // morrer/congelar (ex.: após suspensão). Best-effort: nunca impede o daemon de subir.
+    if let Err(err) = activation::install() {
+        eprintln!("Etherbit daemon — ativação D-Bus indisponível: {err:#}");
+    }
 
     // UI própria do daemon (wgpu) — opcional, atrás da feature `wgpu-ui`. Inicializa o pipeline
     // gráfico com fallback automático para software (LLVMpipe) quando não há GPU.
@@ -37,7 +45,7 @@ async fn main() -> Result<()> {
         Err(err) => eprintln!("Etherbit daemon — wgpu indisponível: {err:#}"),
     }
 
-    let _connection = service::serve(config).await?;
+    let connection = service::serve(config).await?;
 
     println!(
         "Etherbit daemon — core {} — servindo {} em {}",
@@ -46,8 +54,16 @@ async fn main() -> Result<()> {
         service::OBJECT_PATH
     );
 
+    // Monitor de energia (login1): ao acordar da suspensão, re-emite ConfigChanged para os clientes
+    // re-sincronizarem; se o canal de sessão tiver morrido, sai para a ativação D-Bus subir um novo.
+    powermon::spawn(connection.clone());
+
     // Mantém o daemon vivo até SIGINT/SIGTERM (encerramento limpo pelo sistema).
-    tokio::signal::ctrl_c().await?;
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = sigterm.recv() => {}
+    }
     println!("Etherbit daemon — encerrando.");
 
     Ok(())

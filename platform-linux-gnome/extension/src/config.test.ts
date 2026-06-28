@@ -11,22 +11,22 @@ describe('parseConfig', () => {
   });
 
   it('mescla JSON parcial com os padrões', () => {
-    const cfg = parseConfig('{"inner_gap": 20}');
-    expect(cfg.inner_gap).toBe(20);
-    expect(cfg.outer_gap).toBe(DEFAULT_CONFIG.outer_gap);
+    const cfg = parseConfig('{"gap": 20}');
+    expect(cfg.gap).toBe(20);
     expect(cfg.border_color).toBe(DEFAULT_CONFIG.border_color);
     expect(cfg.autostart).toBe(DEFAULT_CONFIG.autostart);
   });
 
   it('reproduz todos os campos de um JSON completo', () => {
     const full: TilingConfig = {
-      inner_gap: 4,
-      outer_gap: 16,
+      gap: 4,
       active_border: false,
       border_color: '#bf616a',
       border_width: 3,
       ignore_list: ['obs', 'microsoft-word'],
       autostart: true,
+      rounded_corners: false,
+      corner_radius: 20,
     };
     expect(parseConfig(JSON.stringify(full))).toEqual(full);
   });
@@ -44,13 +44,14 @@ describe('DEFAULT_CONFIG', () => {
     // Espelho do `impl Default for Config` em daemon/src/config.rs. Se o daemon
     // mudar um padrão, este teste falha e força atualizar as duas pontas.
     expect(DEFAULT_CONFIG).toEqual({
-      inner_gap: 8,
-      outer_gap: 12,
+      gap: 8,
       active_border: true,
       border_color: '#5e81ac',
       border_width: 2,
       ignore_list: [],
       autostart: false,
+      rounded_corners: true,
+      corner_radius: 12,
     });
   });
 });

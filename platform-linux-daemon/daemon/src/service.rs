@@ -16,6 +16,11 @@ use crate::protocol;
 pub const BUS_NAME: &str = "dev.ediano.etherbit.Tiling";
 pub const OBJECT_PATH: &str = "/dev/ediano/etherbit/Tiling";
 
+/// Travas globais (px): o daemon faz clamp independentemente do cliente (UI ou D-Bus direto), para o
+/// gap nunca engolir a área útil e o raio nunca cortar barras de título/menus (ver ADR 0019).
+const GAP_MAX: u32 = 100;
+const CORNER_RADIUS_MAX: u32 = 50;
+
 /// Objeto servido no barramento de sessão.
 pub struct Tiling {
     config: Config,
@@ -26,11 +31,12 @@ impl Tiling {
         Self { config }
     }
 
-    /// Opções de layout derivadas da config atual (gaps + altura da barra de abas).
+    /// Opções de layout derivadas da config atual (gap único aplicado a inner e outer + altura da
+    /// barra de abas). O `gap` da config controla ambos os eixos e ambas as costuras.
     fn layout_options(&self) -> LayoutOptions {
         LayoutOptions {
-            inner_gap: self.config.inner_gap,
-            outer_gap: self.config.outer_gap,
+            inner_gap: self.config.gap,
+            outer_gap: self.config.gap,
             tab_bar_height: self.config.tab_bar_height,
         }
     }
@@ -52,20 +58,24 @@ impl Tiling {
 
 #[interface(name = "dev.ediano.etherbit.Tiling")]
 impl Tiling {
+    /// Handshake/health-check barato: confirma que o daemon está vivo e respondendo. Usado pela ponte
+    /// ao (re)detectar o daemon no barramento (pós-wake/reativação) e útil para diagnóstico.
+    async fn ping(&self) -> String {
+        "ok".to_string()
+    }
+
     /// Retorna a configuração atual serializada em JSON.
     async fn get_config(&self) -> String {
         self.config.to_json()
     }
 
-    /// Ajusta os gaps (espaçamento) interno e externo.
-    async fn set_gaps(
+    /// Ajusta o gap único (espaçamento entre janelas e bordas, ambos os eixos). Travado em 0..=100.
+    async fn set_gap(
         &mut self,
-        inner: u32,
-        outer: u32,
+        gap: u32,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> fdo::Result<()> {
-        self.config.inner_gap = inner;
-        self.config.outer_gap = outer;
+        self.config.gap = gap.min(GAP_MAX);
         self.persist()?;
         self.notify(&emitter).await
     }
@@ -92,6 +102,19 @@ impl Tiling {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> fdo::Result<()> {
         self.config.ignore_list = app_ids;
+        self.persist()?;
+        self.notify(&emitter).await
+    }
+
+    /// Liga/desliga os cantos arredondados das janelas e define o raio (px). Raio travado em 0..=50.
+    async fn set_rounded_corners(
+        &mut self,
+        enabled: bool,
+        radius: u32,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
+        self.config.rounded_corners = enabled;
+        self.config.corner_radius = radius.min(CORNER_RADIUS_MAX);
         self.persist()?;
         self.notify(&emitter).await
     }
@@ -146,6 +169,36 @@ impl Tiling {
         let opts = self.layout_options();
         protocol::resolve_drop_zone(&monitors_json, x, y, &target_json, opts)
             .map_err(|e| fdo::Error::InvalidArgs(format!("resolve_drop_zone: {e}")))
+    }
+
+    /// Aplica um drag-to-tile: move `dragged_id` para junto de `target_id` no lado da `zone`
+    /// (left/right/top/bottom). Recebe o `state_json` (com as árvores) e devolve `{"trees":[...]}`
+    /// atualizado para a ponte persistir; a geometria vem do `SyncWindows` seguinte. Sem estado.
+    async fn move_window(
+        &self,
+        state_json: String,
+        dragged_id: u64,
+        target_id: u64,
+        zone: String,
+    ) -> fdo::Result<String> {
+        protocol::move_window(&state_json, dragged_id, target_id, &zone)
+            .map_err(|e| fdo::Error::InvalidArgs(format!("move_window: {e}")))
+    }
+
+    /// Resize manual elástico: arrasta a borda `edge` (left/right/top/bottom) da janela `id` em
+    /// `delta_px` (positivo = cresceu). Recebe `monitors_json` (para a área do grupo) + `state_json`
+    /// (árvores) e devolve `{"trees":[...]}` atualizado; a geometria vem do `SyncWindows` seguinte.
+    async fn resize_window(
+        &self,
+        monitors_json: String,
+        state_json: String,
+        id: u64,
+        edge: String,
+        delta_px: i32,
+    ) -> fdo::Result<String> {
+        let opts = self.layout_options();
+        protocol::resize_window(&monitors_json, &state_json, id, &edge, delta_px, opts)
+            .map_err(|e| fdo::Error::InvalidArgs(format!("resize_window: {e}")))
     }
 
     /// Sinal emitido sempre que a configuração muda. Carrega a config completa em JSON.

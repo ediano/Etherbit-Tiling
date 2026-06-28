@@ -5,23 +5,25 @@
 
 /// Espelha 1:1 a struct Config do daemon (etherbit-tiling-daemon).
 export interface TilingConfig {
-  inner_gap: number;
-  outer_gap: number;
+  gap: number;
   active_border: boolean;
   border_color: string;
   border_width: number;
   ignore_list: string[];
   autostart: boolean;
+  rounded_corners: boolean;
+  corner_radius: number;
 }
 
 export const DEFAULT_CONFIG: TilingConfig = {
-  inner_gap: 8,
-  outer_gap: 12,
+  gap: 8,
   active_border: true,
   border_color: '#5e81ac',
   border_width: 2,
   ignore_list: [],
   autostart: false,
+  rounded_corners: true,
+  corner_radius: 12,
 };
 
 /// Faz parse defensivo do JSON do daemon, completando campos ausentes com o padrão.

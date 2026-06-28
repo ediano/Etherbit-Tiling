@@ -5,12 +5,13 @@ import {
   serializeMonitors,
   parseLayout,
   parseTabBars,
+  parseLayoutTrees,
   parsePreview,
+  resizeDeltaFrom,
   orderKey,
   appendToOrder,
   removeFromOrder,
   sortByOrder,
-  reorderForDrop,
   serializeState,
   serializeTarget,
   removeIdFromStacks,
@@ -20,6 +21,7 @@ import {
   toggleGroupDisabled,
   parseOrderKey,
   type Stack,
+  type TreeNode,
   type WindowSnapshot,
   type MonitorSnapshot,
 } from './bridge.js';
@@ -173,16 +175,66 @@ describe('estado de abas (stacks) e tiling por grupo', () => {
     expect(disabled.has(key)).toBe(false);
   });
 
-  it('serializeState emite stacks (≥2 membros) e grupos desligados', () => {
+  it('serializeState emite stacks (≥2 membros), grupos desligados, árvores e foco', () => {
     const stacks = new Map<string, Stack[]>([
       [orderKey(0, 0), [{ members: [1, 2], active: 2 }]],
       [orderKey(1, 0), [{ members: [9], active: 9 }]], // 1 membro → não serializa
     ]);
     const disabled = new Set<string>([orderKey(0, 1)]);
-    expect(JSON.parse(serializeState(stacks, disabled))).toEqual({
+    const trees = new Map<string, TreeNode | null>([[orderKey(0, 0), { win: 7 }]]);
+    expect(JSON.parse(serializeState(stacks, disabled, trees, 5))).toEqual({
       stacks: [{ monitor: 0, workspace: 0, members: [1, 2], active: 2 }],
       disabled_groups: [[0, 1]],
+      trees: [{ monitor: 0, workspace: 0, root: { win: 7 } }],
+      focused_id: 5,
     });
+  });
+
+  it('parseLayoutTrees lê as árvores por grupo e ignora entradas malformadas', () => {
+    const json = JSON.stringify({
+      rects: [],
+      tab_bars: [],
+      trees: [
+        { monitor: 0, workspace: 0, root: { win: 3 } },
+        { monitor: 1, workspace: 0, root: null },
+        { workspace: 0, root: { win: 9 } }, // sem monitor → ignorada
+      ],
+    });
+    const trees = parseLayoutTrees(json);
+    expect(trees.get(orderKey(0, 0))).toEqual({ win: 3 });
+    expect(trees.get(orderKey(1, 0))).toBeNull();
+    expect(trees.size).toBe(2);
+  });
+
+  it('parseLayoutTrees é defensivo (JSON inválido → vazio)', () => {
+    expect(parseLayoutTrees('not json').size).toBe(0);
+    expect(parseLayoutTrees('{}').size).toBe(0);
+  });
+
+  it('resizeDeltaFrom infere borda direita (cresceu) e esquerda', () => {
+    // Largura 100→160 com x fixo → borda direita cresceu 60.
+    expect(resizeDeltaFrom({ x: 0, y: 0, width: 100, height: 50 }, { x: 0, y: 0, width: 160, height: 50 })).toEqual([
+      { edge: 'right', deltaPx: 60 },
+    ]);
+    // x 100→70, largura 100→130 → borda esquerda cresceu 30.
+    expect(resizeDeltaFrom({ x: 100, y: 0, width: 100, height: 50 }, { x: 70, y: 0, width: 130, height: 50 })).toEqual([
+      { edge: 'left', deltaPx: 30 },
+    ]);
+  });
+
+  it('resizeDeltaFrom de canto devolve duas bordas', () => {
+    const out = resizeDeltaFrom(
+      { x: 0, y: 0, width: 100, height: 100 },
+      { x: 0, y: 0, width: 140, height: 130 },
+    );
+    expect(out).toEqual([
+      { edge: 'right', deltaPx: 40 },
+      { edge: 'bottom', deltaPx: 30 },
+    ]);
+  });
+
+  it('resizeDeltaFrom sem mudança → vazio', () => {
+    expect(resizeDeltaFrom({ x: 1, y: 2, width: 3, height: 4 }, { x: 1, y: 2, width: 3, height: 4 })).toEqual([]);
   });
 
   it('serializeTarget devolve "" sem alvo e JSON com alvo', () => {
@@ -244,23 +296,5 @@ describe('ordem estável das janelas', () => {
     const order = new Map<string, number[]>([['0:1', [30, 10, 20]]]);
     // ids presentes em ordem arbitrária + um id novo (99) ainda não registrado
     expect(sortByOrder(order, '0:1', [10, 99, 20, 30])).toEqual([30, 10, 20, 99]);
-  });
-
-  it('reorderForDrop troca arrastado com alvo', () => {
-    const order = new Map<string, number[]>([['0:0', [1, 2, 3]]]);
-    expect(reorderForDrop(order, '0:0', 1, 3)).toBe(true);
-    expect(order.get('0:0')).toEqual([3, 2, 1]);
-  });
-
-  it('reorderForDrop insere o arrastado vindo de outro grupo na posição do alvo', () => {
-    const order = new Map<string, number[]>([['0:0', [1, 2]]]);
-    expect(reorderForDrop(order, '0:0', 9, 2)).toBe(true);
-    expect(order.get('0:0')).toEqual([1, 9, 2]);
-  });
-
-  it('reorderForDrop é no-op quando arrastado == alvo', () => {
-    const order = new Map<string, number[]>([['0:0', [1, 2]]]);
-    expect(reorderForDrop(order, '0:0', 1, 1)).toBe(false);
-    expect(order.get('0:0')).toEqual([1, 2]);
   });
 });

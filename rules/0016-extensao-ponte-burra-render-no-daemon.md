@@ -81,6 +81,25 @@ ativa, grupos com tiling desligado) vive na **ponte** — o daemon **permanece s
 contrato D-Bus evoluído e atalhos em [0018](0018-abas-atalhos-globais-drag-to-group.md). Status deste
 ADR permanece **✅ Aceita** (o 0018 o estende, não o revoga).
 
+## Emenda (2026): Árvore persistente e resize → ver [0019](0019-arvore-bsp-persistente-resize-elastico.md)
+
+O "trabalho futuro" de **resize manual proporcional persistente** acima foi cumprido pelo
+[0019](0019-arvore-bsp-persistente-resize-elastico.md): o motor evoluiu do BSP função-da-ordem para
+uma **árvore BSP persistente com `ratio` por nó**. **Crucial:** a árvore vive como estado leve da
+**ponte** (viaja em `state_json` e volta no `layout_json`/`trees_json`) — o **daemon continua sem
+estado** e o core continua puro (recebe a árvore, devolve a árvore/geometria). Cantos arredondados
+seguem a regra deste ADR: a extensão GNOME (dentro do Mutter) anexa um efeito ao ator; o daemon
+(processo externo) não desenha sobre janelas alheias, e o KDE depende do efeito nativo do KWin.
+Status permanece **✅ Aceita** (o 0019 o estende, não o revoga).
+
+## Emenda (2026): Resiliência de IPC → ver [0020](0020-resiliencia-ipc-dbus.md)
+
+O ciclo de vida "daemon só sobe no login + uma conexão sem reconexão" se mostrou frágil após
+ociosidade/suspensão (parava até o reboot). O [0020](0020-resiliencia-ipc-dbus.md) adiciona **ativação
+D-Bus** (o daemon é relançado sob demanda), **reconexão + watch de nome na ponte** e um **wake
+handshake via logind**. O daemon segue **sem estado** — o que torna "sair e reativar" uma recuperação
+segura. Status permanece **✅ Aceita**.
+
 ## Consequências
 - **Resiliência estrutural:** como a extensão não renderiza layout e aplica geometria instantânea, o
   congelamento em LLVMpipe deixa de ocorrer — sem precisar detectar render por software no compositor.

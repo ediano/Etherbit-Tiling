@@ -5,12 +5,12 @@ import {
   serializeMonitors,
   parseLayout,
   parseTabBars,
+  parseLayoutTrees,
   parsePreview,
   orderKey,
   appendToOrder,
   removeFromOrder,
   sortByOrder,
-  reorderForDrop,
   serializeState,
   serializeTarget,
   removeIdFromStacks,
@@ -18,7 +18,12 @@ import {
   addToStack,
   setActiveMember,
   toggleGroupDisabled,
+  treeToTransport,
+  treeFromTransport,
+  resizeDeltaFrom,
   type Stack,
+  type TreeNode,
+  type TransportNode,
   type WindowSnapshot,
   type MonitorSnapshot,
 } from './bridge.js';
@@ -142,19 +147,69 @@ describe('estado de abas (stacks, ids string) e tiling por grupo', () => {
       ['a', 1],
       ['b', 2],
     ]);
-    expect(JSON.parse(serializeState(stacks, disabled, transportOf))).toEqual({
+    const trees = new Map<string, TreeNode | null>([[orderKey(0, 0), { win: 'a' }]]);
+    expect(JSON.parse(serializeState(stacks, disabled, transportOf, trees, 'b'))).toEqual({
       stacks: [{ monitor: 0, workspace: 0, members: [1, 2], active: 2 }],
       disabled_groups: [[1, 2]],
+      trees: [{ monitor: 0, workspace: 0, root: { win: 1 } }],
+      focused_id: 2,
     });
   });
 
   it('serializeState omite stack que fica com < 2 membros traduzíveis', () => {
     const stacks = new Map<string, Stack[]>([[orderKey(0, 0), [{ members: ['a', 'z'], active: 'a' }]]]);
     const transportOf = new Map<string, number>([['a', 1]]);
-    expect(JSON.parse(serializeState(stacks, new Set(), transportOf))).toEqual({
+    expect(JSON.parse(serializeState(stacks, new Set(), transportOf, new Map(), ''))).toEqual({
       stacks: [],
       disabled_groups: [],
+      trees: [],
+      focused_id: 0,
     });
+  });
+
+  it('árvore: round-trip internalId ↔ transporte e colapso de folha intraduzível', () => {
+    const transportOf = new Map<string, number>([
+      ['a', 1],
+      ['b', 2],
+    ]);
+    const toStable = new Map<number, string>([
+      [1, 'a'],
+      [2, 'b'],
+    ]);
+    const tree: TreeNode = {
+      split: { axis: 'h', ratio: 0.5, first: { win: 'a' }, second: { win: 'b' } },
+    };
+    const transport = treeToTransport(tree, transportOf);
+    expect(transport).toEqual({
+      split: { axis: 'h', ratio: 0.5, first: { win: 1 }, second: { win: 2 } },
+    });
+    expect(treeFromTransport(transport as TransportNode, toStable)).toEqual(tree);
+    // 'b' sem transporte → o nó colapsa para a folha 'a'.
+    const partial = treeToTransport(tree, new Map([['a', 1]]));
+    expect(partial).toEqual({ win: 1 });
+  });
+
+  it('parseLayoutTrees traduz transporte → internalId por grupo', () => {
+    const toStable = new Map<number, string>([[1, 'a']]);
+    const json = JSON.stringify({
+      rects: [],
+      tab_bars: [],
+      trees: [{ monitor: 0, workspace: 0, root: { win: 1 } }],
+    });
+    const trees = parseLayoutTrees(json, toStable);
+    expect(trees.get(orderKey(0, 0))).toEqual({ win: 'a' });
+  });
+
+  it('resizeDeltaFrom infere bordas e canto', () => {
+    expect(resizeDeltaFrom({ x: 0, y: 0, width: 100, height: 50 }, { x: 0, y: 0, width: 160, height: 50 })).toEqual([
+      { edge: 'right', deltaPx: 60 },
+    ]);
+    expect(
+      resizeDeltaFrom({ x: 0, y: 0, width: 100, height: 100 }, { x: 0, y: 0, width: 140, height: 130 }),
+    ).toEqual([
+      { edge: 'right', deltaPx: 40 },
+      { edge: 'bottom', deltaPx: 30 },
+    ]);
   });
 
   it('serializeTarget devolve "" sem alvo e JSON com alvo', () => {
@@ -209,23 +264,5 @@ describe('ordem estável das janelas (ids string/internalId)', () => {
   it('sortByOrder respeita a ordem registrada e joga ids novos para o fim', () => {
     const order = new Map<string, string[]>([['0:0', ['c', 'a', 'b']]]);
     expect(sortByOrder(order, '0:0', ['a', 'z', 'b', 'c'])).toEqual(['c', 'a', 'b', 'z']);
-  });
-
-  it('reorderForDrop troca arrastado com alvo', () => {
-    const order = new Map<string, string[]>([['0:0', ['a', 'b', 'c']]]);
-    expect(reorderForDrop(order, '0:0', 'a', 'c')).toBe(true);
-    expect(order.get('0:0')).toEqual(['c', 'b', 'a']);
-  });
-
-  it('reorderForDrop insere arrastado de outro grupo na posição do alvo', () => {
-    const order = new Map<string, string[]>([['0:0', ['a', 'b']]]);
-    expect(reorderForDrop(order, '0:0', 'z', 'b')).toBe(true);
-    expect(order.get('0:0')).toEqual(['a', 'z', 'b']);
-  });
-
-  it('reorderForDrop é no-op quando arrastado == alvo', () => {
-    const order = new Map<string, string[]>([['0:0', ['a', 'b']]]);
-    expect(reorderForDrop(order, '0:0', 'a', 'a')).toBe(false);
-    expect(order.get('0:0')).toEqual(['a', 'b']);
   });
 });

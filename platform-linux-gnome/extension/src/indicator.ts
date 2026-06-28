@@ -2,33 +2,45 @@
 //
 // Segue a regra do macOS: o indicador só existe enquanto o motor está ativo. No Linux o motor
 // liga/desliga junto com a extensão (ver ADR de nomenclatura/decisões), então o indicador é
-// criado em enable() e destruído em disable(). Dá acesso rápido a gaps e autostart.
+// criado em enable() e destruído em disable(). Dá acesso rápido a gap, raio dos cantos e autostart.
 //
-// Controle leve por ora; a UI de configurações migrará para a janela própria do daemon (wgpu)
-// no futuro (ver ADR rules/0016). NÃO há controle de "borda ativa" — recurso removido (a borda
+// Controles via INPUT NUMÉRICO inteiro (spinbox: digitar + botões − / +), com travas rígidas (ver
+// ADR rules/0019): Gap 0..100 px, raio dos cantos 0..50 px. A UI completa migrará para a janela
+// própria do daemon (wgpu) no futuro (ver ADR rules/0016). NÃO há controle de "borda ativa" (a borda
 // não é desenhável por um cliente Wayland; só pelo compositor).
 
+import Clutter from 'gi://Clutter';
 import GObject from 'gi://GObject';
 import St from 'gi://St';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
-import { Slider } from 'resource:///org/gnome/shell/ui/slider.js';
 
 import type { TilingConfig } from './dbus.js';
 
-/// Gap máximo (px) representável pelos sliders (0..1 → 0..MAX_GAP).
-const MAX_GAP = 50;
+/// Travas rígidas (px) dos inputs — espelham os limites do daemon e dos ADRs.
+const GAP_MIN = 0;
+const GAP_MAX = 100;
+const RADIUS_MIN = 0;
+const RADIUS_MAX = 50;
+
+/// Handle de um spinbox: permite refletir a config sem disparar o handler.
+interface SpinRow {
+  setValue: (value: number) => void;
+}
 
 /// Callbacks disparados pelas interações do usuário no menu.
 export interface IndicatorHandlers {
-  onGaps: (inner: number, outer: number) => void;
+  onGap: (gap: number) => void;
+  onCornerRadius: (radius: number) => void;
+  onRoundedCorners: (enabled: boolean) => void;
   onAutostart: (enabled: boolean) => void;
 }
 
 class EtherbitIndicatorImpl extends PanelMenu.Button {
   private _handlers: IndicatorHandlers;
-  private _innerSlider!: Slider;
-  private _outerSlider!: Slider;
+  private _gapSpin!: SpinRow;
+  private _radiusSpin!: SpinRow;
+  private _roundedSwitch!: PopupMenu.PopupSwitchMenuItem;
   private _autostartSwitch!: PopupMenu.PopupSwitchMenuItem;
   // Evita reentrância: ao refletir a config do daemon não queremos re-disparar handlers.
   private _syncing = false;
@@ -49,10 +61,20 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
       }),
     );
 
-    this._innerSlider = this._addSliderRow('Gap interno', () => this._emitGaps());
-    this._outerSlider = this._addSliderRow('Gap externo', () => this._emitGaps());
+    this._gapSpin = this._addSpinRow('Espaçamento (px)', GAP_MIN, GAP_MAX, (v) =>
+      this._handlers.onGap(v),
+    );
+    this._radiusSpin = this._addSpinRow('Raio dos cantos (px)', RADIUS_MIN, RADIUS_MAX, (v) =>
+      this._handlers.onCornerRadius(v),
+    );
 
     this._menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+    this._roundedSwitch = new PopupMenu.PopupSwitchMenuItem('Cantos arredondados', true);
+    this._roundedSwitch.connect('toggled', (_item, state) => {
+      if (!this._syncing) this._handlers.onRoundedCorners(state);
+    });
+    this._menu.addMenuItem(this._roundedSwitch);
 
     this._autostartSwitch = new PopupMenu.PopupSwitchMenuItem('Iniciar com o sistema', false);
     this._autostartSwitch.connect('toggled', (_item, state) => {
@@ -64,31 +86,75 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
   /// Reflete a configuração vinda do daemon nos controles, sem disparar handlers.
   sync(config: TilingConfig): void {
     this._syncing = true;
-    this._innerSlider.value = Math.min(config.inner_gap / MAX_GAP, 1);
-    this._outerSlider.value = Math.min(config.outer_gap / MAX_GAP, 1);
+    this._gapSpin.setValue(config.gap);
+    this._radiusSpin.setValue(config.corner_radius);
+    this._roundedSwitch.setToggleState(config.rounded_corners);
     this._autostartSwitch.setToggleState(config.autostart);
     this._syncing = false;
   }
 
-  private _addSliderRow(label: string, onChange: () => void): Slider {
+  /// Cria uma linha de INPUT NUMÉRICO inteiro: rótulo + [−] [campo] [+]. Digitar ou clicar ajusta o
+  /// valor, SEMPRE inteiro e travado em `[min, max]`. `onChange` recebe o valor já validado.
+  private _addSpinRow(
+    label: string,
+    min: number,
+    max: number,
+    onChange: (value: number) => void,
+  ): SpinRow {
     const item = new PopupMenu.PopupBaseMenuItem({ activate: false });
-    item.add_child(new St.Label({ text: label }));
+    item.add_child(
+      new St.Label({ text: label, x_expand: true, y_align: Clutter.ActorAlign.CENTER }),
+    );
 
-    const slider = new Slider(0);
-    slider.x_expand = true;
-    slider.connect('notify::value', () => {
-      if (!this._syncing) onChange();
+    let value = min;
+    const clamp = (v: number): number => Math.max(min, Math.min(max, Math.round(v)));
+
+    const entry = new St.Entry({
+      style_class: 'etherbit-spin-entry',
+      can_focus: true,
+      x_align: Clutter.ActorAlign.CENTER,
+      y_align: Clutter.ActorAlign.CENTER,
     });
-    item.add_child(slider);
+    entry.set_style('width: 56px; text-align: center;');
 
+    const minus = new St.Button({ label: '−', style_class: 'button', can_focus: true });
+    const plus = new St.Button({ label: '+', style_class: 'button', can_focus: true });
+    minus.set_style('min-width: 28px; margin-right: 4px;');
+    plus.set_style('min-width: 28px; margin-left: 4px;');
+
+    const render = (): void => entry.set_text(String(value));
+    // Aplica um valor do USUÁRIO: trava, atualiza o campo e dispara o handler.
+    const apply = (v: number): void => {
+      value = clamp(v);
+      render();
+      if (!this._syncing) {
+        onChange(value);
+      }
+    };
+
+    minus.connect('clicked', () => apply(value - 1));
+    plus.connect('clicked', () => apply(value + 1));
+    // Digitação: ao confirmar (Enter) ou sair do campo, parseia inteiro e trava (valor inválido →
+    // restaura o atual).
+    const commit = (): void => {
+      const parsed = Number.parseInt(entry.get_text(), 10);
+      apply(Number.isFinite(parsed) ? parsed : value);
+    };
+    entry.clutter_text.connect('activate', () => commit());
+    entry.clutter_text.connect('key-focus-out', () => commit());
+
+    item.add_child(minus);
+    item.add_child(entry);
+    item.add_child(plus);
     this._menu.addMenuItem(item);
-    return slider;
-  }
 
-  private _emitGaps(): void {
-    const inner = Math.round(this._innerSlider.value * MAX_GAP);
-    const outer = Math.round(this._outerSlider.value * MAX_GAP);
-    this._handlers.onGaps(inner, outer);
+    return {
+      // Sincroniza a partir da config (sem disparar `onChange`).
+      setValue: (v: number): void => {
+        value = clamp(v);
+        render();
+      },
+    };
   }
 }
 

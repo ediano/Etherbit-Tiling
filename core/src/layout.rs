@@ -153,6 +153,49 @@ pub struct LayoutResult {
     pub tab_bars: Vec<TabBarRect>,
 }
 
+// ---- Árvore BSP PERSISTENTE (estado da ponte; o core só a transforma) ----
+//
+// Diferente do BSP balanceado de `compute_layout_with` (função pura da ordem, que reembaralha tudo
+// a cada janela), a árvore persiste a topologia e as PROPORÇÕES (ratio por nó), dando layout
+// ESTÁVEL (abrir a N+1 racha só um nó) e resize elástico. As folhas são ids de janela simples; um
+// STACK ocupa a folha do seu id-âncora (primeiro membro presente) e é resolvido na geometria — assim
+// as operações de árvore (inserir/colapsar/mover/redimensionar) lidam só com `u64`.
+
+/// Eixo de uma divisão interna.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Axis {
+    /// Lado a lado (corte no eixo X).
+    Horizontal,
+    /// Empilhado (corte no eixo Y).
+    Vertical,
+}
+
+/// Nó da árvore BSP persistente: uma folha (id de janela / âncora de stack) ou uma divisão binária
+/// com `ratio` (fração da PRIMEIRA criança no eixo, `0<ratio<1`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Node {
+    Leaf(u64),
+    Split { axis: Axis, ratio: f64, first: Box<Node>, second: Box<Node> },
+}
+
+/// Árvore de um grupo `(monitor, workspace)`. `root: None` = grupo vazio.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LayoutTree {
+    pub root: Option<Node>,
+}
+
+/// Borda de uma janela arrastada num resize manual.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edge {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+/// Proporção mínima de um nó (evita folhas degeneradas); o resize faz clamp a isto.
+pub const MIN_RATIO: f64 = 0.05;
+
 /// Um slot do BSP: uma janela solta OU um stack inteiro ocupando uma folha. O BSP conta um stack
 /// como 1 — a matemática de divisão é idêntica à de janelas soltas.
 enum Slot<'a> {
@@ -279,43 +322,7 @@ pub fn compute_layout_with(
                     width: round(srect.w),
                     height: round(srect.h),
                 }),
-                Slot::Stack(desc) => {
-                    // Membros presentes neste grupo, na ordem das abas.
-                    let present: Vec<u64> =
-                        desc.member_ids.iter().copied().filter(|m| ids.contains(m)).collect();
-                    if present.is_empty() {
-                        continue;
-                    }
-                    // Faixa da barra no topo (clamp à altura do slot); conteúdo abaixo dela.
-                    let bar_h = (opts.tab_bar_height as f64).min(srect.h.max(0.0));
-                    let content = PreviewRect {
-                        x: round(srect.x),
-                        y: round(srect.y + bar_h),
-                        width: round(srect.w),
-                        height: round((srect.h - bar_h).max(0.0)),
-                    };
-                    // Aba ativa: a indicada se presente, senão o primeiro membro presente.
-                    let active =
-                        if present.contains(&desc.active_id) { desc.active_id } else { present[0] };
-                    // Só a ativa entra em `rects` (visível, no conteúdo). As inativas a ponte oculta.
-                    rects.push(WindowRect {
-                        id: active,
-                        x: content.x,
-                        y: content.y,
-                        width: content.width,
-                        height: content.height,
-                    });
-                    tab_bars.push(TabBarRect {
-                        stack_id: present[0],
-                        x: round(srect.x),
-                        y: round(srect.y),
-                        width: round(srect.w),
-                        height: round(bar_h),
-                        content,
-                        member_ids: present,
-                        active_id: active,
-                    });
-                }
+                Slot::Stack(desc) => render_stack(desc, srect, &ids, opts, &mut rects, &mut tab_bars),
             }
         }
     }
@@ -487,11 +494,16 @@ fn zone_rect(area: &WorkArea, zone: DropZone, opts: &LayoutOptions) -> PreviewRe
     PreviewRect { x: round(x), y: round(y), width: round(w), height: round(h) }
 }
 
-/// Detecta o destino de um drop CONSIDERANDO a janela sob o cursor. Se o cursor está na faixa
-/// superior (`STACK_BAND` da altura) da janela-alvo, o destino é `DropZone::Stack` (empilhar nela) e
-/// o preview é o retângulo da própria janela-alvo. Caso contrário, delega a `detect_drop_zone` (split
-/// do monitor, comportamento atual). A ponte resolve QUAL é a janela sob o cursor; o core resolve a
-/// fração. Restringir o gatilho à faixa superior evita colidir com `Center` (= maximizar).
+/// Detecta o destino de um drop CONSIDERANDO a janela sob o cursor. Quando há janela-alvo e o cursor
+/// está DENTRO dela:
+///  - faixa superior (`STACK_BAND` da altura) → `DropZone::Stack` (empilhar nela), preview = a própria
+///    janela-alvo;
+///  - caso contrário → o sub-quadrante REAL da janela-alvo (metade esquerda/direita/superior/inferior
+///    DELA, conforme o lado mais próximo do cursor), casando pixel a pixel com o split que `move_window`
+///    produzirá (ratio 0.5 + `inner_gap` na costura). Isto corrige o preview que antes mostrava 50% do
+///    MONITOR em grids povoados.
+/// Só quando NÃO há janela sob o cursor (ponto solto na área) delega a `detect_drop_zone` (split do
+/// monitor). A ponte resolve QUAL é a janela sob o cursor; o core resolve a fração.
 pub fn detect_drop_target(
     area: &WorkArea,
     target: Option<PreviewRect>,
@@ -504,14 +516,505 @@ pub fn detect_drop_target(
 
     if let Some(t) = target {
         if t.width > 0 && t.height > 0 {
-            let inside_x = x >= t.x && x < t.x + t.width;
+            let fx = (x - t.x) as f64 / t.width as f64;
             let fy = (y - t.y) as f64 / t.height as f64;
-            if inside_x && (0.0..1.0).contains(&fy) && fy < STACK_BAND {
-                return DropPreview { zone: DropZone::Stack, rect: t };
+            if (0.0..1.0).contains(&fx) && (0.0..1.0).contains(&fy) {
+                if fy < STACK_BAND {
+                    return DropPreview { zone: DropZone::Stack, rect: t };
+                }
+                let (zone, rect) = sub_rect_of_target(t, fx, fy, opts);
+                return DropPreview { zone, rect };
             }
         }
     }
     detect_drop_zone(area, x, y, opts)
+}
+
+/// Metade da janela-alvo `t` que o drop vai ocupar, escolhida pelo lado mais próximo do cursor
+/// (fração `(fx, fy)` dentro de `t`). Usa `inner_gap` na costura, espelhando `split_axis` — assim o
+/// preview casa pixel a pixel com o split real produzido por `move_window` (ratio 0.5). Empates de
+/// distância resolvem na ordem esquerda → direita → topo → base (determinístico).
+fn sub_rect_of_target(t: PreviewRect, fx: f64, fy: f64, opts: &LayoutOptions) -> (DropZone, PreviewRect) {
+    let gap = opts.inner_gap as f64;
+    let (tx, ty, tw, th) = (t.x as f64, t.y as f64, t.width as f64, t.height as f64);
+    let half_w = (tw - gap) / 2.0;
+    let half_h = (th - gap) / 2.0;
+
+    // Distância do cursor a cada borda da janela-alvo; a menor define o lado.
+    let (left, right, top, bottom) = (fx, 1.0 - fx, fy, 1.0 - fy);
+    let nearest = left.min(right).min(top).min(bottom);
+
+    if nearest == left {
+        (DropZone::Left, PreviewRect { x: round(tx), y: round(ty), width: round(half_w), height: round(th) })
+    } else if nearest == right {
+        (DropZone::Right, PreviewRect { x: round(tx + half_w + gap), y: round(ty), width: round(half_w), height: round(th) })
+    } else if nearest == top {
+        (DropZone::Top, PreviewRect { x: round(tx), y: round(ty), width: round(tw), height: round(half_h) })
+    } else {
+        (DropZone::Bottom, PreviewRect { x: round(tx), y: round(ty + half_h + gap), width: round(tw), height: round(half_h) })
+    }
+}
+
+/// Área interna de um monitor: a área útil menos `outer` em cada borda.
+fn inner_rect(area: &WorkArea, outer: f64) -> Rectf {
+    Rectf {
+        x: area.x as f64 + outer,
+        y: area.y as f64 + outer,
+        w: area.width as f64 - 2.0 * outer,
+        h: area.height as f64 - 2.0 * outer,
+    }
+}
+
+/// Divide `rect` em duas partes no `axis`, separadas por `gap`, com a PRIMEIRA ocupando `ratio` do
+/// espaço útil (após descontar o gap). Generaliza `split_axis` (que é o caso `ratio = 0.5`).
+fn split_rect(rect: Rectf, gap: f64, axis: Axis, ratio: f64) -> (Rectf, Rectf) {
+    match axis {
+        Axis::Horizontal => {
+            let avail = (rect.w - gap).max(0.0);
+            let w1 = avail * ratio;
+            (
+                Rectf { x: rect.x, y: rect.y, w: w1, h: rect.h },
+                Rectf { x: rect.x + w1 + gap, y: rect.y, w: avail - w1, h: rect.h },
+            )
+        }
+        Axis::Vertical => {
+            let avail = (rect.h - gap).max(0.0);
+            let h1 = avail * ratio;
+            (
+                Rectf { x: rect.x, y: rect.y, w: rect.w, h: h1 },
+                Rectf { x: rect.x, y: rect.y + h1 + gap, w: rect.w, h: avail - h1 },
+            )
+        }
+    }
+}
+
+/// Atribui um `Rectf` a cada folha da árvore, aplicando os ratios e o `gap` em cada costura.
+fn geom_leaves(node: &Node, rect: Rectf, gap: f64, out: &mut Vec<(u64, Rectf)>) {
+    match node {
+        Node::Leaf(id) => out.push((*id, rect)),
+        Node::Split { axis, ratio, first, second } => {
+            let (a, b) = split_rect(rect, gap, *axis, *ratio);
+            geom_leaves(first, a, gap, out);
+            geom_leaves(second, b, gap, out);
+        }
+    }
+}
+
+/// Renderiza um stack (conjunto de abas) num slot `srect`: barra no topo + conteúdo da aba ativa em
+/// `rects`; as inativas ficam de fora (a ponte as oculta). `group_ids` filtra os membros presentes.
+/// Compartilhado entre o BSP legado (`compute_layout_with`) e a árvore (`compute_geometry`).
+fn render_stack(
+    desc: &StackDescriptor,
+    srect: Rectf,
+    group_ids: &[u64],
+    opts: &LayoutOptions,
+    rects: &mut Vec<WindowRect>,
+    tab_bars: &mut Vec<TabBarRect>,
+) {
+    let present: Vec<u64> =
+        desc.member_ids.iter().copied().filter(|m| group_ids.contains(m)).collect();
+    if present.is_empty() {
+        return;
+    }
+    let bar_h = (opts.tab_bar_height as f64).min(srect.h.max(0.0));
+    let content = PreviewRect {
+        x: round(srect.x),
+        y: round(srect.y + bar_h),
+        width: round(srect.w),
+        height: round((srect.h - bar_h).max(0.0)),
+    };
+    let active = if present.contains(&desc.active_id) { desc.active_id } else { present[0] };
+    rects.push(WindowRect {
+        id: active,
+        x: content.x,
+        y: content.y,
+        width: content.width,
+        height: content.height,
+    });
+    tab_bars.push(TabBarRect {
+        stack_id: present[0],
+        x: round(srect.x),
+        y: round(srect.y),
+        width: round(srect.w),
+        height: round(bar_h),
+        content,
+        member_ids: present,
+        active_id: active,
+    });
+}
+
+/// O stack cuja ÂNCORA (primeiro membro presente no grupo) é `id`, se houver. É a folha que o stack
+/// ocupa na árvore.
+fn stack_anchored_at<'a>(
+    id: u64,
+    stacks: &'a [StackDescriptor],
+    group_ids: &[u64],
+) -> Option<&'a StackDescriptor> {
+    stacks.iter().find(|s| {
+        s.member_ids.iter().copied().find(|m| group_ids.contains(m)) == Some(id)
+    })
+}
+
+/// Calcula a geometria a partir da ÁRVORE persistente (aplicando ratios), integrando stacks (uma
+/// folha-âncora vira barra de abas + conteúdo) e os `outer/inner` gaps. Espelha visualmente o
+/// `compute_layout_with`, mas guiado pela topologia/proporções da árvore em vez da ordem.
+pub fn compute_geometry(
+    tree: &LayoutTree,
+    area: &WorkArea,
+    opts: &LayoutOptions,
+    stacks: &[StackDescriptor],
+    group_ids: &[u64],
+) -> LayoutResult {
+    let mut rects = Vec::new();
+    let mut tab_bars = Vec::new();
+    let root = match &tree.root {
+        Some(r) => r,
+        None => return LayoutResult { rects, tab_bars },
+    };
+    let inner = inner_rect(area, opts.outer_gap as f64);
+    let mut leaves = Vec::new();
+    geom_leaves(root, inner, opts.inner_gap as f64, &mut leaves);
+    for (id, r) in leaves {
+        if let Some(desc) = stack_anchored_at(id, stacks, group_ids) {
+            render_stack(desc, r, group_ids, opts, &mut rects, &mut tab_bars);
+        } else {
+            rects.push(WindowRect {
+                id,
+                x: round(r.x),
+                y: round(r.y),
+                width: round(r.w),
+                height: round(r.h),
+            });
+        }
+    }
+    LayoutResult { rects, tab_bars }
+}
+
+/// `true` se a árvore contém a folha `id`.
+fn node_contains(node: &Node, id: u64) -> bool {
+    match node {
+        Node::Leaf(lid) => *lid == id,
+        Node::Split { first, second, .. } => node_contains(first, id) || node_contains(second, id),
+    }
+}
+
+/// Todos os ids de folha da árvore (ordem de varredura first→second).
+fn collect_leaf_ids(tree: &LayoutTree) -> Vec<u64> {
+    fn walk(node: &Node, out: &mut Vec<u64>) {
+        match node {
+            Node::Leaf(id) => out.push(*id),
+            Node::Split { first, second, .. } => {
+                walk(first, out);
+                walk(second, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(r) = &tree.root {
+        walk(r, &mut out);
+    }
+    out
+}
+
+/// Remove a folha `id` da árvore: o nó pai some e o IRMÃO sobe (absorve espaço e ratio). Se a folha
+/// removida era a raiz, a árvore fica vazia.
+fn collapse_leaf(tree: LayoutTree, id: u64) -> LayoutTree {
+    fn walk(node: Node, id: u64) -> Option<Node> {
+        match node {
+            Node::Leaf(lid) => {
+                if lid == id {
+                    None
+                } else {
+                    Some(Node::Leaf(lid))
+                }
+            }
+            Node::Split { axis, ratio, first, second } => {
+                match (walk(*first, id), walk(*second, id)) {
+                    (None, None) => None,
+                    (Some(n), None) | (None, Some(n)) => Some(n),
+                    (Some(a), Some(b)) => Some(Node::Split {
+                        axis,
+                        ratio,
+                        first: Box::new(a),
+                        second: Box::new(b),
+                    }),
+                }
+            }
+        }
+    }
+    LayoutTree { root: tree.root.and_then(|r| walk(r, id)) }
+}
+
+/// Racha a folha `target` em duas (ratio 0.5, eixo `axis`): `new_id` fica em `first` se
+/// `new_first`, senão em `second`. As demais folhas não se mexem.
+fn split_leaf_into(node: Node, target: u64, new_id: u64, axis: Axis, new_first: bool) -> Node {
+    match node {
+        Node::Leaf(id) if id == target => {
+            let (first, second) = if new_first {
+                (Node::Leaf(new_id), Node::Leaf(target))
+            } else {
+                (Node::Leaf(target), Node::Leaf(new_id))
+            };
+            Node::Split { axis, ratio: 0.5, first: Box::new(first), second: Box::new(second) }
+        }
+        Node::Leaf(id) => Node::Leaf(id),
+        Node::Split { axis: a, ratio, first, second } => Node::Split {
+            axis: a,
+            ratio,
+            first: Box::new(split_leaf_into(*first, target, new_id, axis, new_first)),
+            second: Box::new(split_leaf_into(*second, target, new_id, axis, new_first)),
+        },
+    }
+}
+
+/// Id da maior folha (por área-alvo) da árvore — usado como alvo de inserção quando não há foco no
+/// grupo. Aspect-aware via geometria real.
+fn largest_leaf_id(root: &Node, area: &WorkArea, opts: &LayoutOptions) -> Option<u64> {
+    let inner = inner_rect(area, opts.outer_gap as f64);
+    let mut leaves = Vec::new();
+    geom_leaves(root, inner, opts.inner_gap as f64, &mut leaves);
+    leaves
+        .into_iter()
+        .max_by(|(_, a), (_, b)| {
+            (a.w * a.h).partial_cmp(&(b.w * b.h)).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(id, _)| id)
+}
+
+/// Insere `new_id` rachando a folha-alvo: a do `focused` (se presente) ou a maior folha. O eixo do
+/// novo split é aspect-aware (folha mais larga → corte vertical/lado a lado; mais alta → horizontal).
+fn insert_one(
+    tree: LayoutTree,
+    new_id: u64,
+    focused: Option<u64>,
+    area: &WorkArea,
+    opts: &LayoutOptions,
+) -> LayoutTree {
+    let root = match tree.root {
+        None => return LayoutTree { root: Some(Node::Leaf(new_id)) },
+        Some(r) => r,
+    };
+    let target = focused
+        .filter(|f| node_contains(&root, *f))
+        .or_else(|| largest_leaf_id(&root, area, opts));
+    let Some(target) = target else {
+        return LayoutTree { root: Some(root) };
+    };
+    // Aspecto da folha-alvo para escolher o eixo do corte.
+    let inner = inner_rect(area, opts.outer_gap as f64);
+    let mut leaves = Vec::new();
+    geom_leaves(&root, inner, opts.inner_gap as f64, &mut leaves);
+    let axis = leaves
+        .iter()
+        .find(|(id, _)| *id == target)
+        .map(|(_, r)| if r.w >= r.h { Axis::Horizontal } else { Axis::Vertical })
+        .unwrap_or(Axis::Horizontal);
+    LayoutTree { root: Some(split_leaf_into(root, target, new_id, axis, false)) }
+}
+
+/// Move a janela `dragged` para junto de `target`, rachando a folha do alvo no lado da `zone`
+/// (`Left/Right` → corte horizontal; `Top/Bottom` → vertical; o arrastado fica do lado indicado).
+/// Remove o arrastado de onde estava (o irmão sobe) e o reinsere com ratio 0.5. Zonas que não são
+/// um lado (`Center`/`Stack`/`None`/cantos) ou alvo ausente → árvore inalterada (nunca perde janela).
+pub fn move_window(tree: &LayoutTree, dragged: u64, target: u64, zone: DropZone) -> LayoutTree {
+    if dragged == target {
+        return tree.clone();
+    }
+    let (axis, dragged_first) = match zone {
+        DropZone::Left => (Axis::Horizontal, true),
+        DropZone::Right => (Axis::Horizontal, false),
+        DropZone::Top => (Axis::Vertical, true),
+        DropZone::Bottom => (Axis::Vertical, false),
+        _ => return tree.clone(),
+    };
+    // Remove o arrastado; se o alvo não está nesta árvore, desfaz (mantém a árvore original).
+    let removed = collapse_leaf(tree.clone(), dragged);
+    let root = match removed.root {
+        Some(r) if node_contains(&r, target) => r,
+        _ => return tree.clone(),
+    };
+    LayoutTree { root: Some(split_leaf_into(root, target, dragged, axis, dragged_first)) }
+}
+
+/// Constrói uma árvore BALANCEADA a partir de `ids` (ordem preservada), aspect-aware e com ratio
+/// 0.5 — geometria idêntica ao BSP de `bsp_rects`. Usada no bootstrap (árvore vazia) para um layout
+/// inicial simétrico antes de o usuário rearranjar.
+fn balanced_node(ids: &[u64], rect: Rectf, gap: f64) -> Option<Node> {
+    match ids.len() {
+        0 => None,
+        1 => Some(Node::Leaf(ids[0])),
+        n => {
+            let left_count = n.div_ceil(2);
+            let axis = if rect.w >= rect.h { Axis::Horizontal } else { Axis::Vertical };
+            let (a, b) = split_rect(rect, gap, axis, 0.5);
+            let first = balanced_node(&ids[..left_count], a, gap)?;
+            let second = balanced_node(&ids[left_count..], b, gap)?;
+            Some(Node::Split { axis, ratio: 0.5, first: Box::new(first), second: Box::new(second) })
+        }
+    }
+}
+
+/// Concilia a árvore anterior com o estado atual do grupo:
+///  - calcula as folhas-alvo = `current_ids` menos os membros de stack não-âncora (cada stack ocupa
+///    uma folha, a do seu primeiro membro presente);
+///  - remove (colapsando) as folhas que não são mais alvo;
+///  - insere as novas folhas: árvore vazia → BALANCEADA (bootstrap simétrico); árvore existente →
+///    cada nova folha racha o nó FOCADO (ou a maior folha), preservando as demais (estabilidade).
+/// Determinístico: depende só das entradas.
+pub fn reconcile(
+    prev: &LayoutTree,
+    current_ids: &[u64],
+    stacks: &[StackDescriptor],
+    focused: Option<u64>,
+    area: &WorkArea,
+    opts: &LayoutOptions,
+) -> LayoutTree {
+    // Membros de stack que NÃO são a âncora (primeiro presente) — não viram folha própria.
+    let mut non_anchor: Vec<u64> = Vec::new();
+    for s in stacks {
+        let present: Vec<u64> =
+            s.member_ids.iter().copied().filter(|m| current_ids.contains(m)).collect();
+        non_anchor.extend(present.into_iter().skip(1));
+    }
+    let target_leaves: Vec<u64> =
+        current_ids.iter().copied().filter(|id| !non_anchor.contains(id)).collect();
+
+    if target_leaves.is_empty() {
+        return LayoutTree::default();
+    }
+
+    // Bootstrap: sem árvore anterior → layout balanceado (simétrico) a partir das folhas-alvo.
+    if prev.root.is_none() {
+        let inner = inner_rect(area, opts.outer_gap as f64);
+        return LayoutTree { root: balanced_node(&target_leaves, inner, opts.inner_gap as f64) };
+    }
+
+    // Remoções: folhas que não são mais alvo.
+    let mut tree = prev.clone();
+    for id in collect_leaf_ids(&tree) {
+        if !target_leaves.contains(&id) {
+            tree = collapse_leaf(tree, id);
+        }
+    }
+
+    // Se sobrou vazio mas há alvos (todas as folhas trocaram) → bootstrap balanceado.
+    if tree.root.is_none() {
+        let inner = inner_rect(area, opts.outer_gap as f64);
+        return LayoutTree { root: balanced_node(&target_leaves, inner, opts.inner_gap as f64) };
+    }
+
+    // Inserções: cada nova folha racha o nó focado (ou a maior), na ordem de `current_ids`.
+    for &id in &target_leaves {
+        if !tree.root.as_ref().map(|r| node_contains(r, id)).unwrap_or(false) {
+            tree = insert_one(tree, id, focused, area, opts);
+        }
+    }
+    tree
+}
+
+/// Uma decisão na descida da raiz até uma folha: o retângulo do nó-split, seu eixo e se descemos
+/// pela primeira criança. Usada pelo resize para localizar o split que governa a borda arrastada.
+struct Decision {
+    rect: Rectf,
+    axis: Axis,
+    first: bool,
+}
+
+/// Caminho (decisões) da raiz até a folha `id`, anotando o `Rectf` de cada split. `false` se a folha
+/// não está na árvore.
+fn find_path(node: &Node, id: u64, rect: Rectf, gap: f64, out: &mut Vec<Decision>) -> bool {
+    match node {
+        Node::Leaf(lid) => *lid == id,
+        Node::Split { axis, ratio, first, second } => {
+            let (a, b) = split_rect(rect, gap, *axis, *ratio);
+            out.push(Decision { rect, axis: *axis, first: true });
+            if find_path(first, id, a, gap, out) {
+                return true;
+            }
+            out.pop();
+            out.push(Decision { rect, axis: *axis, first: false });
+            if find_path(second, id, b, gap, out) {
+                return true;
+            }
+            out.pop();
+            false
+        }
+    }
+}
+
+/// Ajusta (soma `delta`, com clamp) o `ratio` do split alcançado seguindo `path` (sequência de
+/// first/second) a partir de `node`. `path` vazio = este nó é o alvo.
+fn adjust_ratio(node: Node, path: &[bool], delta: f64) -> Node {
+    match node {
+        Node::Split { axis, ratio, first, second } => {
+            if path.is_empty() {
+                let nr = (ratio + delta).clamp(MIN_RATIO, 1.0 - MIN_RATIO);
+                Node::Split { axis, ratio: nr, first, second }
+            } else if path[0] {
+                Node::Split {
+                    axis,
+                    ratio,
+                    first: Box::new(adjust_ratio(*first, &path[1..], delta)),
+                    second,
+                }
+            } else {
+                Node::Split {
+                    axis,
+                    ratio,
+                    first,
+                    second: Box::new(adjust_ratio(*second, &path[1..], delta)),
+                }
+            }
+        }
+        leaf => leaf,
+    }
+}
+
+/// Redimensiona elasticamente a janela `id` arrastando a borda `edge` em `delta_px` (positivo =
+/// a janela CRESCEU naquela borda). Acha o split ancestral que governa aquela borda — o mais profundo
+/// no eixo da borda em que descemos pelo lado certo (Right/Bottom → `first`; Left/Top → `second`) — e
+/// ajusta o seu `ratio`. O vizinho imediato encolhe na mesma proporção (a soma das crianças é
+/// constante → tela 100% preenchida). Borda externa (sem tal ancestral) ou folha única → no-op.
+pub fn resize_window(
+    tree: &LayoutTree,
+    area: &WorkArea,
+    opts: &LayoutOptions,
+    id: u64,
+    edge: Edge,
+    delta_px: i32,
+) -> LayoutTree {
+    let root = match &tree.root {
+        Some(r) => r,
+        None => return tree.clone(),
+    };
+    // Eixo da borda, lado pelo qual a folha deve descer no split governante, e sinal do ajuste.
+    let (axis_needed, from_first, sign) = match edge {
+        Edge::Right => (Axis::Horizontal, true, 1.0),
+        Edge::Left => (Axis::Horizontal, false, -1.0),
+        Edge::Bottom => (Axis::Vertical, true, 1.0),
+        Edge::Top => (Axis::Vertical, false, -1.0),
+    };
+    let inner = inner_rect(area, opts.outer_gap as f64);
+    let gap = opts.inner_gap as f64;
+    let mut path = Vec::new();
+    if !find_path(root, id, inner, gap, &mut path) {
+        return tree.clone();
+    }
+    // Split governante: o mais profundo no caminho com o eixo certo e descida pelo lado certo.
+    let gov = (0..path.len()).rev().find(|&i| path[i].axis == axis_needed && path[i].first == from_first);
+    let Some(gi) = gov else {
+        return tree.clone(); // borda externa → nada a redimensionar
+    };
+    let extent = match axis_needed {
+        Axis::Horizontal => path[gi].rect.w - gap,
+        Axis::Vertical => path[gi].rect.h - gap,
+    };
+    if extent <= 0.0 {
+        return tree.clone();
+    }
+    let delta_ratio = sign * (delta_px as f64) / extent;
+    let node_path: Vec<bool> = path[..gi].iter().map(|d| d.first).collect();
+    LayoutTree { root: Some(adjust_ratio(root.clone(), &node_path, delta_ratio)) }
 }
 
 /// Arredondamento meio-para-cima compatível com `Math.round` do JS para valores positivos.
@@ -961,13 +1464,39 @@ mod tests {
     }
 
     #[test]
-    fn drop_target_below_band_delegates_to_split() {
+    fn drop_target_below_band_uses_target_sub_rect() {
+        // Abaixo da faixa de stack, o preview é a METADE da janela-alvo (não 50% do monitor).
         let area = area_1000x800();
         let target = PreviewRect { x: 100, y: 100, width: 400, height: 400 };
-        // y abaixo da faixa superior → comportamento de split (mesma zona que detect_drop_zone).
+        // cursor centro-baixo → metade INFERIOR do alvo (half_h = (400-8)/2 = 196; y = 100+196+8).
         let p = detect_drop_target(&area, Some(target), 300, 350, &opts());
-        assert_eq!(p.zone, detect_drop_zone(&area, 300, 350, &opts()).zone);
+        assert_eq!(p.zone, DropZone::Bottom);
+        assert_eq!(p.rect, PreviewRect { x: 100, y: 304, width: 400, height: 196 });
         assert_ne!(p.zone, DropZone::Stack);
+    }
+
+    #[test]
+    fn drop_target_left_and_right_halves_of_target() {
+        let area = area_1000x800();
+        let target = PreviewRect { x: 100, y: 100, width: 400, height: 400 };
+        // Perto da borda esquerda do alvo → metade ESQUERDA dele (half_w = (400-8)/2 = 196).
+        let left = detect_drop_target(&area, Some(target), 120, 300, &opts());
+        assert_eq!(left.zone, DropZone::Left);
+        assert_eq!(left.rect, PreviewRect { x: 100, y: 100, width: 196, height: 400 });
+        // Perto da borda direita → metade DIREITA (x = 100 + 196 + 8 = 304).
+        let right = detect_drop_target(&area, Some(target), 480, 300, &opts());
+        assert_eq!(right.zone, DropZone::Right);
+        assert_eq!(right.rect, PreviewRect { x: 304, y: 100, width: 196, height: 400 });
+    }
+
+    #[test]
+    fn drop_target_top_half_below_stack_band() {
+        // Topo do alvo, mas FORA da faixa de stack (fy = 0.25 exato) → metade superior do alvo.
+        let area = area_1000x800();
+        let target = PreviewRect { x: 100, y: 100, width: 400, height: 400 };
+        let p = detect_drop_target(&area, Some(target), 300, 200, &opts());
+        assert_eq!(p.zone, DropZone::Top);
+        assert_eq!(p.rect, PreviewRect { x: 100, y: 100, width: 400, height: 196 });
     }
 
     #[test]
@@ -975,5 +1504,199 @@ mod tests {
         let area = area_1000x800();
         let p = detect_drop_target(&area, None, 20, 400, &opts());
         assert_eq!(p, detect_drop_zone(&area, 20, 400, &opts()));
+    }
+
+    // ---- Árvore BSP persistente ----
+
+    #[test]
+    fn reconcile_bootstrap_matches_legacy_bsp() {
+        // Árvore vazia → balanceada: geometria IDÊNTICA ao BSP legado para 1..=6 janelas.
+        let area = area_1000x800();
+        for n in 1..=6u64 {
+            let ids: Vec<u64> = (1..=n).collect();
+            let windows: Vec<WindowInfo> = ids.iter().map(|&id| win(id, 0)).collect();
+            let legacy = compute_layout(&windows, &[area_1000x800()], &opts());
+            let tree = reconcile(&LayoutTree::default(), &ids, &[], None, &area, &opts());
+            let geo = compute_geometry(&tree, &area, &opts(), &[], &ids);
+            assert_eq!(geo.rects, legacy, "n={n}");
+        }
+    }
+
+    #[test]
+    fn reconcile_insert_is_stable() {
+        // Abrir a 3ª janela rachando a FOCADA (2) não move a janela 1.
+        let area = area_1000x800();
+        let a = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let ga = compute_geometry(&a, &area, &opts(), &[], &[1, 2]);
+        let b = reconcile(&a, &[1, 2, 3], &[], Some(2), &area, &opts());
+        let gb = compute_geometry(&b, &area, &opts(), &[], &[1, 2, 3]);
+        // 1 inalterada.
+        let a1 = ga.rects.iter().find(|r| r.id == 1).unwrap();
+        let b1 = gb.rects.iter().find(|r| r.id == 1).unwrap();
+        assert_eq!(a1, b1);
+        // 2 e 3 dividem a metade direita (2 em cima, 3 embaixo — folha mais alta que larga).
+        let b2 = gb.rects.iter().find(|r| r.id == 2).unwrap();
+        let b3 = gb.rects.iter().find(|r| r.id == 3).unwrap();
+        assert_eq!(*b2, WindowRect { id: 2, x: 504, y: 12, width: 484, height: 384 });
+        assert_eq!(*b3, WindowRect { id: 3, x: 504, y: 404, width: 484, height: 384 });
+    }
+
+    #[test]
+    fn reconcile_remove_collapses_sibling() {
+        // Remover uma das duas folhas faz a irmã ocupar a área inteira.
+        let area = area_1000x800();
+        let a = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let b = reconcile(&a, &[2], &[], None, &area, &opts());
+        let gb = compute_geometry(&b, &area, &opts(), &[], &[2]);
+        assert_eq!(gb.rects, vec![WindowRect { id: 2, x: 12, y: 12, width: 976, height: 776 }]);
+    }
+
+    #[test]
+    fn reconcile_is_idempotent() {
+        // Reconciliar com os mesmos ids/foco não muda a árvore.
+        let area = area_1000x800();
+        let a = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], Some(1), &area, &opts());
+        let b = reconcile(&a, &[1, 2, 3], &[], Some(1), &area, &opts());
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn reconcile_never_overlaps_after_incremental_inserts() {
+        // Inserções incrementais (focando sempre a última) nunca sobrepõem e cobrem todos os ids.
+        let area = area_1000x800();
+        let mut tree = LayoutTree::default();
+        for n in 1..=10u64 {
+            let ids: Vec<u64> = (1..=n).collect();
+            tree = reconcile(&tree, &ids, &[], Some(n.saturating_sub(1)), &area, &opts());
+            let geo = compute_geometry(&tree, &area, &opts(), &[], &ids);
+            assert_eq!(geo.rects.len() as u64, n, "todas as {n} posicionadas");
+            for i in 0..geo.rects.len() {
+                for j in (i + 1)..geo.rects.len() {
+                    assert!(!overlaps(&geo.rects[i], &geo.rects[j]), "sobreposição com {n}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compute_geometry_renders_stack_anchor_leaf() {
+        // Stack [1,2,3] (âncora 1) + janela solta 4 → 2 slots; a folha 1 vira barra de abas.
+        let area = area_1000x800();
+        let stacks = vec![StackDescriptor { member_ids: vec![1, 2, 3], active_id: 1 }];
+        let tree = reconcile(&LayoutTree::default(), &[1, 2, 3, 4], &stacks, None, &area, &opts());
+        let res = compute_geometry(&tree, &area, &opts(), &stacks, &[1, 2, 3, 4]);
+        // rects visíveis: a aba ativa (1) + a janela solta (4).
+        assert_eq!(res.rects.len(), 2);
+        assert_eq!(res.tab_bars.len(), 1);
+        // O stack ocupa a metade esquerda; a janela solta, a direita.
+        assert_eq!((res.tab_bars[0].x, res.tab_bars[0].width), (12, 484));
+        assert_eq!(res.tab_bars[0].member_ids, vec![1, 2, 3]);
+        let r4 = res.rects.iter().find(|r| r.id == 4).unwrap();
+        assert_eq!((r4.x, r4.width), (504, 484));
+    }
+
+    #[test]
+    fn compute_geometry_empty_tree_is_empty() {
+        let area = area_1000x800();
+        let res = compute_geometry(&LayoutTree::default(), &area, &opts(), &[], &[]);
+        assert!(res.rects.is_empty());
+        assert!(res.tab_bars.is_empty());
+    }
+
+    #[test]
+    fn move_window_splits_target_on_zone_side() {
+        // [1,2,3] balanceada; mover 3 para a ESQUERDA de 1 → 3 fica à esquerda de 1.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], None, &area, &opts());
+        let moved = move_window(&tree, 3, 1, DropZone::Left);
+        let geo = compute_geometry(&moved, &area, &opts(), &[], &[1, 2, 3]);
+        assert_eq!(geo.rects.len(), 3);
+        let r1 = geo.rects.iter().find(|r| r.id == 1).unwrap();
+        let r3 = geo.rects.iter().find(|r| r.id == 3).unwrap();
+        // 3 à esquerda de 1 (mesma faixa vertical, x menor).
+        assert!(r3.x < r1.x);
+        assert_eq!(r3.y, r1.y);
+        assert_eq!(r3.height, r1.height);
+    }
+
+    #[test]
+    fn move_window_noop_for_center_and_missing_target() {
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        // Center → inalterado.
+        assert_eq!(move_window(&tree, 2, 1, DropZone::Center), tree);
+        // Alvo ausente → inalterado (não perde a janela arrastada).
+        assert_eq!(move_window(&tree, 2, 99, DropZone::Left), tree);
+    }
+
+    #[test]
+    fn resize_window_horizontal_is_elastic_and_fills() {
+        // [1|2] lado a lado; arrastar a borda DIREITA de 1 em +100 → 1 cresce 100, 2 encolhe 100.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let before = compute_geometry(&tree, &area, &opts(), &[], &[1, 2]);
+        let b1 = before.rects.iter().find(|r| r.id == 1).unwrap();
+        let b2 = before.rects.iter().find(|r| r.id == 2).unwrap();
+        let resized = resize_window(&tree, &area, &opts(), 1, Edge::Right, 100);
+        let after = compute_geometry(&resized, &area, &opts(), &[], &[1, 2]);
+        let a1 = after.rects.iter().find(|r| r.id == 1).unwrap();
+        let a2 = after.rects.iter().find(|r| r.id == 2).unwrap();
+        assert_eq!(a1.width, b1.width + 100);
+        assert_eq!(a2.width, b2.width - 100);
+        // Tela 100% preenchida: a soma das larguras + a costura é constante.
+        assert_eq!(a1.width + a2.width, b1.width + b2.width);
+        // Mesma faixa vertical (não tocou no eixo Y).
+        assert_eq!(a1.height, b1.height);
+    }
+
+    #[test]
+    fn resize_window_left_edge_grows_window_leftward() {
+        // [1|2]; arrastar a borda ESQUERDA de 2 em +60 (cresceu) → 2 cresce 60, 1 encolhe 60.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let before = compute_geometry(&tree, &area, &opts(), &[], &[1, 2]);
+        let b1 = before.rects.iter().find(|r| r.id == 1).unwrap().width;
+        let b2 = before.rects.iter().find(|r| r.id == 2).unwrap().width;
+        let resized = resize_window(&tree, &area, &opts(), 2, Edge::Left, 60);
+        let after = compute_geometry(&resized, &area, &opts(), &[], &[1, 2]);
+        assert_eq!(after.rects.iter().find(|r| r.id == 2).unwrap().width, b2 + 60);
+        assert_eq!(after.rects.iter().find(|r| r.id == 1).unwrap().width, b1 - 60);
+    }
+
+    #[test]
+    fn resize_window_vertical_axis() {
+        // Bootstrap [1,2,3]: 1 e 2 EMPILHADOS na metade esquerda (split vertical), 3 na direita.
+        // Arrastar a borda INFERIOR de 1 (a costura 1↔2) em +50 → 1 cresce, 2 encolhe.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], None, &area, &opts());
+        let before = compute_geometry(&tree, &area, &opts(), &[], &[1, 2, 3]);
+        let b1 = before.rects.iter().find(|r| r.id == 1).unwrap().height;
+        let b2 = before.rects.iter().find(|r| r.id == 2).unwrap().height;
+        let resized = resize_window(&tree, &area, &opts(), 1, Edge::Bottom, 50);
+        let after = compute_geometry(&resized, &area, &opts(), &[], &[1, 2, 3]);
+        assert_eq!(after.rects.iter().find(|r| r.id == 1).unwrap().height, b1 + 50);
+        assert_eq!(after.rects.iter().find(|r| r.id == 2).unwrap().height, b2 - 50);
+    }
+
+    #[test]
+    fn resize_window_outer_edge_is_noop() {
+        // Borda esquerda de 1 (já colada na borda do monitor) não tem split governante → no-op.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        assert_eq!(resize_window(&tree, &area, &opts(), 1, Edge::Left, 50), tree);
+        // Folha única também não redimensiona.
+        let single = reconcile(&LayoutTree::default(), &[1], &[], None, &area, &opts());
+        assert_eq!(resize_window(&single, &area, &opts(), 1, Edge::Right, 50), single);
+    }
+
+    #[test]
+    fn resize_window_clamps_to_min_ratio() {
+        // Delta gigante não colapsa a vizinha: o ratio é clampado (ambas as larguras > 0).
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let resized = resize_window(&tree, &area, &opts(), 1, Edge::Right, 100_000);
+        let after = compute_geometry(&resized, &area, &opts(), &[], &[1, 2]);
+        let w2 = after.rects.iter().find(|r| r.id == 2).unwrap().width;
+        assert!(w2 > 0, "vizinha nunca colapsa a zero");
     }
 }

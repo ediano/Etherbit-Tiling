@@ -25,18 +25,20 @@ import {
   serializeTarget,
   parseLayout,
   parseTabBars,
+  parseLayoutTrees,
   parsePreview,
+  resizeDeltaFrom,
   orderKey,
   appendToOrder,
   removeFromOrder,
   removeIdFromStacks,
   sortByOrder,
-  reorderForDrop,
   toggleStackGroup,
   toggleGroupDisabled,
   addToStack,
   setActiveMember,
   type Stack,
+  type TreeNode,
   type WindowSnapshot,
   type MonitorSnapshot,
   type DropPreview,
@@ -49,20 +51,24 @@ const IFACE = 'dev.ediano.etherbit.Tiling';
 /// Lê a config do kwinrc (entradas de contents/config/main.xml), com fallback nos padrões.
 function loadConfig(): TilingConfig {
   return {
-    inner_gap: readConfig('innerGap', DEFAULT_CONFIG.inner_gap),
-    outer_gap: readConfig('outerGap', DEFAULT_CONFIG.outer_gap),
+    gap: readConfig('gap', DEFAULT_CONFIG.gap),
     active_border: readConfig('activeBorder', DEFAULT_CONFIG.active_border),
     border_color: readConfig('borderColor', DEFAULT_CONFIG.border_color),
     border_width: readConfig('borderWidth', DEFAULT_CONFIG.border_width),
     ignore_list: DEFAULT_CONFIG.ignore_list,
     autostart: readConfig('autostart', DEFAULT_CONFIG.autostart),
+    rounded_corners: readConfig('roundedCorners', DEFAULT_CONFIG.rounded_corners),
+    corner_radius: readConfig('cornerRadius', DEFAULT_CONFIG.corner_radius),
   };
 }
 
-/// Empurra a config lida do kwinrc para o daemon: ele persiste no TOML e gerencia o autostart.
+/// Empurra a config lida do kwinrc para o daemon: ele persiste no TOML e gerencia o autostart. Os
+/// cantos arredondados são propagados por consistência da config; no KDE o arredondamento em si
+/// depende do efeito NATIVO de cantos do KWin (um Script não instancia shaders — ver ADR 0019).
 function pushConfigToDaemon(cfg: TilingConfig): void {
-  callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetGaps', cfg.inner_gap, cfg.outer_gap);
+  callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetGap', cfg.gap);
   callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetAutostart', cfg.autostart);
+  callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetRoundedCorners', cfg.rounded_corners, cfg.corner_radius);
 }
 
 const config = loadConfig();
@@ -80,6 +86,13 @@ const disabled = new Set<string>();
 const groupTiled = new Map<string, string[]>();
 /// internalIds que NÓS minimizamos como abas inativas (para restaurar depois).
 const stackHidden = new Set<string>();
+/// Árvores BSP persistentes por `(monitor, desktop)`, com folhas em internalId (forma canônica).
+/// O core reconcilia e devolve a versão atualizada a cada SyncWindows/MoveWindow.
+let trees = new Map<string, TreeNode | null>();
+/// Mapas de transporte do ÚLTIMO retile (internalId ↔ id opaco), reusados no drop (sem retile no meio
+/// do arrasto, eles seguem válidos para as janelas pré-existentes).
+let lastTransportOf = new Map<string, number>();
+let lastTransportToStable = new Map<number, string>();
 
 /// `internalId` da janela em arrasto (null fora de um move).
 let draggedId: string | null = null;
@@ -88,6 +101,9 @@ let lastCursor: QPoint | null = null;
 let resolving = false;
 /// Zona resolvida no último passo do arrasto (define stack vs swap ao soltar).
 let lastZone = 'none';
+/// Resize manual em curso: internalId + frame inicial (para derivar borda/delta ao soltar).
+let resizeStart: { id: string; rect: { x: number; y: number; width: number; height: number } } | null =
+  null;
 /// Suprime retile reentrante enquanto aplicamos geometria/minimização.
 let applying = false;
 
@@ -191,6 +207,7 @@ function retile(): void {
   const byId = new Map<number, KWinWindow>();
   const stableToWin = new Map<string, KWinWindow>();
   const transportOf = new Map<string, number>();
+  const transportToStable = new Map<number, string>();
   const snapshots: WindowSnapshot[] = [];
   for (const [key, arr] of groups) {
     const sortedIds = sortByOrder(
@@ -208,6 +225,7 @@ function retile(): void {
       byId.set(id, entry.win);
       stableToWin.set(entry.stableId, entry.win);
       transportOf.set(entry.stableId, id);
+      transportToStable.set(id, entry.stableId);
       const g = entry.win.frameGeometry;
       snapshots.push({
         id,
@@ -225,6 +243,12 @@ function retile(): void {
     }
   }
 
+  // Guarda os mapas de transporte para o drop (MoveWindow) reusar durante o arrasto.
+  lastTransportOf = transportOf;
+  lastTransportToStable = transportToStable;
+  const aw = workspace.activeWindow;
+  const focusedStable = aw ? windowId(aw) : '';
+
   callDBus(
     BUS_NAME,
     OBJECT_PATH,
@@ -232,8 +256,10 @@ function retile(): void {
     'SyncWindows',
     serializeWindows(snapshots),
     serializeMonitors(monitorsFrom(outputs)),
-    serializeState(stacks, disabled, transportOf),
+    serializeState(stacks, disabled, transportOf, trees, focusedStable),
     (layoutJson: string) => {
+      // Persiste as árvores reconciliadas (traduzidas de volta para internalId).
+      trees = parseLayoutTrees(layoutJson, transportToStable);
       const commands = parseLayout(layoutJson);
       const tabBars = parseTabBars(layoutJson);
 
@@ -374,15 +400,24 @@ function updateOutline(preview: DropPreview | null): void {
   });
 }
 
-/// Início de um move interativo: passa a rastrear o cursor. Ignora resize (`!win.move`).
+/// Início de um move/resize interativo. MOVE → rastreia o cursor (drop zone). RESIZE → captura o
+/// frame inicial para derivar borda/delta ao soltar.
 function onMoveStart(win: KWinWindow): void {
-  if (!win.move) {
+  if (win.move) {
+    resizeStart = null;
+    draggedId = windowId(win);
+    lastCursor = null;
+    resolving = false;
+    lastZone = 'none';
     return;
   }
-  draggedId = windowId(win);
-  lastCursor = null;
-  resolving = false;
-  lastZone = 'none';
+  if (win.resize) {
+    const g = win.frameGeometry;
+    resizeStart = {
+      id: windowId(win),
+      rect: { x: g.x, y: g.y, width: g.width, height: g.height },
+    };
+  }
 }
 
 /// Um passo do arrasto: resolve a zona no daemon (com o retângulo da janela sob o cursor) e atualiza
@@ -424,28 +459,109 @@ function onMoveStep(): void {
   );
 }
 
-/// Fim do arrasto: esconde o outline, consolida (empilha se zona `stack`, senão swap) e re-tila.
+/// Fim do arrasto: esconde o outline e consolida o drop. Zona `stack` → empilha em abas; zona de lado
+/// → MoveWindow (move+split na árvore persistente, traduzindo ids via os mapas do último retile).
 function onMoveFinish(win: KWinWindow): void {
   workspace.hideOutline();
-  if (draggedId !== null) {
-    const cursor = workspace.cursorPos;
-    const target = windowUnderPointObj(cursor.x, cursor.y, draggedId);
-    if (target) {
-      const targetId = windowId(target);
-      const monitor = collectOutputs().indexOf(win.output);
-      const key = orderKey(monitor < 0 ? 0 : monitor, desktopIndexOf(win));
-      if (lastZone === 'stack') {
-        addToStack(stacks, key, targetId, draggedId);
-      } else {
-        reorderForDrop(order, key, draggedId, targetId);
-      }
-    }
-  }
+  const dragged = draggedId;
+  const zone = lastZone;
   draggedId = null;
   lastCursor = null;
   resolving = false;
   lastZone = 'none';
+
+  if (dragged === null) {
+    // Não era um move: pode ter sido um resize manual.
+    if (resizeStart && win.frameGeometry) {
+      applyResize(win);
+    } else {
+      retile();
+    }
+    return;
+  }
+  const cursor = workspace.cursorPos;
+  const target = windowUnderPointObj(cursor.x, cursor.y, dragged);
+  if (!target) {
+    retile();
+    return;
+  }
+  const targetId = windowId(target);
+  if (zone === 'stack') {
+    const monitor = collectOutputs().indexOf(win.output);
+    const key = orderKey(monitor < 0 ? 0 : monitor, desktopIndexOf(win));
+    addToStack(stacks, key, targetId, dragged);
+    retile();
+    return;
+  }
+  const draggedT = lastTransportOf.get(dragged);
+  const targetT = lastTransportOf.get(targetId);
+  if (zone !== 'none' && zone !== 'center' && draggedT !== undefined && targetT !== undefined) {
+    callDBus(
+      BUS_NAME,
+      OBJECT_PATH,
+      IFACE,
+      'MoveWindow',
+      serializeState(stacks, disabled, lastTransportOf, trees, dragged),
+      draggedT,
+      targetT,
+      zone,
+      (treesJson: string) => {
+        trees = parseLayoutTrees(treesJson, lastTransportToStable);
+        retile();
+      },
+    );
+    return;
+  }
   retile();
+}
+
+/// Fim de um resize manual: deriva a(s) borda(s) e o delta do frame inicial→final e aplica o resize
+/// elástico na árvore via `ResizeWindow` (uma chamada por eixo, encadeadas). Depois re-tila.
+function applyResize(win: KWinWindow): void {
+  const start = resizeStart;
+  resizeStart = null;
+  if (!start) {
+    retile();
+    return;
+  }
+  const g = win.frameGeometry;
+  const deltas = resizeDeltaFrom(start.rect, {
+    x: g.x,
+    y: g.y,
+    width: g.width,
+    height: g.height,
+  });
+  const idT = lastTransportOf.get(start.id);
+  if (idT === undefined || deltas.length === 0) {
+    retile();
+    return;
+  }
+  const monitorsJson = serializeMonitors(monitorsFrom(collectOutputs()));
+  let i = 0;
+  const applyNext = (): void => {
+    if (i >= deltas.length) {
+      retile();
+      return;
+    }
+    const d = deltas[i] as { edge: string; deltaPx: number };
+    i += 1;
+    callDBus(
+      BUS_NAME,
+      OBJECT_PATH,
+      IFACE,
+      'ResizeWindow',
+      monitorsJson,
+      serializeState(stacks, disabled, lastTransportOf, trees, start.id),
+      idT,
+      d.edge,
+      d.deltaPx,
+      (treesJson: string) => {
+        trees = parseLayoutTrees(treesJson, lastTransportToStable);
+        applyNext();
+      },
+    );
+  };
+  applyNext();
 }
 
 /// Conecta os sinais de move interativo de uma janela (start/step/finish).

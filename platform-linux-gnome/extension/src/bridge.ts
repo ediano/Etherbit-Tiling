@@ -253,35 +253,6 @@ export function sortByOrder(order: Map<string, number[]>, key: string, ids: numb
     .map((e) => e.id);
 }
 
-/// Drop = TROCA (swap) a posição do arrastado com a do alvo dentro do grupo `key`. Se a janela
-/// arrastada ainda não estiver no grupo (mudou de monitor/workspace), insere-a na posição do alvo.
-/// Retorna `true` se algo mudou. MVP do rearranjo; split de folha arbitrária fica para o futuro.
-export function reorderForDrop(
-  order: Map<string, number[]>,
-  key: string,
-  draggedId: number,
-  targetId: number,
-): boolean {
-  if (draggedId === targetId) {
-    return false;
-  }
-  const list = order.get(key);
-  if (!list) {
-    return false;
-  }
-  const ti = list.indexOf(targetId);
-  if (ti === -1) {
-    return false;
-  }
-  const di = list.indexOf(draggedId);
-  if (di === -1) {
-    // Arrastada veio de outro grupo: insere na posição do alvo.
-    list.splice(ti, 0, draggedId);
-    return true;
-  }
-  [list[di], list[ti]] = [list[ti] as number, list[di] as number];
-  return true;
-}
 
 // ---- Estado de abas (stacks) e de tiling por grupo (estado leve da ponte) ----
 //
@@ -295,6 +266,13 @@ export interface Stack {
   active: number;
 }
 
+/// Nó da árvore BSP persistente (espelha o blob do daemon `etherbit_tiling_core::Node`): folha
+/// `{ win }` ou divisão `{ split: { axis, ratio, first, second } }`. A ponte trata o `root` como
+/// OPACO (produzido/consumido pelo core) — só o transporta e o persiste por grupo.
+export type TreeNode =
+  | { win: number }
+  | { split: { axis: 'h' | 'v'; ratio: number; first: TreeNode; second: TreeNode } };
+
 /// Reverte `orderKey`: `"monitor:workspace"` → `[monitor, workspace]`.
 export function parseOrderKey(key: string): [number, number] {
   const [m, w] = key.split(':');
@@ -303,7 +281,12 @@ export function parseOrderKey(key: string): [number, number] {
 
 /// Serializa o estado leve para o `state_json` do contrato D-Bus. Só stacks com ≥ 2 membros viajam
 /// (um stack de 1 não faz sentido). `disabled_groups` é um array de pares `[monitor, workspace]`.
-export function serializeState(stacks: Map<string, Stack[]>, disabled: Set<string>): string {
+export function serializeState(
+  stacks: Map<string, Stack[]>,
+  disabled: Set<string>,
+  trees: Map<string, TreeNode | null>,
+  focusedId: number,
+): string {
   const stackDtos: Array<{
     monitor: number;
     workspace: number;
@@ -322,7 +305,81 @@ export function serializeState(stacks: Map<string, Stack[]>, disabled: Set<strin
   for (const key of disabled) {
     disabledDtos.push(parseOrderKey(key));
   }
-  return JSON.stringify({ stacks: stackDtos, disabled_groups: disabledDtos });
+  // Árvores persistentes por grupo (o core reconcilia e devolve a versão atualizada).
+  const treeDtos: Array<{ monitor: number; workspace: number; root: TreeNode | null }> = [];
+  for (const [key, root] of trees) {
+    const [monitor, workspace] = parseOrderKey(key);
+    treeDtos.push({ monitor, workspace, root });
+  }
+  return JSON.stringify({
+    stacks: stackDtos,
+    disabled_groups: disabledDtos,
+    trees: treeDtos,
+    focused_id: focusedId,
+  });
+}
+
+/// Lê as árvores devolvidas pelo daemon (`layout_json` do SyncWindows ou `trees_json` do MoveWindow)
+/// para a ponte PERSISTIR por grupo. Defensivo: entradas malformadas são puladas; `root` é opaco.
+export function parseLayoutTrees(json: string): Map<string, TreeNode | null> {
+  const out = new Map<string, TreeNode | null>();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return out;
+  }
+  if (typeof parsed !== 'object' || parsed === null) {
+    return out;
+  }
+  const raw = (parsed as Record<string, unknown>).trees;
+  if (!Array.isArray(raw)) {
+    return out;
+  }
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) {
+      continue;
+    }
+    const e = entry as Record<string, unknown>;
+    if (!isFiniteNumber(e.monitor) || !isFiniteNumber(e.workspace)) {
+      continue;
+    }
+    out.set(orderKey(e.monitor, e.workspace), (e.root ?? null) as TreeNode | null);
+  }
+  return out;
+}
+
+/// Uma borda redimensionada + quanto a janela CRESCEU nela (px; negativo = encolheu).
+export interface ResizeDelta {
+  edge: 'left' | 'right' | 'top' | 'bottom';
+  deltaPx: number;
+}
+
+/// Infere quais bordas se moveram comparando o frame ANTES e DEPOIS do resize, e quanto a janela
+/// cresceu em cada uma (positivo). Agnóstico do compositor (não depende da operação de grab) — vale
+/// para GNOME e KDE. Resize de canto devolve duas entradas (uma por eixo).
+export function resizeDeltaFrom(
+  before: { x: number; y: number; width: number; height: number },
+  after: { x: number; y: number; width: number; height: number },
+): ResizeDelta[] {
+  const out: ResizeDelta[] = [];
+  const leftGrow = before.x - after.x; // borda esquerda foi para a esquerda → cresceu
+  const rightGrow = after.x + after.width - (before.x + before.width);
+  const topGrow = before.y - after.y;
+  const bottomGrow = after.y + after.height - (before.y + before.height);
+  if (leftGrow !== 0) {
+    out.push({ edge: 'left', deltaPx: leftGrow });
+  }
+  if (rightGrow !== 0) {
+    out.push({ edge: 'right', deltaPx: rightGrow });
+  }
+  if (topGrow !== 0) {
+    out.push({ edge: 'top', deltaPx: topGrow });
+  }
+  if (bottomGrow !== 0) {
+    out.push({ edge: 'bottom', deltaPx: bottomGrow });
+  }
+  return out;
 }
 
 /// Serializa o retângulo da janela sob o cursor para o `target_json` do `ResolveDropZone` (`""` se

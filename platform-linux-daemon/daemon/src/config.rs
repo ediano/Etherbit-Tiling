@@ -14,10 +14,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// Espaçamento entre janelas vizinhas (px).
-    pub inner_gap: u32,
-    /// Espaçamento entre as janelas e as bordas da tela (px).
-    pub outer_gap: u32,
+    /// Espaçamento único (px): o mesmo valor controla o espaço entre janelas vizinhas E entre as
+    /// janelas e as bordas da tela, em ambos os eixos. Aceita o nome legado `inner_gap` ao carregar
+    /// configs antigas (o antigo `outer_gap` é ignorado).
+    #[serde(alias = "inner_gap")]
+    pub gap: u32,
     /// Desenhar a borda na janela focada.
     pub active_border: bool,
     /// Cor da borda ativa (ex.: "#5e81ac").
@@ -30,19 +31,25 @@ pub struct Config {
     pub autostart: bool,
     /// Altura (px) da barra de abas desenhada no topo de um quadrante empilhado.
     pub tab_bar_height: u32,
+    /// Arredondar os cantos das janelas gerenciadas (e do overlay/abas). No GNOME a extensão aplica
+    /// um efeito; no KDE depende do efeito nativo de cantos arredondados do KWin.
+    pub rounded_corners: bool,
+    /// Raio (px) dos cantos arredondados.
+    pub corner_radius: u32,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            inner_gap: 8,
-            outer_gap: 12,
+            gap: 8,
             active_border: true,
             border_color: "#5e81ac".to_string(),
             border_width: 2,
             ignore_list: Vec::new(),
             autostart: false,
             tab_bar_height: 28,
+            rounded_corners: true,
+            corner_radius: 12,
         }
     }
 }
@@ -91,14 +98,15 @@ mod tests {
     #[test]
     fn default_has_expected_values() {
         let cfg = Config::default();
-        assert_eq!(cfg.inner_gap, 8);
-        assert_eq!(cfg.outer_gap, 12);
+        assert_eq!(cfg.gap, 8);
         assert!(cfg.active_border);
         assert_eq!(cfg.border_color, "#5e81ac");
         assert_eq!(cfg.border_width, 2);
         assert!(cfg.ignore_list.is_empty());
         assert!(!cfg.autostart);
         assert_eq!(cfg.tab_bar_height, 28);
+        assert!(cfg.rounded_corners);
+        assert_eq!(cfg.corner_radius, 12);
     }
 
     #[test]
@@ -106,14 +114,15 @@ mod tests {
         let json = Config::default().to_json();
         let value: serde_json::Value = serde_json::from_str(&json).expect("JSON válido");
         for field in [
-            "inner_gap",
-            "outer_gap",
+            "gap",
             "active_border",
             "border_color",
             "border_width",
             "ignore_list",
             "autostart",
             "tab_bar_height",
+            "rounded_corners",
+            "corner_radius",
         ] {
             assert!(value.get(field).is_some(), "campo ausente: {field}");
         }
@@ -122,19 +131,21 @@ mod tests {
     #[test]
     fn toml_round_trip_preserves_config() {
         let cfg = Config {
-            inner_gap: 4,
-            outer_gap: 16,
+            gap: 4,
             active_border: false,
             border_color: "#bf616a".to_string(),
             border_width: 3,
             ignore_list: vec!["obs".to_string(), "microsoft-word".to_string()],
             autostart: true,
             tab_bar_height: 32,
+            rounded_corners: false,
+            corner_radius: 20,
         };
         let raw = toml::to_string_pretty(&cfg).expect("serializa TOML");
         let back: Config = toml::from_str(&raw).expect("desserializa TOML");
-        assert_eq!(back.inner_gap, cfg.inner_gap);
-        assert_eq!(back.outer_gap, cfg.outer_gap);
+        assert_eq!(back.gap, cfg.gap);
+        assert_eq!(back.rounded_corners, cfg.rounded_corners);
+        assert_eq!(back.corner_radius, cfg.corner_radius);
         assert_eq!(back.active_border, cfg.active_border);
         assert_eq!(back.border_color, cfg.border_color);
         assert_eq!(back.border_width, cfg.border_width);
@@ -147,7 +158,7 @@ mod tests {
     fn json_round_trip_preserves_config() {
         let cfg = Config::default();
         let back: Config = serde_json::from_str(&cfg.to_json()).expect("desserializa JSON");
-        assert_eq!(back.inner_gap, cfg.inner_gap);
+        assert_eq!(back.gap, cfg.gap);
         assert_eq!(back.border_color, cfg.border_color);
         assert_eq!(back.autostart, cfg.autostart);
     }
@@ -156,16 +167,23 @@ mod tests {
     fn partial_input_fills_missing_with_defaults() {
         // `#[serde(default)]` deve completar campos ausentes — espelha o parseConfig
         // defensivo da extensão e protege o contrato D-Bus.
-        let cfg: Config = toml::from_str("inner_gap = 20").expect("desserializa parcial");
+        let cfg: Config = toml::from_str("gap = 20").expect("desserializa parcial");
         let defaults = Config::default();
-        assert_eq!(cfg.inner_gap, 20);
-        assert_eq!(cfg.outer_gap, defaults.outer_gap);
+        assert_eq!(cfg.gap, 20);
         assert_eq!(cfg.border_color, defaults.border_color);
         assert_eq!(cfg.autostart, defaults.autostart);
 
         let from_json: Config =
             serde_json::from_str("{\"border_width\": 5}").expect("JSON parcial");
         assert_eq!(from_json.border_width, 5);
-        assert_eq!(from_json.inner_gap, defaults.inner_gap);
+        assert_eq!(from_json.gap, defaults.gap);
+    }
+
+    #[test]
+    fn legacy_inner_gap_alias_migrates_to_gap() {
+        // Configs antigas (inner_gap/outer_gap) ainda carregam: inner_gap → gap; outer_gap ignorado.
+        let cfg: Config =
+            toml::from_str("inner_gap = 20\nouter_gap = 30").expect("desserializa legado");
+        assert_eq!(cfg.gap, 20);
     }
 }

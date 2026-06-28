@@ -16,12 +16,14 @@ export const OBJECT_PATH = '/dev/ediano/etherbit/Tiling';
 const IFACE_XML = `
 <node>
   <interface name="dev.ediano.etherbit.Tiling">
+    <method name="Ping">
+      <arg type="s" direction="out" name="status"/>
+    </method>
     <method name="GetConfig">
       <arg type="s" direction="out" name="config_json"/>
     </method>
-    <method name="SetGaps">
-      <arg type="u" direction="in" name="inner"/>
-      <arg type="u" direction="in" name="outer"/>
+    <method name="SetGap">
+      <arg type="u" direction="in" name="gap"/>
     </method>
     <method name="SetActiveBorder">
       <arg type="b" direction="in" name="enabled"/>
@@ -33,6 +35,10 @@ const IFACE_XML = `
     </method>
     <method name="SetAutostart">
       <arg type="b" direction="in" name="enabled"/>
+    </method>
+    <method name="SetRoundedCorners">
+      <arg type="b" direction="in" name="enabled"/>
+      <arg type="u" direction="in" name="radius"/>
     </method>
     <method name="SyncWindows">
       <arg type="s" direction="in" name="windows_json"/>
@@ -47,6 +53,21 @@ const IFACE_XML = `
       <arg type="s" direction="in" name="target_json"/>
       <arg type="s" direction="out" name="preview_json"/>
     </method>
+    <method name="MoveWindow">
+      <arg type="s" direction="in" name="state_json"/>
+      <arg type="t" direction="in" name="dragged_id"/>
+      <arg type="t" direction="in" name="target_id"/>
+      <arg type="s" direction="in" name="zone"/>
+      <arg type="s" direction="out" name="trees_json"/>
+    </method>
+    <method name="ResizeWindow">
+      <arg type="s" direction="in" name="monitors_json"/>
+      <arg type="s" direction="in" name="state_json"/>
+      <arg type="t" direction="in" name="id"/>
+      <arg type="s" direction="in" name="edge"/>
+      <arg type="i" direction="in" name="delta_px"/>
+      <arg type="s" direction="out" name="trees_json"/>
+    </method>
     <signal name="ConfigChanged">
       <arg type="s" name="config_json"/>
     </signal>
@@ -55,11 +76,14 @@ const IFACE_XML = `
 
 /// Forma do proxy gerado por makeProxyWrapper que efetivamente usamos.
 export interface TilingProxy {
+  /// Handshake/health-check: devolve `["ok"]` se o daemon está vivo.
+  PingSync(): [string];
   GetConfigSync(): [string];
-  SetGapsSync(inner: number, outer: number): void;
+  SetGapSync(gap: number): void;
   SetActiveBorderSync(enabled: boolean, color: string, width: number): void;
   SetIgnoreListSync(appIds: string[]): void;
   SetAutostartSync(enabled: boolean): void;
+  SetRoundedCornersSync(enabled: boolean, radius: number): void;
   /// Envia janelas/monitores + estado (stacks/grupos desligados) e recebe o `layout_json`
   /// (`{ rects, tab_bars }`) do daemon.
   SyncWindowsSync(windowsJson: string, monitorsJson: string, stateJson: string): [string];
@@ -70,6 +94,24 @@ export interface TilingProxy {
     y: number,
     monitorsJson: string,
     targetJson: string,
+  ): [string];
+  /// Drag-to-tile: move `draggedId` para junto de `targetId` no lado `zone`. Recebe o `stateJson`
+  /// (com as árvores) e devolve `{"trees":[...]}` para a ponte persistir; a geometria vem do
+  /// `SyncWindows` seguinte.
+  MoveWindowSync(
+    stateJson: string,
+    draggedId: number,
+    targetId: number,
+    zone: string,
+  ): [string];
+  /// Resize elástico: arrasta a borda `edge` da janela `id` em `deltaPx` (positivo = cresceu).
+  /// Recebe monitores + `stateJson` (árvores) e devolve `{"trees":[...]}` para a ponte persistir.
+  ResizeWindowSync(
+    monitorsJson: string,
+    stateJson: string,
+    id: number,
+    edge: string,
+    deltaPx: number,
   ): [string];
   connectSignal(
     name: 'ConfigChanged',
