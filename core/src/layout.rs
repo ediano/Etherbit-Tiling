@@ -153,6 +153,49 @@ pub struct LayoutResult {
     pub tab_bars: Vec<TabBarRect>,
 }
 
+// ---- Árvore BSP PERSISTENTE (estado da ponte; o core só a transforma) ----
+//
+// Diferente do BSP balanceado de `compute_layout_with` (função pura da ordem, que reembaralha tudo
+// a cada janela), a árvore persiste a topologia e as PROPORÇÕES (ratio por nó), dando layout
+// ESTÁVEL (abrir a N+1 racha só um nó) e resize elástico. As folhas são ids de janela simples; um
+// STACK ocupa a folha do seu id-âncora (primeiro membro presente) e é resolvido na geometria — assim
+// as operações de árvore (inserir/colapsar/mover/redimensionar) lidam só com `u64`.
+
+/// Eixo de uma divisão interna.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Axis {
+    /// Lado a lado (corte no eixo X).
+    Horizontal,
+    /// Empilhado (corte no eixo Y).
+    Vertical,
+}
+
+/// Nó da árvore BSP persistente: uma folha (id de janela / âncora de stack) ou uma divisão binária
+/// com `ratio` (fração da PRIMEIRA criança no eixo, `0<ratio<1`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Node {
+    Leaf(u64),
+    Split { axis: Axis, ratio: f64, first: Box<Node>, second: Box<Node> },
+}
+
+/// Árvore de um grupo `(monitor, workspace)`. `root: None` = grupo vazio.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LayoutTree {
+    pub root: Option<Node>,
+}
+
+/// Borda de uma janela arrastada num resize manual.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edge {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+/// Proporção mínima de um nó (evita folhas degeneradas); o resize faz clamp a isto.
+pub const MIN_RATIO: f64 = 0.05;
+
 /// Um slot do BSP: uma janela solta OU um stack inteiro ocupando uma folha. O BSP conta um stack
 /// como 1 — a matemática de divisão é idêntica à de janelas soltas.
 enum Slot<'a> {
@@ -279,43 +322,7 @@ pub fn compute_layout_with(
                     width: round(srect.w),
                     height: round(srect.h),
                 }),
-                Slot::Stack(desc) => {
-                    // Membros presentes neste grupo, na ordem das abas.
-                    let present: Vec<u64> =
-                        desc.member_ids.iter().copied().filter(|m| ids.contains(m)).collect();
-                    if present.is_empty() {
-                        continue;
-                    }
-                    // Faixa da barra no topo (clamp à altura do slot); conteúdo abaixo dela.
-                    let bar_h = (opts.tab_bar_height as f64).min(srect.h.max(0.0));
-                    let content = PreviewRect {
-                        x: round(srect.x),
-                        y: round(srect.y + bar_h),
-                        width: round(srect.w),
-                        height: round((srect.h - bar_h).max(0.0)),
-                    };
-                    // Aba ativa: a indicada se presente, senão o primeiro membro presente.
-                    let active =
-                        if present.contains(&desc.active_id) { desc.active_id } else { present[0] };
-                    // Só a ativa entra em `rects` (visível, no conteúdo). As inativas a ponte oculta.
-                    rects.push(WindowRect {
-                        id: active,
-                        x: content.x,
-                        y: content.y,
-                        width: content.width,
-                        height: content.height,
-                    });
-                    tab_bars.push(TabBarRect {
-                        stack_id: present[0],
-                        x: round(srect.x),
-                        y: round(srect.y),
-                        width: round(srect.w),
-                        height: round(bar_h),
-                        content,
-                        member_ids: present,
-                        active_id: active,
-                    });
-                }
+                Slot::Stack(desc) => render_stack(desc, srect, &ids, opts, &mut rects, &mut tab_bars),
             }
         }
     }
@@ -546,6 +553,337 @@ fn sub_rect_of_target(t: PreviewRect, fx: f64, fy: f64, opts: &LayoutOptions) ->
     } else {
         (DropZone::Bottom, PreviewRect { x: round(tx), y: round(ty + half_h + gap), width: round(tw), height: round(half_h) })
     }
+}
+
+/// Área interna de um monitor: a área útil menos `outer` em cada borda.
+fn inner_rect(area: &WorkArea, outer: f64) -> Rectf {
+    Rectf {
+        x: area.x as f64 + outer,
+        y: area.y as f64 + outer,
+        w: area.width as f64 - 2.0 * outer,
+        h: area.height as f64 - 2.0 * outer,
+    }
+}
+
+/// Divide `rect` em duas partes no `axis`, separadas por `gap`, com a PRIMEIRA ocupando `ratio` do
+/// espaço útil (após descontar o gap). Generaliza `split_axis` (que é o caso `ratio = 0.5`).
+fn split_rect(rect: Rectf, gap: f64, axis: Axis, ratio: f64) -> (Rectf, Rectf) {
+    match axis {
+        Axis::Horizontal => {
+            let avail = (rect.w - gap).max(0.0);
+            let w1 = avail * ratio;
+            (
+                Rectf { x: rect.x, y: rect.y, w: w1, h: rect.h },
+                Rectf { x: rect.x + w1 + gap, y: rect.y, w: avail - w1, h: rect.h },
+            )
+        }
+        Axis::Vertical => {
+            let avail = (rect.h - gap).max(0.0);
+            let h1 = avail * ratio;
+            (
+                Rectf { x: rect.x, y: rect.y, w: rect.w, h: h1 },
+                Rectf { x: rect.x, y: rect.y + h1 + gap, w: rect.w, h: avail - h1 },
+            )
+        }
+    }
+}
+
+/// Atribui um `Rectf` a cada folha da árvore, aplicando os ratios e o `gap` em cada costura.
+fn geom_leaves(node: &Node, rect: Rectf, gap: f64, out: &mut Vec<(u64, Rectf)>) {
+    match node {
+        Node::Leaf(id) => out.push((*id, rect)),
+        Node::Split { axis, ratio, first, second } => {
+            let (a, b) = split_rect(rect, gap, *axis, *ratio);
+            geom_leaves(first, a, gap, out);
+            geom_leaves(second, b, gap, out);
+        }
+    }
+}
+
+/// Renderiza um stack (conjunto de abas) num slot `srect`: barra no topo + conteúdo da aba ativa em
+/// `rects`; as inativas ficam de fora (a ponte as oculta). `group_ids` filtra os membros presentes.
+/// Compartilhado entre o BSP legado (`compute_layout_with`) e a árvore (`compute_geometry`).
+fn render_stack(
+    desc: &StackDescriptor,
+    srect: Rectf,
+    group_ids: &[u64],
+    opts: &LayoutOptions,
+    rects: &mut Vec<WindowRect>,
+    tab_bars: &mut Vec<TabBarRect>,
+) {
+    let present: Vec<u64> =
+        desc.member_ids.iter().copied().filter(|m| group_ids.contains(m)).collect();
+    if present.is_empty() {
+        return;
+    }
+    let bar_h = (opts.tab_bar_height as f64).min(srect.h.max(0.0));
+    let content = PreviewRect {
+        x: round(srect.x),
+        y: round(srect.y + bar_h),
+        width: round(srect.w),
+        height: round((srect.h - bar_h).max(0.0)),
+    };
+    let active = if present.contains(&desc.active_id) { desc.active_id } else { present[0] };
+    rects.push(WindowRect {
+        id: active,
+        x: content.x,
+        y: content.y,
+        width: content.width,
+        height: content.height,
+    });
+    tab_bars.push(TabBarRect {
+        stack_id: present[0],
+        x: round(srect.x),
+        y: round(srect.y),
+        width: round(srect.w),
+        height: round(bar_h),
+        content,
+        member_ids: present,
+        active_id: active,
+    });
+}
+
+/// O stack cuja ÂNCORA (primeiro membro presente no grupo) é `id`, se houver. É a folha que o stack
+/// ocupa na árvore.
+fn stack_anchored_at<'a>(
+    id: u64,
+    stacks: &'a [StackDescriptor],
+    group_ids: &[u64],
+) -> Option<&'a StackDescriptor> {
+    stacks.iter().find(|s| {
+        s.member_ids.iter().copied().find(|m| group_ids.contains(m)) == Some(id)
+    })
+}
+
+/// Calcula a geometria a partir da ÁRVORE persistente (aplicando ratios), integrando stacks (uma
+/// folha-âncora vira barra de abas + conteúdo) e os `outer/inner` gaps. Espelha visualmente o
+/// `compute_layout_with`, mas guiado pela topologia/proporções da árvore em vez da ordem.
+pub fn compute_geometry(
+    tree: &LayoutTree,
+    area: &WorkArea,
+    opts: &LayoutOptions,
+    stacks: &[StackDescriptor],
+    group_ids: &[u64],
+) -> LayoutResult {
+    let mut rects = Vec::new();
+    let mut tab_bars = Vec::new();
+    let root = match &tree.root {
+        Some(r) => r,
+        None => return LayoutResult { rects, tab_bars },
+    };
+    let inner = inner_rect(area, opts.outer_gap as f64);
+    let mut leaves = Vec::new();
+    geom_leaves(root, inner, opts.inner_gap as f64, &mut leaves);
+    for (id, r) in leaves {
+        if let Some(desc) = stack_anchored_at(id, stacks, group_ids) {
+            render_stack(desc, r, group_ids, opts, &mut rects, &mut tab_bars);
+        } else {
+            rects.push(WindowRect {
+                id,
+                x: round(r.x),
+                y: round(r.y),
+                width: round(r.w),
+                height: round(r.h),
+            });
+        }
+    }
+    LayoutResult { rects, tab_bars }
+}
+
+/// `true` se a árvore contém a folha `id`.
+fn node_contains(node: &Node, id: u64) -> bool {
+    match node {
+        Node::Leaf(lid) => *lid == id,
+        Node::Split { first, second, .. } => node_contains(first, id) || node_contains(second, id),
+    }
+}
+
+/// Todos os ids de folha da árvore (ordem de varredura first→second).
+fn collect_leaf_ids(tree: &LayoutTree) -> Vec<u64> {
+    fn walk(node: &Node, out: &mut Vec<u64>) {
+        match node {
+            Node::Leaf(id) => out.push(*id),
+            Node::Split { first, second, .. } => {
+                walk(first, out);
+                walk(second, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(r) = &tree.root {
+        walk(r, &mut out);
+    }
+    out
+}
+
+/// Remove a folha `id` da árvore: o nó pai some e o IRMÃO sobe (absorve espaço e ratio). Se a folha
+/// removida era a raiz, a árvore fica vazia.
+fn collapse_leaf(tree: LayoutTree, id: u64) -> LayoutTree {
+    fn walk(node: Node, id: u64) -> Option<Node> {
+        match node {
+            Node::Leaf(lid) => {
+                if lid == id {
+                    None
+                } else {
+                    Some(Node::Leaf(lid))
+                }
+            }
+            Node::Split { axis, ratio, first, second } => {
+                match (walk(*first, id), walk(*second, id)) {
+                    (None, None) => None,
+                    (Some(n), None) | (None, Some(n)) => Some(n),
+                    (Some(a), Some(b)) => Some(Node::Split {
+                        axis,
+                        ratio,
+                        first: Box::new(a),
+                        second: Box::new(b),
+                    }),
+                }
+            }
+        }
+    }
+    LayoutTree { root: tree.root.and_then(|r| walk(r, id)) }
+}
+
+/// Racha a folha `target` em duas: ela própria (`first`) e `new_id` (`second`), com ratio 0.5 no
+/// `axis` dado. As demais folhas não se mexem.
+fn split_leaf(node: Node, target: u64, new_id: u64, axis: Axis) -> Node {
+    match node {
+        Node::Leaf(id) if id == target => Node::Split {
+            axis,
+            ratio: 0.5,
+            first: Box::new(Node::Leaf(target)),
+            second: Box::new(Node::Leaf(new_id)),
+        },
+        Node::Leaf(id) => Node::Leaf(id),
+        Node::Split { axis: a, ratio, first, second } => Node::Split {
+            axis: a,
+            ratio,
+            first: Box::new(split_leaf(*first, target, new_id, axis)),
+            second: Box::new(split_leaf(*second, target, new_id, axis)),
+        },
+    }
+}
+
+/// Id da maior folha (por área-alvo) da árvore — usado como alvo de inserção quando não há foco no
+/// grupo. Aspect-aware via geometria real.
+fn largest_leaf_id(root: &Node, area: &WorkArea, opts: &LayoutOptions) -> Option<u64> {
+    let inner = inner_rect(area, opts.outer_gap as f64);
+    let mut leaves = Vec::new();
+    geom_leaves(root, inner, opts.inner_gap as f64, &mut leaves);
+    leaves
+        .into_iter()
+        .max_by(|(_, a), (_, b)| {
+            (a.w * a.h).partial_cmp(&(b.w * b.h)).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(id, _)| id)
+}
+
+/// Insere `new_id` rachando a folha-alvo: a do `focused` (se presente) ou a maior folha. O eixo do
+/// novo split é aspect-aware (folha mais larga → corte vertical/lado a lado; mais alta → horizontal).
+fn insert_one(
+    tree: LayoutTree,
+    new_id: u64,
+    focused: Option<u64>,
+    area: &WorkArea,
+    opts: &LayoutOptions,
+) -> LayoutTree {
+    let root = match tree.root {
+        None => return LayoutTree { root: Some(Node::Leaf(new_id)) },
+        Some(r) => r,
+    };
+    let target = focused
+        .filter(|f| node_contains(&root, *f))
+        .or_else(|| largest_leaf_id(&root, area, opts));
+    let Some(target) = target else {
+        return LayoutTree { root: Some(root) };
+    };
+    // Aspecto da folha-alvo para escolher o eixo do corte.
+    let inner = inner_rect(area, opts.outer_gap as f64);
+    let mut leaves = Vec::new();
+    geom_leaves(&root, inner, opts.inner_gap as f64, &mut leaves);
+    let axis = leaves
+        .iter()
+        .find(|(id, _)| *id == target)
+        .map(|(_, r)| if r.w >= r.h { Axis::Horizontal } else { Axis::Vertical })
+        .unwrap_or(Axis::Horizontal);
+    LayoutTree { root: Some(split_leaf(root, target, new_id, axis)) }
+}
+
+/// Constrói uma árvore BALANCEADA a partir de `ids` (ordem preservada), aspect-aware e com ratio
+/// 0.5 — geometria idêntica ao BSP de `bsp_rects`. Usada no bootstrap (árvore vazia) para um layout
+/// inicial simétrico antes de o usuário rearranjar.
+fn balanced_node(ids: &[u64], rect: Rectf, gap: f64) -> Option<Node> {
+    match ids.len() {
+        0 => None,
+        1 => Some(Node::Leaf(ids[0])),
+        n => {
+            let left_count = n.div_ceil(2);
+            let axis = if rect.w >= rect.h { Axis::Horizontal } else { Axis::Vertical };
+            let (a, b) = split_rect(rect, gap, axis, 0.5);
+            let first = balanced_node(&ids[..left_count], a, gap)?;
+            let second = balanced_node(&ids[left_count..], b, gap)?;
+            Some(Node::Split { axis, ratio: 0.5, first: Box::new(first), second: Box::new(second) })
+        }
+    }
+}
+
+/// Concilia a árvore anterior com o estado atual do grupo:
+///  - calcula as folhas-alvo = `current_ids` menos os membros de stack não-âncora (cada stack ocupa
+///    uma folha, a do seu primeiro membro presente);
+///  - remove (colapsando) as folhas que não são mais alvo;
+///  - insere as novas folhas: árvore vazia → BALANCEADA (bootstrap simétrico); árvore existente →
+///    cada nova folha racha o nó FOCADO (ou a maior folha), preservando as demais (estabilidade).
+/// Determinístico: depende só das entradas.
+pub fn reconcile(
+    prev: &LayoutTree,
+    current_ids: &[u64],
+    stacks: &[StackDescriptor],
+    focused: Option<u64>,
+    area: &WorkArea,
+    opts: &LayoutOptions,
+) -> LayoutTree {
+    // Membros de stack que NÃO são a âncora (primeiro presente) — não viram folha própria.
+    let mut non_anchor: Vec<u64> = Vec::new();
+    for s in stacks {
+        let present: Vec<u64> =
+            s.member_ids.iter().copied().filter(|m| current_ids.contains(m)).collect();
+        non_anchor.extend(present.into_iter().skip(1));
+    }
+    let target_leaves: Vec<u64> =
+        current_ids.iter().copied().filter(|id| !non_anchor.contains(id)).collect();
+
+    if target_leaves.is_empty() {
+        return LayoutTree::default();
+    }
+
+    // Bootstrap: sem árvore anterior → layout balanceado (simétrico) a partir das folhas-alvo.
+    if prev.root.is_none() {
+        let inner = inner_rect(area, opts.outer_gap as f64);
+        return LayoutTree { root: balanced_node(&target_leaves, inner, opts.inner_gap as f64) };
+    }
+
+    // Remoções: folhas que não são mais alvo.
+    let mut tree = prev.clone();
+    for id in collect_leaf_ids(&tree) {
+        if !target_leaves.contains(&id) {
+            tree = collapse_leaf(tree, id);
+        }
+    }
+
+    // Se sobrou vazio mas há alvos (todas as folhas trocaram) → bootstrap balanceado.
+    if tree.root.is_none() {
+        let inner = inner_rect(area, opts.outer_gap as f64);
+        return LayoutTree { root: balanced_node(&target_leaves, inner, opts.inner_gap as f64) };
+    }
+
+    // Inserções: cada nova folha racha o nó focado (ou a maior), na ordem de `current_ids`.
+    for &id in &target_leaves {
+        if !tree.root.as_ref().map(|r| node_contains(r, id)).unwrap_or(false) {
+            tree = insert_one(tree, id, focused, area, opts);
+        }
+    }
+    tree
 }
 
 /// Arredondamento meio-para-cima compatível com `Math.round` do JS para valores positivos.
@@ -1035,5 +1373,102 @@ mod tests {
         let area = area_1000x800();
         let p = detect_drop_target(&area, None, 20, 400, &opts());
         assert_eq!(p, detect_drop_zone(&area, 20, 400, &opts()));
+    }
+
+    // ---- Árvore BSP persistente ----
+
+    #[test]
+    fn reconcile_bootstrap_matches_legacy_bsp() {
+        // Árvore vazia → balanceada: geometria IDÊNTICA ao BSP legado para 1..=6 janelas.
+        let area = area_1000x800();
+        for n in 1..=6u64 {
+            let ids: Vec<u64> = (1..=n).collect();
+            let windows: Vec<WindowInfo> = ids.iter().map(|&id| win(id, 0)).collect();
+            let legacy = compute_layout(&windows, &[area_1000x800()], &opts());
+            let tree = reconcile(&LayoutTree::default(), &ids, &[], None, &area, &opts());
+            let geo = compute_geometry(&tree, &area, &opts(), &[], &ids);
+            assert_eq!(geo.rects, legacy, "n={n}");
+        }
+    }
+
+    #[test]
+    fn reconcile_insert_is_stable() {
+        // Abrir a 3ª janela rachando a FOCADA (2) não move a janela 1.
+        let area = area_1000x800();
+        let a = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let ga = compute_geometry(&a, &area, &opts(), &[], &[1, 2]);
+        let b = reconcile(&a, &[1, 2, 3], &[], Some(2), &area, &opts());
+        let gb = compute_geometry(&b, &area, &opts(), &[], &[1, 2, 3]);
+        // 1 inalterada.
+        let a1 = ga.rects.iter().find(|r| r.id == 1).unwrap();
+        let b1 = gb.rects.iter().find(|r| r.id == 1).unwrap();
+        assert_eq!(a1, b1);
+        // 2 e 3 dividem a metade direita (2 em cima, 3 embaixo — folha mais alta que larga).
+        let b2 = gb.rects.iter().find(|r| r.id == 2).unwrap();
+        let b3 = gb.rects.iter().find(|r| r.id == 3).unwrap();
+        assert_eq!(*b2, WindowRect { id: 2, x: 504, y: 12, width: 484, height: 384 });
+        assert_eq!(*b3, WindowRect { id: 3, x: 504, y: 404, width: 484, height: 384 });
+    }
+
+    #[test]
+    fn reconcile_remove_collapses_sibling() {
+        // Remover uma das duas folhas faz a irmã ocupar a área inteira.
+        let area = area_1000x800();
+        let a = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let b = reconcile(&a, &[2], &[], None, &area, &opts());
+        let gb = compute_geometry(&b, &area, &opts(), &[], &[2]);
+        assert_eq!(gb.rects, vec![WindowRect { id: 2, x: 12, y: 12, width: 976, height: 776 }]);
+    }
+
+    #[test]
+    fn reconcile_is_idempotent() {
+        // Reconciliar com os mesmos ids/foco não muda a árvore.
+        let area = area_1000x800();
+        let a = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], Some(1), &area, &opts());
+        let b = reconcile(&a, &[1, 2, 3], &[], Some(1), &area, &opts());
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn reconcile_never_overlaps_after_incremental_inserts() {
+        // Inserções incrementais (focando sempre a última) nunca sobrepõem e cobrem todos os ids.
+        let area = area_1000x800();
+        let mut tree = LayoutTree::default();
+        for n in 1..=10u64 {
+            let ids: Vec<u64> = (1..=n).collect();
+            tree = reconcile(&tree, &ids, &[], Some(n.saturating_sub(1)), &area, &opts());
+            let geo = compute_geometry(&tree, &area, &opts(), &[], &ids);
+            assert_eq!(geo.rects.len() as u64, n, "todas as {n} posicionadas");
+            for i in 0..geo.rects.len() {
+                for j in (i + 1)..geo.rects.len() {
+                    assert!(!overlaps(&geo.rects[i], &geo.rects[j]), "sobreposição com {n}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compute_geometry_renders_stack_anchor_leaf() {
+        // Stack [1,2,3] (âncora 1) + janela solta 4 → 2 slots; a folha 1 vira barra de abas.
+        let area = area_1000x800();
+        let stacks = vec![StackDescriptor { member_ids: vec![1, 2, 3], active_id: 1 }];
+        let tree = reconcile(&LayoutTree::default(), &[1, 2, 3, 4], &stacks, None, &area, &opts());
+        let res = compute_geometry(&tree, &area, &opts(), &stacks, &[1, 2, 3, 4]);
+        // rects visíveis: a aba ativa (1) + a janela solta (4).
+        assert_eq!(res.rects.len(), 2);
+        assert_eq!(res.tab_bars.len(), 1);
+        // O stack ocupa a metade esquerda; a janela solta, a direita.
+        assert_eq!((res.tab_bars[0].x, res.tab_bars[0].width), (12, 484));
+        assert_eq!(res.tab_bars[0].member_ids, vec![1, 2, 3]);
+        let r4 = res.rects.iter().find(|r| r.id == 4).unwrap();
+        assert_eq!((r4.x, r4.width), (504, 484));
+    }
+
+    #[test]
+    fn compute_geometry_empty_tree_is_empty() {
+        let area = area_1000x800();
+        let res = compute_geometry(&LayoutTree::default(), &area, &opts(), &[], &[]);
+        assert!(res.rects.is_empty());
+        assert!(res.tab_bars.is_empty());
     }
 }

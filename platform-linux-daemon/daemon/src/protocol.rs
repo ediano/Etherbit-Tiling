@@ -9,8 +9,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use etherbit_tiling_core::{
-    compute_layout_with, detect_drop_target, is_tileable, DropPreview, DropZone, LayoutOptions,
-    PreviewRect, StackDescriptor, StackGroup, TabBarRect, WindowInfo, WindowRect, WorkArea,
+    compute_geometry, detect_drop_target, is_tileable, reconcile, Axis, DropPreview, DropZone,
+    LayoutOptions, LayoutTree, Node, PreviewRect, StackDescriptor, TabBarRect, WindowInfo,
+    WindowRect, WorkArea, MIN_RATIO,
 };
 
 /// Janela vinda da ponte. Espelha `windows_json` do contrato D-Bus.
@@ -84,6 +85,41 @@ pub struct SyncStateDto {
     /// Pares `(monitor, workspace)` com tiling desligado (janelas flutuam livres).
     #[serde(default)]
     pub disabled_groups: Vec<(u32, u32)>,
+    /// Árvores BSP persistentes por grupo (estado da ponte). Vazio → reconstrói do zero (balanceado).
+    #[serde(default)]
+    pub trees: Vec<TreeDto>,
+    /// Id da janela focada (foco de teclado); 0 = nenhuma. Define a folha a rachar ao abrir janela.
+    #[serde(default)]
+    pub focused_id: u64,
+}
+
+/// Nó da árvore BSP no contrato D-Bus (untagged): folha `{ "win": id }` ou divisão
+/// `{ "split": { axis, ratio, first, second } }`. Espelha `etherbit_tiling_core::Node`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum NodeDto {
+    Split { split: SplitDto },
+    Win { win: u64 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SplitDto {
+    /// "h" = lado a lado (Horizontal); "v" = empilhado (Vertical).
+    pub axis: String,
+    pub ratio: f64,
+    pub first: Box<NodeDto>,
+    pub second: Box<NodeDto>,
+}
+
+/// Árvore persistente de um grupo `(monitor, workspace)`. `root: None`/ausente = grupo vazio.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TreeDto {
+    #[serde(default)]
+    pub monitor: u32,
+    #[serde(default)]
+    pub workspace: u32,
+    #[serde(default)]
+    pub root: Option<NodeDto>,
 }
 
 /// Um stack vindo da ponte: membros (ordem das abas) + aba ativa, no grupo `(monitor, workspace)`.
@@ -112,11 +148,14 @@ pub struct TabBarDto {
     pub active: u64,
 }
 
-/// Saída do `SyncWindows`: retângulos visíveis + barras de abas. Espelha `layout_json` (objeto).
+/// Saída do `SyncWindows`: retângulos visíveis + barras de abas + as ÁRVORES reconciliadas (para a
+/// ponte persistir e reenviar no próximo `state_json`). Espelha `layout_json` (objeto).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LayoutResultDto {
     pub rects: Vec<RectDto>,
     pub tab_bars: Vec<TabBarDto>,
+    #[serde(default)]
+    pub trees: Vec<TreeDto>,
 }
 
 /// Rótulo estável (snake_case) da zona para o contrato D-Bus.
@@ -198,17 +237,55 @@ impl From<&TabBarRect> for TabBarDto {
     }
 }
 
-/// Constrói os `StackGroup` do core a partir do `state_json`. Cada `StackDto` vira um grupo de um
-/// único stack; o core concatena grupos do mesmo `(monitor, workspace)`.
-fn stack_groups_from(state: &SyncStateDto) -> Vec<StackGroup> {
+/// Converte um nó do contrato D-Bus para o tipo do core (recursivo). Faz clamp defensivo do `ratio`.
+fn node_to_core(dto: &NodeDto) -> Node {
+    match dto {
+        NodeDto::Win { win } => Node::Leaf(*win),
+        NodeDto::Split { split } => Node::Split {
+            axis: if split.axis == "v" { Axis::Vertical } else { Axis::Horizontal },
+            ratio: split.ratio.clamp(MIN_RATIO, 1.0 - MIN_RATIO),
+            first: Box::new(node_to_core(&split.first)),
+            second: Box::new(node_to_core(&split.second)),
+        },
+    }
+}
+
+/// Converte um nó do core para o contrato D-Bus (recursivo).
+fn node_to_dto(node: &Node) -> NodeDto {
+    match node {
+        Node::Leaf(id) => NodeDto::Win { win: *id },
+        Node::Split { axis, ratio, first, second } => NodeDto::Split {
+            split: SplitDto {
+                axis: if *axis == Axis::Vertical { "v".to_string() } else { "h".to_string() },
+                ratio: *ratio,
+                first: Box::new(node_to_dto(first)),
+                second: Box::new(node_to_dto(second)),
+            },
+        },
+    }
+}
+
+/// Árvores persistentes vindas do `state_json`, indexadas por `(monitor, workspace)`.
+fn parse_trees(state: &SyncStateDto) -> Vec<(u32, u32, LayoutTree)> {
+    state
+        .trees
+        .iter()
+        .map(|t| (t.monitor, t.workspace, LayoutTree { root: t.root.as_ref().map(node_to_core) }))
+        .collect()
+}
+
+/// Empacota uma árvore do core de volta no `TreeDto` para a ponte persistir.
+fn tree_to_dto(monitor: u32, workspace: u32, tree: &LayoutTree) -> TreeDto {
+    TreeDto { monitor, workspace, root: tree.root.as_ref().map(node_to_dto) }
+}
+
+/// Stacks (descritores do core) de um grupo `(monitor, workspace)` a partir do `state_json`.
+fn group_stacks(state: &SyncStateDto, monitor: u32, workspace: u32) -> Vec<StackDescriptor> {
     state
         .stacks
         .iter()
-        .map(|s| StackGroup {
-            monitor: s.monitor,
-            workspace: s.workspace,
-            stacks: vec![StackDescriptor { member_ids: s.members.clone(), active_id: s.active }],
-        })
+        .filter(|s| s.monitor == monitor && s.workspace == workspace)
+        .map(|s| StackDescriptor { member_ids: s.members.clone(), active_id: s.active })
         .collect()
 }
 
@@ -245,13 +322,54 @@ pub fn sync_windows(
     let tileable: Vec<WindowInfo> =
         windows.into_iter().map(WindowInfo::from).filter(|w| is_tileable(w, ignore_list)).collect();
 
-    let stacks = stack_groups_from(&state);
-    let result = compute_layout_with(&tileable, &areas, &opts, &stacks, &state.disabled_groups);
+    // Ordem dos grupos `(monitor, workspace)` conforme a primeira janela descoberta em cada um.
+    let mut group_order: Vec<(u32, u32)> = Vec::new();
+    for w in &tileable {
+        let key = (w.monitor, w.workspace);
+        if !group_order.contains(&key) {
+            group_order.push(key);
+        }
+    }
 
-    let dto = LayoutResultDto {
-        rects: result.rects.iter().map(RectDto::from).collect(),
-        tab_bars: result.tab_bars.iter().map(TabBarDto::from).collect(),
-    };
+    let prev_trees = parse_trees(&state);
+    let focused = state.focused_id;
+
+    let mut rects: Vec<RectDto> = Vec::new();
+    let mut tab_bars: Vec<TabBarDto> = Vec::new();
+    let mut out_trees: Vec<TreeDto> = Vec::new();
+
+    for (monitor, workspace) in group_order {
+        let group_ids: Vec<u64> = tileable
+            .iter()
+            .filter(|w| w.monitor == monitor && w.workspace == workspace)
+            .map(|w| w.id)
+            .collect();
+        let stacks = group_stacks(&state, monitor, workspace);
+        let prev = prev_trees
+            .iter()
+            .find(|(m, w, _)| *m == monitor && *w == workspace)
+            .map(|(_, _, t)| t.clone())
+            .unwrap_or_default();
+        let focused_opt =
+            if focused != 0 && group_ids.contains(&focused) { Some(focused) } else { None };
+
+        match areas.iter().find(|a| a.index == monitor) {
+            Some(area) => {
+                // Reconcilia a árvore mesmo se o grupo estiver desligado (mantém a topologia).
+                let tree = reconcile(&prev, &group_ids, &stacks, focused_opt, area, &opts);
+                if !state.disabled_groups.contains(&(monitor, workspace)) {
+                    let res = compute_geometry(&tree, area, &opts, &stacks, &group_ids);
+                    rects.extend(res.rects.iter().map(RectDto::from));
+                    tab_bars.extend(res.tab_bars.iter().map(TabBarDto::from));
+                }
+                out_trees.push(tree_to_dto(monitor, workspace, &tree));
+            }
+            // Sem área conhecida para este monitor: não posiciona; preserva a árvore anterior.
+            None => out_trees.push(tree_to_dto(monitor, workspace, &prev)),
+        }
+    }
+
+    let dto = LayoutResultDto { rects, tab_bars, trees: out_trees };
     serde_json::to_string(&dto).context("falha ao serializar layout_json")
 }
 
@@ -464,5 +582,44 @@ mod tests {
     fn resolve_rejects_invalid_json() {
         assert!(resolve_drop_zone("nope", 20, 400, "", OPTS).is_err());
         assert!(resolve_drop_zone(AREAS, 300, 150, "{bad", OPTS).is_err());
+    }
+
+    #[test]
+    fn sync_returns_trees_for_persistence() {
+        let windows = format!("[{},{}]", win_json(1, "a"), win_json(2, "b"));
+        let out = sync_windows(&windows, AREAS, "", &[], OPTS).expect("ok");
+        let res = layout_of(&out);
+        assert_eq!(res.trees.len(), 1);
+        assert_eq!((res.trees[0].monitor, res.trees[0].workspace), (0, 0));
+        assert!(res.trees[0].root.is_some());
+    }
+
+    #[test]
+    fn sync_with_tree_is_stable_on_insert() {
+        // 1ª sync com [1,2]; reenvia as árvores + adiciona 3 focando 2 → janela 1 não se move.
+        let w12 = format!("[{},{}]", win_json(1, "a"), win_json(2, "b"));
+        let first = sync_windows(&w12, AREAS, "", &[], OPTS).expect("ok");
+        let r1 = layout_of(&first);
+        let trees_json = serde_json::to_string(&r1.trees).expect("serializa trees");
+        let state = format!(r#"{{"trees":{trees_json},"focused_id":2}}"#);
+        let w123 = format!("[{},{},{}]", win_json(1, "a"), win_json(2, "b"), win_json(3, "c"));
+        let second = sync_windows(&w123, AREAS, &state, &[], OPTS).expect("ok");
+        let r2 = layout_of(&second);
+        assert_eq!(r2.rects.len(), 3);
+        let a1 = r1.rects.iter().find(|r| r.id == 1).expect("1 na 1ª");
+        let b1 = r2.rects.iter().find(|r| r.id == 1).expect("1 na 2ª");
+        assert_eq!(a1, b1, "janela 1 estável ao abrir a 3ª focando a 2");
+    }
+
+    #[test]
+    fn sync_tolerates_malformed_tree_blob() {
+        // Blob de árvore inválido não derruba: reconstrói do zero (balanceado).
+        let windows = format!("[{},{}]", win_json(1, "a"), win_json(2, "b"));
+        let state = r#"{"trees":[{"monitor":0,"workspace":0,"root":{"bogus":true}}]}"#;
+        // root inválido → erro de parse do state_json (rejeitado defensivamente pelo chamador).
+        assert!(sync_windows(&windows, AREAS, state, &[], OPTS).is_err());
+        // Já um blob ausente (trees vazio) reconstrói normalmente.
+        let ok = sync_windows(&windows, AREAS, r#"{"trees":[]}"#, &[], OPTS).expect("ok");
+        assert_eq!(layout_of(&ok).rects.len(), 2);
     }
 }
