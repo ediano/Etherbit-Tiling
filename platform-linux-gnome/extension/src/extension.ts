@@ -89,6 +89,14 @@ export default class EtherbitTilingExtension extends Extension {
   // Suprime reentrância enquanto aplicamos geometria (evita laço de feedback).
   private _applying = false;
 
+  // Operações de restack (make_above/raise/unmake_above/minimize) ADIADAS para um "later" do Mutter
+  // (BEFORE_REDRAW): rodam quando o stack das janelas já está consistente, evitando o assertion
+  // `meta_window_set_stack_position_no_sync: window->stack_position >= 0` numa janela ainda não
+  // empilhada (recém-criada ou em unmanage). O `try/catch` NÃO captura — é g_warning em C, só some
+  // evitando a chamada no momento errado.
+  private _restackLaterId = 0;
+  private _restackQueue: Array<() => void> = [];
+
   // Ordem estável das janelas por `(monitor, workspace)` — determina a ordem de inserção de janelas
   // NOVAS na árvore (e o bootstrap balanceado). A topologia/proporções persistem em `_trees`.
   private _order = new Map<string, number[]>();
@@ -301,6 +309,14 @@ export default class EtherbitTilingExtension extends Extension {
       GLib.source_remove(this._relayoutSource);
       this._relayoutSource = 0;
     }
+
+    // Cancela operações de restack adiadas (make_above/raise/unmake_above/minimize) ainda pendentes,
+    // para não rodarem sobre janelas que serão restauradas/destruídas no teardown abaixo.
+    if (this._restackLaterId) {
+      this._laterRemove(this._restackLaterId);
+      this._restackLaterId = 0;
+    }
+    this._restackQueue = [];
 
     // Remove os atalhos globais.
     if (this._settings) {
@@ -525,44 +541,43 @@ export default class EtherbitTilingExtension extends Extension {
           console.error(`Etherbit Tiling: falha ao aplicar geometria na janela ${command.id}: ${error}`);
         }
       }
-      // Oculta as abas inativas recém-empilhadas. Referência STALE (destruída entre o snapshot e o
-      // apply) tem `stack_position == -1` e `minimize()` dispara o assertion do Mutter — valida o ator
-      // (`_isWindowLive`) e isola em try/catch, como no laço de floating abaixo.
+      // Oculta as abas inativas recém-empilhadas. `minimize()` mexe no stack do Mutter: numa janela
+      // recém-criada/em unmanage (`stack_position == -1`) dispara o assertion. ADIA para o
+      // BEFORE_REDRAW (stack já consistente) e revalida o ator no momento da execução.
       for (const id of shouldHide) {
         if (!this._stackHidden.has(id)) {
           const w = byId.get(id);
-          if (w && this._isWindowLive(w)) {
-            try {
-              w.minimize();
-            } catch (error) {
-              console.error(`Etherbit Tiling: falha ao minimizar a janela ${id}: ${error}`);
-            }
+          if (w) {
+            this._enqueueRestack(() => {
+              if (this._isWindowLive(w)) {
+                w.minimize();
+              }
+            });
           }
         }
       }
-      // Baixa quem deixou de flutuar (voltou ao grid): remove o "always-on-top" que nós pusemos. Mesma
-      // blindagem — `unmake_above()` numa janela stale dispararia `stack_position >= 0`.
+      // Baixa quem deixou de flutuar (voltou ao grid): remove o "always-on-top" que nós pusemos.
+      // `unmake_above()` também mexe no stack → mesmo adiamento.
       for (const id of this._floatingAbove) {
         if (!floatingIds.has(id)) {
           const w = byId.get(id);
-          if (w && this._isWindowLive(w)) {
-            try {
-              w.unmake_above();
-            } catch (error) {
-              console.error(`Etherbit Tiling: falha ao baixar a janela ${id}: ${error}`);
-            }
+          if (w) {
+            this._enqueueRestack(() => {
+              if (this._isWindowLive(w)) {
+                w.unmake_above();
+              }
+            });
           }
         }
       }
       // Aplica a geometria das flutuantes (centralizadas pelo core) e as eleva acima das tiladas.
+      // A geometria (`move_resize_frame`) não toca no stack, então é aplicada já; só o
+      // `make_above()`/`raise()` é ADIADO para o BEFORE_REDRAW (evita `stack_position >= 0`).
       for (const command of floating) {
         const window = byId.get(command.id);
         if (!window) {
           continue;
         }
-        // Referência STALE: entre o snapshot e o apply (round-trip D-Bus) a janela pode ter sido
-        // destruída/entrado em unmanage — aí seu `stack_position` é -1 e `make_above()`/`raise()`
-        // disparam o assertion do Mutter. Pula janelas que não são mais manipuláveis.
         if (!this._isWindowLive(window)) {
           continue;
         }
@@ -570,11 +585,16 @@ export default class EtherbitTilingExtension extends Extension {
           // Clamp ≥ 1px: rect inválido quebraria o framebuffer do Cogl (ver janelas tiladas acima).
           const g = clampGeometry(command);
           window.move_resize_frame(false, g.x, g.y, g.width, g.height);
+        } catch (error) {
+          console.error(`Etherbit Tiling: falha ao posicionar a flutuante ${command.id}: ${error}`);
+        }
+        this._enqueueRestack(() => {
+          if (!this._isWindowLive(window)) {
+            return;
+          }
           window.make_above();
           window.raise();
-        } catch (error) {
-          console.error(`Etherbit Tiling: falha ao flutuar a janela ${command.id}: ${error}`);
-        }
+        });
       }
     } finally {
       this._applying = false;
@@ -640,6 +660,9 @@ export default class EtherbitTilingExtension extends Extension {
       this._draggedId = window.get_stable_sequence();
       this._lastPointer = null;
       this._resolving = false;
+      // [DIAG drag-to-group] Confirma que o grab de MOVIMENTO disparou. Se NÃO aparecer ao arrastar,
+      // os sinais `grab-op-*` mudaram no Mutter — o agrupamento por abas nunca começa. Temporário.
+      console.log(`[etherbit][drag] início: arrastando ${this._draggedId}`);
       this._dragSource = GLib.timeout_add(GLib.PRIORITY_DEFAULT, DRAG_TICK_MS, () => {
         this._onDragTick();
         return GLib.SOURCE_CONTINUE;
@@ -677,7 +700,17 @@ export default class EtherbitTilingExtension extends Extension {
         serializeTarget(targetRect),
       );
       const preview = parsePreview(previewJson);
-      this._lastPreviewZone = preview?.zone ?? 'none';
+      const zone = preview?.zone ?? 'none';
+      // [DIAG drag-to-group] Loga só na MUDANÇA de zona (evita spam a 60 FPS). `stack` = faixa
+      // superior do alvo → empilhar. Se nunca virar `stack` ao passar pelo topo da janela, o
+      // problema é a detecção de zona (core/preview), não o estado de stacks. Temporário.
+      if (zone !== this._lastPreviewZone) {
+        console.log(
+          `[etherbit][drag] zona ${this._lastPreviewZone} → ${zone}` +
+            ` (alvo ${target ? target.get_stable_sequence() : 'nenhum'})`,
+        );
+      }
+      this._lastPreviewZone = zone;
       this._updatePreview(preview);
     } catch (error) {
       console.error(`Etherbit Tiling: ResolveDropZone falhou: ${error}`);
@@ -753,13 +786,24 @@ export default class EtherbitTilingExtension extends Extension {
     if (this._draggedId && window) {
       const [x, y] = global.get_pointer();
       const target = this._windowUnderPointObj(x, y, this._draggedId);
+      // [DIAG drag-to-group] Decisão final do drop. Se `alvo=nenhum`, `_windowUnderPointObj` não
+      // achou a janela sob o cursor; se `zona` ≠ `stack`, cai no move+split em vez de empilhar.
+      // Temporário (remover/baixar para debug após confirmar a causa).
+      console.log(
+        `[etherbit][drag] soltar: zona=${this._lastPreviewZone}` +
+          ` arrastada=${this._draggedId} alvo=${target ? target.get_stable_sequence() : 'nenhum'}`,
+      );
       if (target) {
         const targetId = target.get_stable_sequence();
         const workspace = window.get_workspace();
         const key = orderKey(window.get_monitor(), workspace ? workspace.index() : 0);
         if (this._lastPreviewZone === 'stack') {
           // Solto na faixa superior da janela-alvo → empilha em abas (estado de stacks).
-          addToStack(this._stacks, key, targetId, this._draggedId);
+          const added = addToStack(this._stacks, key, targetId, this._draggedId);
+          console.log(
+            `[etherbit][drag] empilhar alvo=${targetId} arrastada=${this._draggedId}` +
+              ` → addToStack=${added}; stacks[${key}]=${JSON.stringify(this._stacks.get(key) ?? [])}`,
+          );
         } else if (this._lastPreviewZone !== 'none' && this._lastPreviewZone !== 'center') {
           // Solto sobre um lado da janela → move+split na árvore (persistente).
           const res = this._call((p) =>
@@ -1080,6 +1124,68 @@ export default class EtherbitTilingExtension extends Extension {
     } catch {
       return false;
     }
+  }
+
+  /// Agenda um callback para o próximo BEFORE_REDRAW do Mutter. A API mudou entre versões (45→50):
+  /// GNOME 46+ usa `global.compositor.get_laters().add()`; versões antigas, `Meta.later_add()`
+  /// (feature detection, ver ADR 0023). Sem nenhuma das duas, executa já (modo degradado).
+  private _laterAdd(callback: () => boolean): number {
+    const laters = (
+      global.compositor as unknown as {
+        get_laters?: () => { add: (when: number, cb: () => boolean) => number };
+      }
+    )?.get_laters?.();
+    if (laters) {
+      return laters.add(Meta.LaterType.BEFORE_REDRAW, callback);
+    }
+    const fn = (Meta as unknown as { later_add?: (when: number, cb: () => boolean) => number })
+      .later_add;
+    if (typeof fn === 'function') {
+      return fn(Meta.LaterType.BEFORE_REDRAW, callback);
+    }
+    callback();
+    return 0;
+  }
+
+  /// Cancela um "later" agendado por `_laterAdd` (mesma feature detection).
+  private _laterRemove(id: number): void {
+    if (!id) {
+      return;
+    }
+    const laters = (
+      global.compositor as unknown as { get_laters?: () => { remove: (id: number) => void } }
+    )?.get_laters?.();
+    if (laters) {
+      laters.remove(id);
+      return;
+    }
+    const fn = (Meta as unknown as { later_remove?: (id: number) => void }).later_remove;
+    if (typeof fn === 'function') {
+      fn(id);
+    }
+  }
+
+  /// Enfileira uma operação de restack para rodar no próximo BEFORE_REDRAW, quando o Mutter já
+  /// atribuiu `stack_position` válido. Lote único por ciclo: várias operações de um relayout
+  /// compartilham o mesmo "later". Cada ação é isolada em try/catch.
+  private _enqueueRestack(action: () => void): void {
+    this._restackQueue.push(action);
+    if (this._restackLaterId) {
+      return;
+    }
+    this._restackLaterId = this._laterAdd(() => {
+      const queue = this._restackQueue;
+      this._restackQueue = [];
+      this._restackLaterId = 0;
+      for (const run of queue) {
+        try {
+          run();
+        } catch (error) {
+          console.error(`Etherbit Tiling: restack adiado falhou: ${error}`);
+        }
+      }
+      return GLib.SOURCE_REMOVE;
+    });
   }
 
   /// `true` se a janela está maximizada em AMBOS os eixos (estado, não a capacidade `can_maximize`).
