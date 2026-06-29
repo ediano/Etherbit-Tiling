@@ -204,6 +204,39 @@ impl Tiling {
     /// Sinal emitido sempre que a configuração muda. Carrega a config completa em JSON.
     #[zbus(signal)]
     async fn config_changed(emitter: &SignalEmitter<'_>, config_json: String) -> zbus::Result<()>;
+
+    /// Sinal emitido quando o usuário interage com a barra de abas RENDERIZADA PELO DAEMON (wgpu, no
+    /// KDE): clique na guia (`action = "activate"`), no ícone "x" (`"close"`) ou no menu de contexto
+    /// (`"ungroup"`). A ponte assina, aplica a ação (ativar/fechar/desagrupar) e re-tila. No GNOME a
+    /// barra é desenhada pela extensão, que trata esses cliques localmente — então este sinal só é
+    /// emitido pela UI wgpu. `stack_id` é o id do stack (primeiro membro); `member_id` a janela alvo.
+    #[zbus(signal)]
+    async fn tab_action(
+        emitter: &SignalEmitter<'_>,
+        stack_id: u64,
+        member_id: u64,
+        action: String,
+    ) -> zbus::Result<()>;
+}
+
+/// Emite o sinal `TabAction` pela connection de sessão (usado pela UI wgpu da barra de abas, que roda
+/// fora do contexto de um método D-Bus). `action` ∈ {`"activate"`, `"close"`, `"ungroup"`}.
+#[cfg(feature = "wgpu-ui")]
+pub async fn emit_tab_action(
+    connection: &zbus::Connection,
+    stack_id: u64,
+    member_id: u64,
+    action: &str,
+) -> zbus::Result<()> {
+    connection
+        .emit_signal(
+            Option::<&str>::None,
+            OBJECT_PATH,
+            BUS_NAME,
+            "TabAction",
+            &(stack_id, member_id, action.to_string()),
+        )
+        .await
 }
 
 /// Sobe o serviço no barramento de sessão e o mantém vivo.
