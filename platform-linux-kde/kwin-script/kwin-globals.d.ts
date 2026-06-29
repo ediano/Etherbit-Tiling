@@ -124,7 +124,11 @@ interface KWinWorkspace {
    * sempre `windowList()`.
    */
   windowList(): KWinWindow[];
-  readonly activeWindow: KWinWindow | null;
+  /**
+   * Janela ativa (foco). É READ-WRITE na API de scripting do KWin: ATRIBUIR uma janela a ela a ATIVA
+   * — traz ao topo da pilha e dá foco (usado ao clicar numa aba da barra). `null` = nenhuma ativa.
+   */
+  activeWindow: KWinWindow | null;
   readonly currentDesktop: KWinVirtualDesktop;
   /** Todos os desktops virtuais, na ordem; usado para indexar `win.desktops`. */
   readonly desktops: KWinVirtualDesktop[];

@@ -9,6 +9,10 @@
                           http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
   <kcfgfile name=""/>
   <group name="">
+    <entry name="enabled" type="Bool">
+      <label>Ativar o tiling (chave geral)</label>
+      <default>true</default>
+    </entry>
     <entry name="gap" type="Int">
       <label>Espaçamento único: entre janelas e da borda da tela (px)</label>
       <default>8</default>
@@ -28,10 +32,6 @@
       <default>2</default>
       <min>0</min>
       <max>20</max>
-    </entry>
-    <entry name="autostart" type="Bool">
-      <label>Iniciar o daemon com o sistema</label>
-      <default>false</default>
     </entry>
     <entry name="roundedCorners" type="Bool">
       <label>Cantos arredondados (requer o efeito nativo de cantos do KWin)</label>

@@ -5,6 +5,8 @@
 // que trafega pelo D-Bus (ver ADR de nomenclatura D-Bus).
 
 export interface TilingConfig {
+  /// Chave geral do tiling: `false` libera as janelas (a ponte pausa o laço); `true` re-tila.
+  enabled: boolean;
   gap: number;
   active_border: boolean;
   border_color: string;
@@ -17,6 +19,7 @@ export interface TilingConfig {
 
 /// Deve casar 1:1 com `impl Default for Config` em daemon/src/config.rs.
 export const DEFAULT_CONFIG: TilingConfig = {
+  enabled: true,
   gap: 8,
   active_border: true,
   border_color: '#5e81ac',

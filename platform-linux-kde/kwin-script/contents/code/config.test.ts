@@ -22,6 +22,7 @@ describe('DEFAULT_CONFIG', () => {
   // Se o daemon mudar um padrão, ATUALIZE aqui — o daemon é a fonte de verdade.
   it('casa 1:1 com o Config::default() do daemon', () => {
     expect(DEFAULT_CONFIG).toEqual({
+      enabled: true,
       gap: 8,
       active_border: true,
       border_color: '#5e81ac',
