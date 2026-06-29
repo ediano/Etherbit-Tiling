@@ -36,6 +36,7 @@ arqueologia de commits.
 | [0024](0024-instaladores-upgrade-idempotente-autostart.md) | Instaladores idempotentes: autostart, upgrade com checagem de versão e parada segura do daemon | ✅ Aceita |
 | [0025](0025-barra-abas-clicavel-kde-entrega-por-pull.md) | Barra de abas clicável no KDE: entrega da ação por pull e fila efêmera no daemon | ✅ Aceita |
 | [0026](0026-grid-fractal-3x3-elastico-e-hud.md) | Grid fractal 3×3 elástico (substitui o BSP) e HUD de preview com 9 zonas | ✅ Aceita |
+| [0027](0027-chave-geral-tiling-e-refino-ui.md) | Chave geral de ativação do tiling, raio como fonte do arredondamento e remoção do toggle de autostart | ✅ Aceita |
 
 ## Como adicionar uma nova decisão
 1. Copie o formato de um ADR existente.

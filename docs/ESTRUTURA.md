@@ -21,7 +21,7 @@ Etherbit-Tiling/
 │       ├── Cargo.toml        #   zbus + tokio + serde/toml; depende de etherbit-tiling-core por path
 │       └── src/
 │           ├── main.rs       #     loop de background; sobe dev.ediano.etherbit.Tiling
-│           ├── service.rs    #     interface D-Bus #[interface] (gaps, borda, ignore, autostart)
+│           ├── service.rs    #     interface D-Bus #[interface] (chave geral, gaps, borda, ignore, autostart inerte)
 │           ├── config.rs     #     Config (serde) persistida em ~/.config/etherbit-tiling/config.toml
 │           └── autostart.rs  #     manifesto .desktop em ~/.config/autostart
 ├── platform-linux-gnome/     # Camada GNOME (Wayland) — só a extension; usa o daemon
@@ -33,7 +33,7 @@ Etherbit-Tiling/
 │       ├── scripts/install.sh#   copia o bundle para a pasta local de extensões do GNOME
 │       └── src/
 │           ├── extension.ts  #     enable/disable, indicador, filtro Mutter window-created
-│           ├── indicator.ts  #     PanelMenu.Button (gaps, borda ativa, autostart)
+│           ├── indicator.ts  #     PanelMenu.Button (chave geral on/off, gaps, raio dos cantos)
 │           └── dbus.ts       #     proxy D-Bus + tipos da config
 ├── platform-linux-kde/       # Camada KDE Plasma 6 (Wayland) — só o KWin Script; reusa o daemon
 │   └── kwin-script/          # KPackage "KWin/Script" (Vite + TypeScript → bundle IIFE)
@@ -42,7 +42,7 @@ Etherbit-Tiling/
 │       ├── kwin-globals.d.ts #   tipos ambientes da API de scripting do KWin
 │       └── contents/
 │           ├── code/         #     main.ts (ponte), config.ts/tiling.ts (puros, testáveis)
-│           ├── config/main.xml #   KConfigXT (innerGap, outerGap, borda, autostart)
+│           ├── config/main.xml #   KConfigXT (enabled/chave geral, gap, borda, cantos)
 │           └── ui/config.ui  #     UI nativa (objectName = kcfg_<chave>)
 ├── web/                      # Landing page global (Vite + CSS3 puro): etherbit-tiling-web
 │   ├── package.json          #   scripts dev/build/preview (pnpm)
