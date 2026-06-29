@@ -23,6 +23,8 @@ import {
   treeToTransport,
   treeFromTransport,
   resizeDeltaFrom,
+  resolveHotZone,
+  serializeScope,
   type Stack,
   type TreeNode,
   type TransportNode,
@@ -229,7 +231,7 @@ describe('estado de abas (stacks, ids string) e tiling por grupo', () => {
     });
   });
 
-  it('árvore: round-trip internalId ↔ transporte e colapso de folha intraduzível', () => {
+  it('árvore: round-trip internalId ↔ transporte e colapso de célula intraduzível (grid)', () => {
     const transportOf = new Map<string, number>([
       ['a', 1],
       ['b', 2],
@@ -238,15 +240,30 @@ describe('estado de abas (stacks, ids string) e tiling por grupo', () => {
       [1, 'a'],
       [2, 'b'],
     ]);
+    // Grid de 2 colunas (split binário) — ADR 0026.
     const tree: TreeNode = {
-      split: { axis: 'h', ratio: 0.5, first: { win: 'a' }, second: { win: 'b' } },
+      grid: {
+        cols: [0.5, 0.5],
+        rows: [1],
+        cells: [
+          { node: { win: 'a' }, col: 0, row: 0, col_span: 1, row_span: 1 },
+          { node: { win: 'b' }, col: 1, row: 0, col_span: 1, row_span: 1 },
+        ],
+      },
     };
     const transport = treeToTransport(tree, transportOf);
     expect(transport).toEqual({
-      split: { axis: 'h', ratio: 0.5, first: { win: 1 }, second: { win: 2 } },
+      grid: {
+        cols: [0.5, 0.5],
+        rows: [1],
+        cells: [
+          { node: { win: 1 }, col: 0, row: 0, col_span: 1, row_span: 1 },
+          { node: { win: 2 }, col: 1, row: 0, col_span: 1, row_span: 1 },
+        ],
+      },
     });
     expect(treeFromTransport(transport as TransportNode, toStable)).toEqual(tree);
-    // 'b' sem transporte → o nó colapsa para a folha 'a'.
+    // 'b' sem transporte → a célula cai e o grid ACHATA para a folha 'a' (o sobrevivente sobe).
     const partial = treeToTransport(tree, new Map([['a', 1]]));
     expect(partial).toEqual({ win: 1 });
   });
@@ -326,5 +343,44 @@ describe('ordem estável das janelas (ids string/internalId)', () => {
   it('sortByOrder respeita a ordem registrada e joga ids novos para o fim', () => {
     const order = new Map<string, string[]>([['0:0', ['c', 'a', 'b']]]);
     expect(sortByOrder(order, '0:0', ['a', 'z', 'b', 'c'])).toEqual(['c', 'a', 'b', 'z']);
+  });
+
+  // ---- HUD do jogo da velha (resolveHotZone — ADR 0026) ----
+  const MON = { x: 0, y: 0, width: 900, height: 900 };
+  const TARGET = { x: 300, y: 300, width: 300, height: 300 };
+
+  it('centro do alvo → center; outline = janela-alvo inteira', () => {
+    const hz = resolveHotZone({ x: 450, y: 450 }, TARGET, MON);
+    expect(hz.scope).toBe('local');
+    expect(hz.dropZone).toBe('center');
+    expect(hz.outline).toEqual(TARGET);
+  });
+
+  it('eixo esquerdo → left (faixa de 1/3)', () => {
+    const hz = resolveHotZone({ x: 350, y: 450 }, TARGET, MON);
+    expect(hz.dropZone).toBe('left');
+    expect(hz.outline).toEqual({ x: 300, y: 300, width: 100, height: 300 });
+  });
+
+  it('canto → top_left (célula única)', () => {
+    const hz = resolveHotZone({ x: 350, y: 350 }, TARGET, MON);
+    expect(hz.dropZone).toBe('top_left');
+    expect(hz.outline).toEqual({ x: 300, y: 300, width: 100, height: 100 });
+  });
+
+  it('perto da borda da tela → global, bloco de 50%', () => {
+    const hz = resolveHotZone({ x: 10, y: 450 }, TARGET, MON);
+    expect(hz.scope).toBe('global');
+    expect(hz.dropZone).toBe('left');
+    expect(hz.outline).toEqual({ x: 0, y: 0, width: 450, height: 900 });
+  });
+
+  it('gap sem janela → global', () => {
+    expect(resolveHotZone({ x: 450, y: 450 }, null, MON).scope).toBe('global');
+  });
+
+  it('serializeScope mapeia local/global', () => {
+    expect(serializeScope('global')).toBe('global');
+    expect(serializeScope('local')).toBe('local');
   });
 });

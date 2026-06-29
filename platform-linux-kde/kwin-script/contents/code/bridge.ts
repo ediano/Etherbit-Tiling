@@ -288,6 +288,143 @@ export function parsePreview(json: string): DropPreview | null {
   return { zone: v.zone, x: v.x, y: v.y, width: v.width, height: v.height };
 }
 
+// ---- HUD de preview do jogo da velha (cálculo LOCAL na ponte — ADR 0026) ----
+//
+// Espelha o `resolveHotZone` da ponte GNOME: durante o arrasto, calcula a zona sob o cursor SEM chamar
+// o Rust (divide o alvo por 3 = local; bordas do monitor = global). O KWin Script só desenha o
+// `outline` (um retângulo nativo via `workspace.showOutline`) — não as 9 células (limitação do KWin
+// Script; ver ADR 0026). O core só é acionado no DROP (MoveWindow). Puro/testável.
+
+/// Retângulo simples em px absolutos de tela.
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/// Resultado do HUD: a zona quente sob o cursor, as células e o destino do drop.
+export interface HotZone {
+  scope: 'local' | 'global';
+  dropZone: string;
+  cells: Rect[];
+  hot: number[];
+  outline: Rect;
+}
+
+/// Faixa (fração do MONITOR) junto às bordas da tela que aciona o escopo GLOBAL.
+const SCREEN_EDGE_FRAC = 0.12;
+
+/// Calcula a zona quente do HUD sob o cursor, sem D-Bus. `target` = retângulo da janela sob o cursor
+/// (`null` num gap vazio); `monitor` = área útil do monitor sob o cursor.
+export function resolveHotZone(
+  pointer: { x: number; y: number },
+  target: Rect | null,
+  monitor: Rect,
+): HotZone {
+  const mfx = monitor.width > 0 ? (pointer.x - monitor.x) / monitor.width : 0.5;
+  const mfy = monitor.height > 0 ? (pointer.y - monitor.y) / monitor.height : 0.5;
+  const nearScreenEdge =
+    mfx < SCREEN_EDGE_FRAC ||
+    mfx > 1 - SCREEN_EDGE_FRAC ||
+    mfy < SCREEN_EDGE_FRAC ||
+    mfy > 1 - SCREEN_EDGE_FRAC;
+  if (nearScreenEdge || !target || target.width <= 0 || target.height <= 0) {
+    return globalHotZone(mfx, mfy, monitor);
+  }
+  return localHotZone(pointer, target);
+}
+
+function globalHotZone(mfx: number, mfy: number, monitor: Rect): HotZone {
+  const dl = mfx;
+  const dr = 1 - mfx;
+  const dt = mfy;
+  const db = 1 - mfy;
+  const nearest = Math.min(dl, dr, dt, db);
+  const hw = monitor.width / 2;
+  const hh = monitor.height / 2;
+  let dropZone: string;
+  let block: Rect;
+  if (nearest === dl) {
+    dropZone = 'left';
+    block = { x: monitor.x, y: monitor.y, width: hw, height: monitor.height };
+  } else if (nearest === dr) {
+    dropZone = 'right';
+    block = { x: monitor.x + hw, y: monitor.y, width: hw, height: monitor.height };
+  } else if (nearest === dt) {
+    dropZone = 'top';
+    block = { x: monitor.x, y: monitor.y, width: monitor.width, height: hh };
+  } else {
+    dropZone = 'bottom';
+    block = { x: monitor.x, y: monitor.y + hh, width: monitor.width, height: hh };
+  }
+  return { scope: 'global', dropZone, cells: [block], hot: [0], outline: block };
+}
+
+function localHotZone(pointer: { x: number; y: number }, target: Rect): HotZone {
+  const cw = target.width / 3;
+  const ch = target.height / 3;
+  const cells: Rect[] = [];
+  for (let row = 0; row < 3; row += 1) {
+    for (let col = 0; col < 3; col += 1) {
+      cells.push({ x: target.x + col * cw, y: target.y + row * ch, width: cw, height: ch });
+    }
+  }
+  const idx = (r: number, c: number): number => r * 3 + c;
+  const fx = (pointer.x - target.x) / target.width;
+  const fy = (pointer.y - target.y) / target.height;
+  const col = Math.min(2, Math.max(0, Math.floor(fx * 3)));
+  const row = Math.min(2, Math.max(0, Math.floor(fy * 3)));
+
+  if (col === 1 && row === 1) {
+    return { scope: 'local', dropZone: 'center', cells, hot: [idx(1, 1)], outline: { ...target } };
+  }
+  if (col === 1 && row === 0) {
+    return localAxis('top', cells, [idx(0, 0), idx(0, 1), idx(0, 2)], {
+      x: target.x,
+      y: target.y,
+      width: target.width,
+      height: ch,
+    });
+  }
+  if (col === 1 && row === 2) {
+    return localAxis('bottom', cells, [idx(2, 0), idx(2, 1), idx(2, 2)], {
+      x: target.x,
+      y: target.y + 2 * ch,
+      width: target.width,
+      height: ch,
+    });
+  }
+  if (row === 1 && col === 0) {
+    return localAxis('left', cells, [idx(0, 0), idx(1, 0), idx(2, 0)], {
+      x: target.x,
+      y: target.y,
+      width: cw,
+      height: target.height,
+    });
+  }
+  if (row === 1 && col === 2) {
+    return localAxis('right', cells, [idx(0, 2), idx(1, 2), idx(2, 2)], {
+      x: target.x + 2 * cw,
+      y: target.y,
+      width: cw,
+      height: target.height,
+    });
+  }
+  const cornerZone = `${row === 0 ? 'top' : 'bottom'}_${col === 0 ? 'left' : 'right'}`;
+  const i = idx(row, col);
+  return { scope: 'local', dropZone: cornerZone, cells, hot: [i], outline: cells[i] as Rect };
+}
+
+function localAxis(dropZone: string, cells: Rect[], hot: number[], outline: Rect): HotZone {
+  return { scope: 'local', dropZone, cells, hot, outline };
+}
+
+/// Serializa o escopo do drop para o `MoveWindow` (ADR 0026): `"global"` ou `"local"`.
+export function serializeScope(scope: 'local' | 'global'): string {
+  return scope === 'global' ? 'global' : 'local';
+}
+
 // ---- Ordem estável das janelas (estado leve da ponte) ----
 //
 // Espelha os helpers do GNOME (bridge.ts da extensão); aqui o id estável é o `internalId` do KWin
@@ -349,20 +486,39 @@ export interface Stack {
   active: string;
 }
 
-/// Árvore BSP persistente com ids INTERNOS (internalId string) — a forma canônica guardada na ponte.
+/// Célula de um `grid` com ids INTERNOS (espelha `etherbit_tiling_core::GridChild`).
+export interface TreeGridCell {
+  node: TreeNode;
+  col: number;
+  row: number;
+  col_span: number;
+  row_span: number;
+}
+
+/// Célula de um `grid` com ids de TRANSPORTE.
+export interface TransportGridCell {
+  node: TransportNode;
+  col: number;
+  row: number;
+  col_span: number;
+  row_span: number;
+}
+
+/// Árvore persistente com ids INTERNOS (internalId string) — a forma canônica guardada na ponte.
+/// ADR 0026: o `grid` elástico 3×3 substitui o `split` binário.
 export type TreeNode =
   | { win: string }
   | { stack: { members: string[]; active: string } }
-  | { split: { axis: 'h' | 'v'; ratio: number; first: TreeNode; second: TreeNode } };
+  | { grid: { cols: number[]; rows: number[]; cells: TreeGridCell[] } };
 
 /// Árvore com ids de TRANSPORTE (números), como trafega no contrato D-Bus (igual ao GNOME).
 export type TransportNode =
   | { win: number }
   | { stack: { members: number[]; active: number } }
-  | { split: { axis: 'h' | 'v'; ratio: number; first: TransportNode; second: TransportNode } };
+  | { grid: { cols: number[]; rows: number[]; cells: TransportGridCell[] } };
 
-/// internalId-tree → transport-tree. Folha sem transporte (janela fechada) é COLAPSADA (o irmão
-/// sobe), espelhando o `collapse_leaf` do core — nunca envia id intraduzível.
+/// internalId-tree → transport-tree. Folha/célula sem transporte (janela fechada) é COLAPSADA (o
+/// sobrevivente sobe), espelhando o `collapse_leaf` do core — nunca envia id intraduzível.
 export function treeToTransport(
   node: TreeNode,
   transportOf: Map<string, number>,
@@ -391,15 +547,24 @@ export function treeToTransport(
       activeT !== undefined && members.includes(activeT) ? activeT : (members[0] as number);
     return { stack: { members, active } };
   }
-  const first = treeToTransport(node.split.first, transportOf);
-  const second = treeToTransport(node.split.second, transportOf);
-  if (first && second) {
-    return { split: { axis: node.split.axis, ratio: node.split.ratio, first, second } };
+  // grid: traduz cada célula; as intraduzíveis caem. 0 → null; 1 → achata no sobrevivente.
+  const cells: TransportGridCell[] = [];
+  for (const c of node.grid.cells) {
+    const n = treeToTransport(c.node, transportOf);
+    if (n) {
+      cells.push({ node: n, col: c.col, row: c.row, col_span: c.col_span, row_span: c.row_span });
+    }
   }
-  return first ?? second;
+  if (cells.length === 0) {
+    return null;
+  }
+  if (cells.length === 1) {
+    return (cells[0] as TransportGridCell).node;
+  }
+  return { grid: { cols: node.grid.cols, rows: node.grid.rows, cells } };
 }
 
-/// transport-tree → internalId-tree. Folha sem internalId conhecido é COLAPSADA (o irmão sobe).
+/// transport-tree → internalId-tree. Folha/célula sem internalId conhecido é COLAPSADA (sobe).
 export function treeFromTransport(
   node: TransportNode,
   toStable: Map<number, string>,
@@ -427,12 +592,20 @@ export function treeFromTransport(
       activeS !== undefined && members.includes(activeS) ? activeS : (members[0] as string);
     return { stack: { members, active } };
   }
-  const first = treeFromTransport(node.split.first, toStable);
-  const second = treeFromTransport(node.split.second, toStable);
-  if (first && second) {
-    return { split: { axis: node.split.axis, ratio: node.split.ratio, first, second } };
+  const cells: TreeGridCell[] = [];
+  for (const c of node.grid.cells) {
+    const n = treeFromTransport(c.node, toStable);
+    if (n) {
+      cells.push({ node: n, col: c.col, row: c.row, col_span: c.col_span, row_span: c.row_span });
+    }
   }
-  return first ?? second;
+  if (cells.length === 0) {
+    return null;
+  }
+  if (cells.length === 1) {
+    return (cells[0] as TreeGridCell).node;
+  }
+  return { grid: { cols: node.grid.cols, rows: node.grid.rows, cells } };
 }
 
 /// Reverte `orderKey`: `"monitor:workspace"` → `[monitor, workspace]`.
