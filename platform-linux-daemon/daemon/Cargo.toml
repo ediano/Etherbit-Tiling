@@ -4,9 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-# UI própria do daemon via wgpu (painel de configurações rápidas), com fallback por software.
-# Desligada por padrão: mantém o daemon leve e o CI sem necessidade de GPU. Ver src/render.rs.
-wgpu-ui = ["dep:wgpu"]
+# UI própria do daemon via wgpu (barra de abas no KDE + futuro painel de config), com fallback por
+# software. Desligada por padrão: mantém o daemon leve e o CI sem necessidade de GPU. Ver src/render.rs.
+# Sob KWin (que suporta wlr-layer-shell) o daemon cria SUAS PRÓPRIAS superfícies de overlay e desenha
+# a barra de abas com wgpu — sem violar o ADR 0016 (não há overlay sobre janelas alheias; é surface
+# própria). No GNOME (Mutter sem layer-shell) a barra segue na extensão.
+wgpu-ui = ["dep:wgpu", "dep:smithay-client-toolkit", "dep:raw-window-handle", "dep:bytemuck"]
 
 [dependencies]
 etherbit-tiling-core = { path = "../../core" }
@@ -19,3 +22,11 @@ toml = "0.8"
 directories = "5"
 anyhow = "1"
 wgpu = { version = "22", optional = true }
+# Cliente Wayland para criar a superfície de overlay (wlr-layer-shell) e ler o ponteiro (seat).
+# `default-features = false`: dispensa a feature `xkbcommon` (só usamos ponteiro, não teclado),
+# evitando a dependência da lib de sistema `libxkbcommon` no build.
+smithay-client-toolkit = { version = "0.19", optional = true, default-features = false, features = [
+    "calloop",
+] }
+raw-window-handle = { version = "0.6", optional = true }
+bytemuck = { version = "1", features = ["derive"], optional = true }

@@ -115,6 +115,21 @@ function windowId(win: KWinWindow): string {
   return String(win.internalId);
 }
 
+/// `true` se a janela está maximizada (o quadro cobre toda a MaximizeArea do seu monitor). O KWin
+/// script não expõe o estado de maximização de forma estável, então comparamos a geometria com a área
+/// de maximização (API estável). Os gaps do tiling fazem uma janela TILADA medir menos que essa área,
+/// evitando falso-positivo no caso comum. Base do Unmaximize Recovery (a maximizada fica fora do grid).
+function isMaximized(win: KWinWindow): boolean {
+  const max = workspace.clientArea(KWin.MaximizeArea, win);
+  const g = win.frameGeometry;
+  return (
+    Math.abs(g.x - max.x) <= 1 &&
+    Math.abs(g.y - max.y) <= 1 &&
+    Math.abs(g.width - max.width) <= 1 &&
+    Math.abs(g.height - max.height) <= 1
+  );
+}
+
 /// Saídas (monitores) presentes, na ordem de descoberta pelas janelas atuais.
 function collectOutputs(): KWinOutput[] {
   const outputs: KWinOutput[] = [];
@@ -245,6 +260,7 @@ function retile(): void {
         workspace: entry.desktop,
         min_width: min ? Math.max(0, Math.round(min.width)) : 0,
         min_height: min ? Math.max(0, Math.round(min.height)) : 0,
+        maximized: isMaximized(entry.win),
       });
     }
   }
@@ -296,10 +312,13 @@ function retile(): void {
             }
           }
         }
-        // Aplica a geometria das janelas visíveis (singles + aba ativa de cada stack).
+        // Aplica a geometria das janelas visíveis (singles + aba ativa de cada stack). Pula janelas
+        // MAXIMIZADAS — sobrescrever a geometria as desmaximizaria. O compositor as mantém maximizadas
+        // por cima do slot reservado; ao desmaximizar, um novo relayout aplica o slot (Unmaximize
+        // Recovery).
         for (const command of commands) {
           const win = byId.get(command.id);
-          if (win) {
+          if (win && !isMaximized(win)) {
             win.frameGeometry = {
               x: command.x,
               y: command.y,
@@ -605,6 +624,16 @@ function trackWindow(win: KWinWindow): void {
   win.interactiveMoveResizeStarted.connect(() => onMoveStart(win));
   win.interactiveMoveResizeStepped.connect(() => onMoveStep());
   win.interactiveMoveResizeFinished.connect(() => onMoveFinish(win));
+  // (Des)maximizar muda quais janelas entram no grid (Unmaximize Recovery). O sinal de maximização
+  // não existe em toda versão do KWin script — conecta defensivamente (degrada sem quebrar; nesse
+  // caso a re-tilagem ocorre no próximo evento de foco/janela).
+  if (win.maximizedChanged) {
+    win.maximizedChanged.connect(() => {
+      if (!applying) {
+        retile();
+      }
+    });
+  }
 }
 
 workspace.windowAdded.connect((win) => {

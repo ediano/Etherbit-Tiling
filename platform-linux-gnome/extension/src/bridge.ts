@@ -21,6 +21,8 @@ export interface WindowSnapshot {
   /// Tamanho mínimo imposto pelo app (geometry hint); 0 = sem restrição.
   min_width: number;
   min_height: number;
+  /// Janela maximizada no momento (estado). Dispara o tratamento de unmaximize no core.
+  maximized: boolean;
 }
 
 /// Espelha o `MonitorDto` do daemon (área útil de um monitor).
@@ -306,6 +308,7 @@ export interface Stack {
 /// OPACO (produzido/consumido pelo core) — só o transporta e o persiste por grupo.
 export type TreeNode =
   | { win: number }
+  | { stack: { members: number[]; active: number } }
   | { split: { axis: 'h' | 'v'; ratio: number; first: TreeNode; second: TreeNode } };
 
 /// Reverte `orderKey`: `"monitor:workspace"` → `[monitor, workspace]`.
