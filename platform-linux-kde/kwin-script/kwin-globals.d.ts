@@ -111,7 +111,12 @@ declare const enum ClientAreaOption {
 }
 
 interface KWinWorkspace {
-  readonly windows: KWinWindow[];
+  /**
+   * Lista todas as janelas gerenciadas. É MÉTODO (não propriedade): a propriedade `windows` só existe
+   * na API QML do KWin — em scripts JavaScript ela é `undefined` e iterá-la lança Type error; use
+   * sempre `windowList()`.
+   */
+  windowList(): KWinWindow[];
   readonly activeWindow: KWinWindow | null;
   readonly currentDesktop: KWinVirtualDesktop;
   /** Todos os desktops virtuais, na ordem; usado para indexar `win.desktops`. */

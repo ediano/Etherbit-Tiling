@@ -6,6 +6,7 @@ import {
   parseLayout,
   parseTabBars,
   parseFloating,
+  clampGeometry,
   parseLayoutTrees,
   parsePreview,
   resizeDeltaFrom,
@@ -325,5 +326,22 @@ describe('ordem estável das janelas', () => {
     const order = new Map<string, number[]>([['0:1', [30, 10, 20]]]);
     // ids presentes em ordem arbitrária + um id novo (99) ainda não registrado
     expect(sortByOrder(order, '0:1', [10, 99, 20, 30])).toEqual([30, 10, 20, 99]);
+  });
+});
+
+describe('clampGeometry', () => {
+  it('eleva width/height ≤ 0 para 1px e preserva id/x/y', () => {
+    expect(clampGeometry({ id: 7, x: 10, y: 20, width: 0, height: -5 })).toEqual({
+      id: 7,
+      x: 10,
+      y: 20,
+      width: 1,
+      height: 1,
+    });
+  });
+
+  it('não altera dimensões válidas', () => {
+    const ok = { id: 1, x: -3, y: 4, width: 800, height: 600 };
+    expect(clampGeometry(ok)).toEqual(ok);
   });
 });
