@@ -13,6 +13,9 @@ export const BUS_NAME = 'dev.ediano.etherbit.Tiling';
 export const OBJECT_PATH = '/dev/ediano/etherbit/Tiling';
 
 // Introspecção: fonte de verdade compartilhada com o `#[interface]` do daemon.
+// Os IDs de janela de MoveWindow/ResizeWindow trafegam como string decimal (`s`), não `t`/uint64:
+// o `callDBus` do KWin não empacota uint64 e ambos os frontends precisam falar o mesmo contrato.
+// O daemon faz `parse::<u64>()`. Ver ADR 0009.
 const IFACE_XML = `
 <node>
   <interface name="dev.ediano.etherbit.Tiling">
@@ -55,15 +58,15 @@ const IFACE_XML = `
     </method>
     <method name="MoveWindow">
       <arg type="s" direction="in" name="state_json"/>
-      <arg type="t" direction="in" name="dragged_id"/>
-      <arg type="t" direction="in" name="target_id"/>
+      <arg type="s" direction="in" name="dragged_id"/>
+      <arg type="s" direction="in" name="target_id"/>
       <arg type="s" direction="in" name="zone"/>
       <arg type="s" direction="out" name="trees_json"/>
     </method>
     <method name="ResizeWindow">
       <arg type="s" direction="in" name="monitors_json"/>
       <arg type="s" direction="in" name="state_json"/>
-      <arg type="t" direction="in" name="id"/>
+      <arg type="s" direction="in" name="id"/>
       <arg type="s" direction="in" name="edge"/>
       <arg type="i" direction="in" name="delta_px"/>
       <arg type="s" direction="out" name="trees_json"/>
@@ -100,8 +103,8 @@ export interface TilingProxy {
   /// `SyncWindows` seguinte.
   MoveWindowSync(
     stateJson: string,
-    draggedId: number,
-    targetId: number,
+    draggedId: string,
+    targetId: string,
     zone: string,
   ): [string];
   /// Resize elástico: arrasta a borda `edge` da janela `id` em `deltaPx` (positivo = cresceu).
@@ -109,7 +112,7 @@ export interface TilingProxy {
   ResizeWindowSync(
     monitorsJson: string,
     stateJson: string,
-    id: number,
+    id: string,
     edge: string,
     deltaPx: number,
   ): [string];

@@ -525,16 +525,33 @@ export default class EtherbitTilingExtension extends Extension {
           console.error(`Etherbit Tiling: falha ao aplicar geometria na janela ${command.id}: ${error}`);
         }
       }
-      // Oculta as abas inativas recém-empilhadas.
+      // Oculta as abas inativas recém-empilhadas. Referência STALE (destruída entre o snapshot e o
+      // apply) tem `stack_position == -1` e `minimize()` dispara o assertion do Mutter — valida o ator
+      // (`_isWindowLive`) e isola em try/catch, como no laço de floating abaixo.
       for (const id of shouldHide) {
         if (!this._stackHidden.has(id)) {
-          byId.get(id)?.minimize();
+          const w = byId.get(id);
+          if (w && this._isWindowLive(w)) {
+            try {
+              w.minimize();
+            } catch (error) {
+              console.error(`Etherbit Tiling: falha ao minimizar a janela ${id}: ${error}`);
+            }
+          }
         }
       }
-      // Baixa quem deixou de flutuar (voltou ao grid): remove o "always-on-top" que nós pusemos.
+      // Baixa quem deixou de flutuar (voltou ao grid): remove o "always-on-top" que nós pusemos. Mesma
+      // blindagem — `unmake_above()` numa janela stale dispararia `stack_position >= 0`.
       for (const id of this._floatingAbove) {
         if (!floatingIds.has(id)) {
-          byId.get(id)?.unmake_above();
+          const w = byId.get(id);
+          if (w && this._isWindowLive(w)) {
+            try {
+              w.unmake_above();
+            } catch (error) {
+              console.error(`Etherbit Tiling: falha ao baixar a janela ${id}: ${error}`);
+            }
+          }
         }
       }
       // Aplica a geometria das flutuantes (centralizadas pelo core) e as eleva acima das tiladas.
@@ -748,8 +765,8 @@ export default class EtherbitTilingExtension extends Extension {
           const res = this._call((p) =>
             p.MoveWindowSync(
               serializeState(this._stacks, this._disabledGroups, this._trees, this._draggedId),
-              this._draggedId,
-              targetId,
+              String(this._draggedId),
+              String(targetId),
               this._lastPreviewZone,
             ),
           );
@@ -791,7 +808,7 @@ export default class EtherbitTilingExtension extends Extension {
         p.ResizeWindowSync(
           monitorsJson,
           serializeState(this._stacks, this._disabledGroups, this._trees, focusedId),
-          start.id,
+          String(start.id),
           d.edge,
           d.deltaPx,
         ),
@@ -880,7 +897,9 @@ export default class EtherbitTilingExtension extends Extension {
         box.add_child(this._makeTabButton(byId.get(memberId), memberId, memberId === bar.active));
       }
       box.set_position(bar.x, bar.y);
-      box.set_size(bar.width, bar.height);
+      // Clamp ≥ 1px: uma barra degenerada (0×0) vinda do core alimentaria o framebuffer do Cogl com
+      // `set_size` e dispararia `cogl_framebuffer_set_viewport: assertion 'width > 0 && height > 0'`.
+      box.set_size(Math.max(1, bar.width), Math.max(1, bar.height));
       Main.layoutManager.uiGroup.add_child(box);
       this._tabBars.push(box);
     }

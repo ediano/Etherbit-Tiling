@@ -143,19 +143,39 @@ function windowId(win: KWinWindow): string {
   return String(win.internalId);
 }
 
+/// `true` se a referência ainda aponta para uma janela viva do KWin. O script não expõe flag de
+/// destruição: uma janela removida entre o `SyncWindows` e a resposta vira um wrapper órfão, e
+/// QUALQUER acesso a propriedade lança `TypeError` ("Could not convert argument 1 ... to const
+/// KWin::Window*"). Sondamos `frameGeometry` e tratamos o throw como "janela morta" — assim o
+/// relayout pula a referência inválida em vez de abortar inteiro.
+function isLiveWindow(win: KWinWindow): boolean {
+  try {
+    void win.frameGeometry;
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 /// `true` se a janela está maximizada (o quadro cobre toda a MaximizeArea do seu monitor). O KWin
 /// script não expõe o estado de maximização de forma estável, então comparamos a geometria com a área
 /// de maximização (API estável). Os gaps do tiling fazem uma janela TILADA medir menos que essa área,
 /// evitando falso-positivo no caso comum. Base do Unmaximize Recovery (a maximizada fica fora do grid).
 function isMaximized(win: KWinWindow): boolean {
-  const max = workspace.clientArea(KWin.MaximizeArea, win);
-  const g = win.frameGeometry;
-  return (
-    Math.abs(g.x - max.x) <= 1 &&
-    Math.abs(g.y - max.y) <= 1 &&
-    Math.abs(g.width - max.width) <= 1 &&
-    Math.abs(g.height - max.height) <= 1
-  );
+  // Guarda estrita: uma janela destruída faz `clientArea`/`frameGeometry` lançar TypeError no
+  // binding C++. Tratamos como "não maximizada" (a chamada já pula janelas mortas adiante).
+  try {
+    const max = workspace.clientArea(KWin.MaximizeArea, win);
+    const g = win.frameGeometry;
+    return (
+      Math.abs(g.x - max.x) <= 1 &&
+      Math.abs(g.y - max.y) <= 1 &&
+      Math.abs(g.width - max.width) <= 1 &&
+      Math.abs(g.height - max.height) <= 1
+    );
+  } catch (e) {
+    return false;
+  }
 }
 
 /// Saídas (monitores) presentes, na ordem de descoberta pelas janelas atuais.
@@ -343,13 +363,19 @@ function retile(): void {
       }
 
       applying = true;
+      // Alguma janela do snapshot morreu entre o envio do SyncWindows e esta resposta? Ao detectar,
+      // pulamos a referência inválida (sem abortar o apply) e re-tilamos uma vez no fim para o daemon
+      // recalcular a árvore BSP com o conjunto atual — preenchendo o quadrante da janela fechada.
+      let sawDead = false;
       try {
         // Restaura quem deixou de estar oculto (virou a aba ativa, ou o stack foi desfeito).
         for (const sid of stackHidden) {
           if (!shouldHide.has(sid)) {
             const w = stableToWin.get(sid);
-            if (w) {
+            if (w && isLiveWindow(w)) {
               w.minimized = false;
+            } else if (w) {
+              sawDead = true;
             }
           }
         }
@@ -359,7 +385,14 @@ function retile(): void {
         // Recovery).
         for (const command of commands) {
           const win = byId.get(command.id);
-          if (win && !isMaximized(win)) {
+          if (!win) {
+            continue;
+          }
+          if (!isLiveWindow(win)) {
+            sawDead = true;
+            continue;
+          }
+          if (!isMaximized(win)) {
             win.frameGeometry = {
               x: command.x,
               y: command.y,
@@ -372,31 +405,40 @@ function retile(): void {
         for (const sid of shouldHide) {
           if (!stackHidden.has(sid)) {
             const w = stableToWin.get(sid);
-            if (w) {
+            if (w && isLiveWindow(w)) {
               w.minimized = true;
+            } else if (w) {
+              sawDead = true;
             }
           }
         }
         // Aplica a geometria das flutuantes (centralizadas pelo core) e as eleva acima do grid.
         for (const command of floating) {
           const win = byId.get(command.id);
-          if (win) {
-            win.frameGeometry = {
-              x: command.x,
-              y: command.y,
-              width: command.width,
-              height: command.height,
-            };
-            win.keepAbove = true;
-            floatingHere.add(windowId(win));
+          if (!win) {
+            continue;
           }
+          if (!isLiveWindow(win)) {
+            sawDead = true;
+            continue;
+          }
+          win.frameGeometry = {
+            x: command.x,
+            y: command.y,
+            width: command.width,
+            height: command.height,
+          };
+          win.keepAbove = true;
+          floatingHere.add(windowId(win));
         }
         // Baixa quem deixou de flutuar (voltou ao grid): remove o keepAbove que nós pusemos.
         for (const sid of floatingAbove) {
           if (!floatingHere.has(sid)) {
             const w = stableToWin.get(sid);
-            if (w) {
+            if (w && isLiveWindow(w)) {
               w.keepAbove = false;
+            } else if (w) {
+              sawDead = true;
             }
           }
         }
@@ -414,6 +456,12 @@ function retile(): void {
 
       // Ids tiláveis (internalId) por grupo — base do toggle de abas (Meta+S).
       collectGroupTiled(commands, tabBars, byId, outputs);
+
+      // Janela morreu durante o apply: o snapshot ficou velho. Re-tila uma vez (o `applying` já é
+      // false) para encaixar o quadrante vazio. Converge: a próxima passada não verá janela morta.
+      if (sawDead) {
+        retile();
+      }
     },
   );
 }
@@ -598,8 +646,10 @@ function onMoveFinish(win: KWinWindow): void {
       IFACE,
       'MoveWindow',
       serializeState(stacks, disabled, lastTransportOf, trees, dragged),
-      draggedT,
-      targetT,
+      // IDs como string decimal: o `callDBus` do KWin não empacota uint64 (mandaria `i`/int32 e o
+      // daemon rejeitaria a assinatura). O daemon faz `parse::<u64>()`. Ver ADR 0009.
+      String(draggedT),
+      String(targetT),
       zone,
       (treesJson: string) => {
         trees = parseLayoutTrees(treesJson, lastTransportToStable);
@@ -648,7 +698,8 @@ function applyResize(win: KWinWindow): void {
       'ResizeWindow',
       monitorsJson,
       serializeState(stacks, disabled, lastTransportOf, trees, start.id),
-      idT,
+      // ID como string decimal (o `callDBus` não empacota uint64; daemon faz `parse::<u64>()`). ADR 0009.
+      String(idT),
       d.edge,
       d.deltaPx,
       (treesJson: string) => {
@@ -682,10 +733,17 @@ workspace.windowAdded.connect((win) => {
   retile();
 });
 workspace.windowRemoved.connect((win) => {
-  const id = windowId(win);
-  removeFromOrder(order, id);
-  removeIdFromStacks(stacks, id);
-  stackHidden.delete(id);
+  // A janela já pode estar parcialmente destruída: ler `internalId` pode lançar. Se conseguirmos,
+  // limpamos o estado leve por id; de qualquer forma re-tilamos para encaixar o quadrante vazio
+  // (ids órfãos em `order`/`stacks` são inertes — o próximo retile só considera janelas vivas).
+  try {
+    const id = windowId(win);
+    removeFromOrder(order, id);
+    removeIdFromStacks(stacks, id);
+    stackHidden.delete(id);
+  } catch (e) {
+    // referência morta — segue direto para o retile
+  }
   retile();
 });
 // Ativar uma janela do stack (taskbar/alt-tab) a torna a aba ativa (troca de aba dirigida por
