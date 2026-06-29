@@ -8,8 +8,12 @@ import { resolve } from 'node:path';
 // referenciados diretamente dentro do bundle.
 export default defineConfig({
   build: {
-    // QJSEngine (Qt 6) cobre ES2019 com folga; evita downleveling agressivo.
-    target: 'es2019',
+    // QJSEngine (Qt 6) NÃO suporta o `optional catch binding` (`catch {` sem a variável de erro),
+    // que é justamente uma feature ES2019 — na prática o `kwin_scripting` rejeita o bundle com
+    // `Syntax error` já na primeira ocorrência. Por isso o alvo é `es2018`: o esbuild reescreve
+    // `catch {` → `catch (e) {` (e demais sintaxes ≥ES2019), mantendo o bundle interpretável pelo
+    // motor clássico do KWin. Ver ADR rules/0013 (emenda 2026-06).
+    target: 'es2018',
     // Não manglar nomes — facilita depurar via journalctl e mantém o bundle legível.
     minify: false,
     sourcemap: false,
