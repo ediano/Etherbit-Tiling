@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use etherbit_tiling_core::{
     compute_constrained, detect_drop_target, is_tileable, move_window as core_move_window,
-    reconcile, resize_window as core_resize_window, Axis, DropPreview, DropZone, Edge,
-    LayoutOptions, LayoutTree, Node, PreviewRect, StackDescriptor, TabBarRect, WindowInfo,
-    WindowRect, WorkArea, MIN_RATIO,
+    reconcile, resize_window as core_resize_window, retain_tileable_when_maximized, Axis,
+    DropPreview, DropZone, Edge, LayoutOptions, LayoutTree, Node, PreviewRect, StackDescriptor,
+    TabBarRect, WindowInfo, WindowRect, WorkArea, MIN_RATIO,
 };
 
 /// Janela vinda da ponte. Espelha `windows_json` do contrato D-Bus.
@@ -41,6 +41,10 @@ pub struct WindowDto {
     /// Altura mínima (px) do app (geometry hint). Ausente/0 = sem restrição (retrocompat).
     #[serde(default)]
     pub min_height: i32,
+    /// Janela maximizada no momento (estado). Ausente = `false` (retrocompat). Dispara o tratamento
+    /// de unmaximize no core (`retain_tileable_when_maximized`).
+    #[serde(default)]
+    pub maximized: bool,
 }
 
 /// Área útil de um monitor. Espelha `monitors_json` do contrato D-Bus.
@@ -100,12 +104,14 @@ pub struct SyncStateDto {
     pub focused_id: u64,
 }
 
-/// Nó da árvore BSP no contrato D-Bus (untagged): folha `{ "win": id }` ou divisão
-/// `{ "split": { axis, ratio, first, second } }`. Espelha `etherbit_tiling_core::Node`.
+/// Nó da árvore BSP no contrato D-Bus (untagged): folha `{ "win": id }`, divisão
+/// `{ "split": { axis, ratio, first, second } }` ou stack (abas) `{ "stack": { members, active } }`.
+/// Espelha `etherbit_tiling_core::Node`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum NodeDto {
     Split { split: SplitDto },
+    Stack { stack: StackNodeDto },
     Win { win: u64 },
 }
 
@@ -116,6 +122,14 @@ pub struct SplitDto {
     pub ratio: f64,
     pub first: Box<NodeDto>,
     pub second: Box<NodeDto>,
+}
+
+/// Container empilhado (abas) na árvore: membros na ordem das abas + aba ativa. Espelha
+/// `etherbit_tiling_core::Node::Stack`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StackNodeDto {
+    pub members: Vec<u64>,
+    pub active: u64,
 }
 
 /// Árvore persistente de um grupo `(monitor, workspace)`. `root: None`/ausente = grupo vazio.
@@ -249,6 +263,7 @@ impl From<WindowDto> for WindowInfo {
             workspace: w.workspace,
             min_width: w.min_width,
             min_height: w.min_height,
+            maximized: w.maximized,
         }
     }
 }
@@ -289,6 +304,9 @@ impl From<&TabBarRect> for TabBarDto {
 fn node_to_core(dto: &NodeDto) -> Node {
     match dto {
         NodeDto::Win { win } => Node::Leaf(*win),
+        NodeDto::Stack { stack } => {
+            Node::Stack { members: stack.members.clone(), active: stack.active }
+        }
         NodeDto::Split { split } => Node::Split {
             axis: if split.axis == "v" { Axis::Vertical } else { Axis::Horizontal },
             ratio: split.ratio.clamp(MIN_RATIO, 1.0 - MIN_RATIO),
@@ -302,6 +320,9 @@ fn node_to_core(dto: &NodeDto) -> Node {
 fn node_to_dto(node: &Node) -> NodeDto {
     match node {
         Node::Leaf(id) => NodeDto::Win { win: *id },
+        Node::Stack { members, active } => {
+            NodeDto::Stack { stack: StackNodeDto { members: members.clone(), active: *active } }
+        }
         Node::Split { axis, ratio, first, second } => NodeDto::Split {
             split: SplitDto {
                 axis: if *axis == Axis::Vertical { "v".to_string() } else { "h".to_string() },
@@ -399,6 +420,15 @@ pub fn sync_windows(
             .find(|(m, w, _)| *m == monitor && *w == workspace)
             .map(|(_, _, t)| t.clone())
             .unwrap_or_default();
+        // Unmaximize: janelas que abriram MAXIMIZADAS e ainda não têm folha ficam fora do grid (o
+        // compositor as mantém maximizadas) e só entram ao desmaximizar, pela maior folha. As que JÁ
+        // eram folha permanecem (slot preservado → voltam à posição original).
+        let maximized_ids: Vec<u64> = tileable
+            .iter()
+            .filter(|w| w.monitor == monitor && w.workspace == workspace && w.maximized)
+            .map(|w| w.id)
+            .collect();
+        let group_ids = retain_tileable_when_maximized(&prev, &group_ids, &maximized_ids);
         let focused_opt =
             if focused != 0 && group_ids.contains(&focused) { Some(focused) } else { None };
 
