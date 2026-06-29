@@ -39,6 +39,10 @@ echo ">> Removendo daemon e unit"
 rm -f "$BIN_DIR/etherbit-tiling-daemon"
 rm -f "$SYSTEMD_DIR/$SERVICE"
 
+# Marcador de versão (estado da instalação; agnóstico de DE — daemon compartilhado).
+rm -f "${XDG_STATE_HOME:-$HOME/.local/state}/etherbit-tiling/version"
+rmdir "${XDG_STATE_HOME:-$HOME/.local/state}/etherbit-tiling" 2>/dev/null || true
+
 if command -v systemctl >/dev/null; then
   systemctl --user daemon-reload 2>/dev/null || true
 fi
