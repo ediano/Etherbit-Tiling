@@ -885,4 +885,65 @@ mod tests {
         let dto: LayoutResultDto = serde_json::from_str(legacy).expect("parse");
         assert!(dto.floating.is_empty());
     }
+
+    // --- Diagnóstico de "N janelas → 0 rects": classifica cada caminho que esvazia o grid, separando
+    // o COMPORTAMENTO ESPERADO (auto-floating / filtro / monitor desconhecido / grupo desligado) de uma
+    // REGRESSÃO genuína (árvore reconciliada vazia apesar de haver janelas tileáveis). ---
+
+    #[test]
+    fn sync_all_oversized_min_floats_all_zero_rects() {
+        // TODAS as janelas com min maior que a área: o core isola todas via auto-floating.
+        // Esperado: 0 rects, mas `floating == N` (NÃO é o bug — as janelas continuam visíveis flutuando).
+        let windows =
+            format!("[{},{}]", win_json_min(1, "a", 2000, 0), win_json_min(2, "b", 2000, 0));
+        let out = sync_windows(&windows, AREAS, "", &[], OPTS).expect("ok");
+        let res = layout_of(&out);
+        assert!(res.rects.is_empty(), "min gigante remove do grid tilado");
+        assert_eq!(res.floating.len(), 2, "auto-floating preserva as 2 janelas");
+    }
+
+    #[test]
+    fn sync_all_non_tileable_is_zero_rects_zero_floating() {
+        // TODAS as janelas filtradas (não-normais): grid vazio É esperado e NÃO há flutuantes.
+        // Documenta o "0/0 legítimo" pelo filtro `is_tileable` — descarta-o como suspeito ao diagnosticar.
+        let d1 = r#"{"id":1,"app_id":"x","x":0,"y":0,"width":10,"height":10,"normal":false,"resizable":true,"maximizable":true,"monitor":0,"workspace":0}"#;
+        let d2 = r#"{"id":2,"app_id":"y","x":0,"y":0,"width":10,"height":10,"normal":false,"resizable":true,"maximizable":true,"monitor":0,"workspace":0}"#;
+        let out = sync_windows(&format!("[{d1},{d2}]"), AREAS, "", &[], OPTS).expect("ok");
+        let res = layout_of(&out);
+        assert!(res.rects.is_empty());
+        assert!(res.floating.is_empty());
+    }
+
+    #[test]
+    fn sync_unknown_positive_monitor_is_zero_rects_zero_floating() {
+        // Janela tileável num monitor (índice 5) que NÃO consta em `areas` (só index 0): o ramo `None`
+        // não posiciona nada. "0/0 legítimo" — a árvore é preservada e a culpa é da PONTE, que reportou
+        // um `monitor` sem `areas[].index` correspondente (suspeito real fora do core).
+        let off = r#"{"id":1,"app_id":"a","x":0,"y":0,"width":100,"height":100,"normal":true,"resizable":true,"maximizable":true,"monitor":5,"workspace":0}"#;
+        let out = sync_windows(&format!("[{off}]"), AREAS, "", &[], OPTS).expect("ok");
+        let res = layout_of(&out);
+        assert!(res.rects.is_empty(), "monitor desconhecido → sem geometria");
+        assert!(res.floating.is_empty());
+        // A topologia é preservada para quando o monitor (re)aparecer.
+        assert_eq!(res.trees.len(), 1);
+    }
+
+    #[test]
+    fn sync_reconcile_divergent_tree_keeps_all_rects() {
+        // REGRESSÃO-ALVO: árvore persistida só com ids ausentes (97,98) ao reconciliar janelas vivas
+        // (1,2). O reconcile deve REMOVER os mortos e INSERIR os novos → 2 rects (NÃO 0/0). Se sair
+        // vazio, é o bug genuíno de "0 rects" com janelas tileáveis.
+        let stale = format!("[{},{}]", win_json(97, "old"), win_json(98, "old"));
+        let first = sync_windows(&stale, AREAS, "", &[], OPTS).expect("ok");
+        let stale_trees = serde_json::to_string(&layout_of(&first).trees).expect("trees");
+        let state = format!(r#"{{"trees":{stale_trees}}}"#);
+
+        let live = format!("[{},{}]", win_json(1, "a"), win_json(2, "b"));
+        let out = sync_windows(&live, AREAS, &state, &[], OPTS).expect("ok");
+        let res = layout_of(&out);
+        assert_eq!(res.rects.len(), 2, "reconcile insere os novos apesar da árvore divergente");
+        assert!(res.floating.is_empty());
+        assert!(res.rects.iter().any(|r| r.id == 1));
+        assert!(res.rects.iter().any(|r| r.id == 2));
+    }
 }

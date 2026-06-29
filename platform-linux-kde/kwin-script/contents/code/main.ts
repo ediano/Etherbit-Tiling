@@ -182,6 +182,11 @@ function isMaximized(win: KWinWindow): boolean {
 function collectOutputs(): KWinOutput[] {
   const outputs: KWinOutput[] = [];
   for (const win of workspace.windowList()) {
+    // Um wrapper órfão em `windowList()` faz `win.output` lançar TypeError e abortaria todo o
+    // `retile()` (este é o PRIMEIRO acesso a janela no ciclo). Pula a referência morta.
+    if (!isLiveWindow(win)) {
+      continue;
+    }
     if (outputs.indexOf(win.output) === -1) {
       outputs.push(win.output);
     }
@@ -260,6 +265,12 @@ function retile(): void {
   }
   const groups = new Map<string, Entry[]>();
   for (const win of workspace.windowList()) {
+    // Janela morta entre dois `retile()` ainda aparece aqui; tocar `internalId`/`output`/`desktops`
+    // lançaria TypeError e abortaria o relayout inteiro (a fila do D-Bus nunca seria drenada). Pula
+    // a referência inválida — espelha a blindagem já aplicada no caminho de apply pós-resposta.
+    if (!isLiveWindow(win)) {
+      continue;
+    }
     const entry: Entry = {
       win,
       stableId: windowId(win),
@@ -324,7 +335,7 @@ function retile(): void {
   lastTransportOf = transportOf;
   lastTransportToStable = transportToStable;
   const aw = workspace.activeWindow;
-  const focusedStable = aw ? windowId(aw) : '';
+  const focusedStable = aw && isLiveWindow(aw) ? windowId(aw) : '';
 
   syncSeq += 1;
   const mySeq = syncSeq;

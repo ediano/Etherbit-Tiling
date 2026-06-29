@@ -2310,6 +2310,20 @@ mod tests {
     }
 
     #[test]
+    fn auto_floata_todas_quando_nenhuma_cabe_e_nunca_some() {
+        // Caso do log "N janelas → 0 rects": se NENHUMA janela cabe (todas com min gigante), o grid
+        // tilado fica vazio — mas o motor NUNCA some com as janelas: todas viram floating (visíveis,
+        // acima do grid). 0 rects + 0 floating com janelas tileáveis seria a regressão; aqui provamos
+        // que não acontece.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let windows = vec![win_min(1, 2000, 0), win_min(2, 2000, 0)];
+        let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows);
+        assert!(res.rects.is_empty(), "ninguém cabe → grid tilado vazio");
+        assert_eq!(res.floating.len(), 2, "as 2 continuam visíveis via auto-floating");
+    }
+
+    #[test]
     fn stack_min_agrega_max_dos_membros_mais_tab_bar() {
         // A folha-âncora de um stack carrega o MAX dos mínimos dos membros (+ tab_bar na altura);
         // membros não-âncora saem do mapa (não viram folha própria).
