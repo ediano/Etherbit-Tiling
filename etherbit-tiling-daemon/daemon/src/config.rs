@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// Chave geral do tiling. Quando `false`, as pontes (GNOME/KDE) param de enviar snapshots ao core
+    /// e liberam as janelas para o comportamento flutuante do SO; o daemon segue vivo. `true` re-tila.
+    pub enabled: bool,
     /// Espaçamento único (px): o mesmo valor controla o espaço entre janelas vizinhas E entre as
     /// janelas e as bordas da tela, em ambos os eixos. Aceita o nome legado `inner_gap` ao carregar
     /// configs antigas (o antigo `outer_gap` é ignorado).
@@ -41,6 +44,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            enabled: true,
             gap: 8,
             active_border: true,
             border_color: "#5e81ac".to_string(),
@@ -98,6 +102,7 @@ mod tests {
     #[test]
     fn default_has_expected_values() {
         let cfg = Config::default();
+        assert!(cfg.enabled);
         assert_eq!(cfg.gap, 8);
         assert!(cfg.active_border);
         assert_eq!(cfg.border_color, "#5e81ac");
@@ -114,6 +119,7 @@ mod tests {
         let json = Config::default().to_json();
         let value: serde_json::Value = serde_json::from_str(&json).expect("JSON válido");
         for field in [
+            "enabled",
             "gap",
             "active_border",
             "border_color",
@@ -131,6 +137,7 @@ mod tests {
     #[test]
     fn toml_round_trip_preserves_config() {
         let cfg = Config {
+            enabled: false,
             gap: 4,
             active_border: false,
             border_color: "#bf616a".to_string(),
@@ -143,6 +150,7 @@ mod tests {
         };
         let raw = toml::to_string_pretty(&cfg).expect("serializa TOML");
         let back: Config = toml::from_str(&raw).expect("desserializa TOML");
+        assert_eq!(back.enabled, cfg.enabled);
         assert_eq!(back.gap, cfg.gap);
         assert_eq!(back.rounded_corners, cfg.rounded_corners);
         assert_eq!(back.corner_radius, cfg.corner_radius);
