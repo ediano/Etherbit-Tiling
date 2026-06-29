@@ -14,8 +14,14 @@ document.querySelectorAll('.code[data-copy]').forEach((box) => {
   const cmdEl = box.querySelector('code');
   if (!btn || !cmdEl) return;
 
+  // Blocos de comando único devem virar uma linha só ao copiar, mesmo que o
+  // HTML quebre o comando em várias linhas por legibilidade. Já os blocos
+  // `.code--block` (vários comandos) precisam preservar as quebras de linha.
+  const isBlock = box.classList.contains('code--block');
+
   btn.addEventListener('click', async () => {
-    const text = cmdEl.textContent?.trim() ?? '';
+    const raw = cmdEl.textContent ?? '';
+    const text = isBlock ? raw.trim() : raw.replace(/\s+/g, ' ').trim();
     try {
       await navigator.clipboard.writeText(text);
     } catch {

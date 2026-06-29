@@ -40,3 +40,19 @@ Decisões a fixar: **o que** a camada KDE entrega, **como** é compilada e **com
   mesmo estágio do GNOME (TODO marcado em `main.ts`).
 - Requer Plasma 6 (`kpackagetool6`/`kwriteconfig6`/`qdbus6`). Não há fallback X11.
 - A baseline de JS do QJSEngine (es2019) é mais conservadora que a do GJS (ES2022); manter o alvo do Vite.
+
+## Emenda (2026-06): linha de corte explícita, daemon em dev e observabilidade da ponte
+
+- **Linha de corte EXCLUSIVA:** **KDE Plasma ≥ 6**, **KDE Frameworks ≥ 6**, **Qt ≥ 6**, sem
+  retrocompatibilidade. Os instaladores passam a aceitar **apenas** `qdbus6`/`qdbus-qt6` para o
+  `KWin reconfigure` — o `qdbus` puro foi removido da cadeia de fallback porque, num sistema misto,
+  pode ser o do **Qt 5** e falar com o KWin errado. Sem nenhum dos dois, o install avisa/erra.
+- **O daemon é cliente-obrigatório, e em DEV vem à parte:** como a camada KDE entrega só o KWin
+  Script, o `scripts/install.sh` agora faz um *health-check* (`busctl --user status …`) e orienta
+  rodar o daemon (`cargo run --manifest-path platform-linux-daemon/Cargo.toml`) ou o pacote completo.
+  O `install-kde.sh` valida o daemon com `Ping` após subir o systemd e corrige o `ExecStart` para o
+  `$BIN_DIR` real (não o hardcode `%h/.local/bin`).
+- **Observabilidade contra a falha silenciosa:** o `callDBus` engole `ServiceUnknown` sem erro. A
+  ponte passa a fazer um **handshake `Ping`** na carga e logar com prefixo `[etherbit]`; a regra de
+  diagnóstico é "`ponte carregando` sem `Ping OK` ⇒ daemon inacessível". A chave `debug` (kwinrc)
+  liga o detalhamento por evento. Ver [0020](0020-resiliencia-ipc-dbus.md) e `docs/DIAGNOSTICO-IPC.md`.

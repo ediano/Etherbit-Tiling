@@ -23,6 +23,14 @@ if [ ! -f "$HERE/metadata.json" ]; then
   exit 1
 fi
 
+# Anti-obsolescência: se algum fonte for mais novo que o bundle, o dist está VELHO — rebuild antes.
+# Instalar um dist obsoleto é uma armadilha clássica (a extensão "carrega", mas roda código antigo).
+if [ -n "$(find "$HERE/src" -name '*.ts' -newer "$HERE/dist/extension.js" -print -quit 2>/dev/null)" ]; then
+  echo "erro: dist/extension.js está mais velho que o código em src/ — rode 'pnpm build' antes" >&2
+  echo "       (ou use 'pnpm run install:ext', que reconstrói automaticamente)." >&2
+  exit 1
+fi
+
 mkdir -p "$DEST"
 install -m 644 "$HERE/dist/extension.js" "$DEST/extension.js"
 install -m 644 "$HERE/metadata.json" "$DEST/metadata.json"

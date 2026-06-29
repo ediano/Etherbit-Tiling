@@ -470,6 +470,10 @@ export default class EtherbitTilingExtension extends Extension {
     const floating = parseFloating(layoutJson);
     const floatingIds = new Set<number>(floating.map((c) => c.id));
 
+    // Observabilidade (regressão do tiling): mostra o round-trip ponte→daemon→ponte no journal do
+    // gnome-shell. `N janelas` SEM `M rects` correspondente ⇒ daemon não respondeu / erro no sync.
+    console.log(`[etherbit] relayout: ${snapshots.length} janelas → ${commands.length} rects, ${floating.length} flutuantes`);
+
     // Abas inativas a ocultar (minimizar): todo membro de stack que não é o ativo.
     const shouldHide = new Set<number>();
     for (const bar of tabBars) {
@@ -500,16 +504,22 @@ export default class EtherbitTilingExtension extends Extension {
         if (this._isMaximized(window)) {
           continue;
         }
-        // user_op=false: reposicionamento programático, instantâneo e puramente geométrico.
-        window.move_resize_frame(false, command.x, command.y, command.width, command.height);
-        // Cantos arredondados (efeito no ator) conforme a config — best-effort, nunca quebra.
-        const actor = window.get_compositor_private() as Clutter.Actor | null;
-        if (actor) {
-          if (this._config.rounded_corners) {
-            applyRoundedCorners(actor, this._config.corner_radius);
-          } else {
-            clearRoundedCorners(actor);
+        // Isolado POR JANELA: um erro de runtime numa janela (ex.: API do Shell que mudou) não pode
+        // abortar o relayout inteiro e paralisar o grid — loga e segue para as demais.
+        try {
+          // user_op=false: reposicionamento programático, instantâneo e puramente geométrico.
+          window.move_resize_frame(false, command.x, command.y, command.width, command.height);
+          // Cantos arredondados (efeito no ator) conforme a config — best-effort, nunca quebra.
+          const actor = window.get_compositor_private() as Clutter.Actor | null;
+          if (actor) {
+            if (this._config.rounded_corners) {
+              applyRoundedCorners(actor, this._config.corner_radius);
+            } else {
+              clearRoundedCorners(actor);
+            }
           }
+        } catch (error) {
+          console.error(`Etherbit Tiling: falha ao aplicar geometria na janela ${command.id}: ${error}`);
         }
       }
       // Oculta as abas inativas recém-empilhadas.
@@ -530,9 +540,13 @@ export default class EtherbitTilingExtension extends Extension {
         if (!window) {
           continue;
         }
-        window.move_resize_frame(false, command.x, command.y, command.width, command.height);
-        window.make_above();
-        window.raise();
+        try {
+          window.move_resize_frame(false, command.x, command.y, command.width, command.height);
+          window.make_above();
+          window.raise();
+        } catch (error) {
+          console.error(`Etherbit Tiling: falha ao flutuar a janela ${command.id}: ${error}`);
+        }
       }
     } finally {
       this._applying = false;
@@ -1014,8 +1028,10 @@ export default class EtherbitTilingExtension extends Extension {
       normal: window.get_window_type() === Meta.WindowType.NORMAL,
       resizable: window.resizeable,
       maximizable: window.can_maximize(),
-      monitor: window.get_monitor(),
-      workspace: workspace ? workspace.index() : 0,
+      // `get_monitor()` devolve -1 para janela sem monitor; clampa a 0 para o JSON nunca carregar um
+      // índice negativo (que invalidaria a desserialização no daemon → SyncWindows falho).
+      monitor: Math.max(0, window.get_monitor()),
+      workspace: Math.max(0, workspace ? workspace.index() : 0),
       min_width: minWidth,
       min_height: minHeight,
       maximized: this._isMaximized(window),

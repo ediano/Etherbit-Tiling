@@ -62,3 +62,26 @@ seguro, reafirma 0016/0019):
 - **Daemon sem estado preservado:** como o estado leve (árvore/stacks/ordem) vive na ponte, reiniciar
   o daemon por ativação não perde nada — premissa que torna a estratégia "sair e reativar" segura.
 - **Contrato:** `Ping` espelhado no XML/proxy da extensão ([dbus.ts](../platform-linux-gnome/extension/src/dbus.ts)).
+
+## Emenda (2026-06): observabilidade + guard de pânico (falha silenciosa "nunca inicia")
+
+A resiliência acima cobre o canal que **cai após estar de pé**. Um modo de falha distinto — "o tiling
+**nunca** começou / parou de reagir a TUDO" — exigia tornar a falha **observável** e o core
+**à prova de pânico**:
+
+- **Guard de pânico no daemon** ([service.rs](../platform-linux-daemon/daemon/src/service.rs)): cada
+  handler D-Bus (`sync_windows`/`resolve_drop_zone`/`move_window`/`resize_window`) embrulha a chamada
+  ao core em `catch_unwind`. Sem isso, um pânico (índice/`unwrap` em entrada degenerada) abortava a
+  task em **silêncio** → cliente recebe `NoReply` → ponte inerte. Agora vira erro D-Bus recuperável +
+  log; a próxima chamada volta a funcionar.
+- **Tolerância a entrada degenerada** ([protocol.rs](../platform-linux-daemon/daemon/src/protocol.rs)):
+  `monitor`/`workspace` desserializam saturando negativos a 0 (`de_index`), para um `monitor: -1`
+  (`Meta.Window.get_monitor()` sem monitor) **não** invalidar o array inteiro e derrubar o sync. O
+  core clampa geometria degenerada (`inner_rect`/`split_axis` a `>= 0`) para gaps/mínimos extremos
+  nunca esvaziarem o grid (reforça 0019).
+- **Logs com prefixo estável:** daemon honra `RUST_LOG=debug` (`[etherbit-daemon] …`, nº de janelas/
+  rects por `SyncWindows`); a extensão GNOME loga o round-trip do relayout e **isola a aplicação por
+  janela** (um erro de runtime numa janela não paralisa o grid); o KWin Script faz o handshake `Ping`
+  e loga `[etherbit]`. Regra: `ponte carregando` sem `Ping OK` ⇒ daemon inacessível.
+- **Observabilidade no KDE não contradiz** o item acima sobre a reconexão fina não se aplicar ao
+  sandbox: o handshake e os logs são apenas *diagnóstico* (não assinam sinais).
