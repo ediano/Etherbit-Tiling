@@ -9,7 +9,13 @@ edition = "2021"
 # Sob KWin (que suporta wlr-layer-shell) o daemon cria SUAS PRÓPRIAS superfícies de overlay e desenha
 # a barra de abas com wgpu — sem violar o ADR 0016 (não há overlay sobre janelas alheias; é surface
 # própria). No GNOME (Mutter sem layer-shell) a barra segue na extensão.
-wgpu-ui = ["dep:wgpu", "dep:smithay-client-toolkit", "dep:raw-window-handle", "dep:bytemuck"]
+wgpu-ui = [
+    "dep:wgpu",
+    "dep:smithay-client-toolkit",
+    "dep:raw-window-handle",
+    "dep:bytemuck",
+    "dep:wayland-client",
+]
 
 [dependencies]
 etherbit-tiling-core = { path = "../../core" }
@@ -30,3 +36,9 @@ smithay-client-toolkit = { version = "0.19", optional = true, default-features =
 ] }
 raw-window-handle = { version = "0.6", optional = true }
 bytemuck = { version = "1", features = ["derive"], optional = true }
+# Habilita o backend de SISTEMA (FFI libwayland) do wayland-backend — feature unificada com o SCTK.
+# `system`: dá `ObjectId::as_ptr`/`Backend::display_ptr` (ponteiros crus que o wgpu precisa para a
+# `wgpu::Surface`). `dlopen`: carrega a libwayland em RUNTIME (via libloading) em vez de linkar em
+# build — assim o CI/devcontainer compila SEM a `libwayland-client` de sistema, e no KDE (que sempre a
+# tem) o overlay funciona. Não é usado diretamente no código; entra só pela unificação de features.
+wayland-client = { version = "0.31", optional = true, features = ["system", "dlopen"] }

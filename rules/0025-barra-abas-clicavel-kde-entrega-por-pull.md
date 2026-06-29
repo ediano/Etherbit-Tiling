@@ -45,11 +45,18 @@ binário novo **duplicaria** a fundação do 0022 e contrariaria o 0016. A decis
   ([0018](0018-abas-atalhos-globais-drag-to-group.md)) para a **barra clicável real** (esquerdo na
   guia = ativar, "x" = fechar, direito = desagrupar). O 0018 **não** é revogado — aquela apresentação
   foi a paridade interina; este ADR a estende.
-- **`wgpu-ui` permanece OFF por padrão.** O `cargo test` (gate do [0012](0012-testes-isolados-por-plataforma.md))
-  roda sem a feature e sem GPU; a parte pura (`tabbar.rs`, conversões, serde de `pending_actions`) é
-  coberta por testes. Ligar a UI no release KDE e o **bind de hardware** (`layer.rs::run_event_loop`:
-  `LayerSurface` + `wl_pointer`, alimentado pelas barras via canal `tokio::watch`) são o passo de
-  integração que só roda numa sessão KWin — fora do CI, validado em hardware.
+- **`wgpu-ui` permanece OFF por padrão; o release KDE a LIGA.** O `cargo test` (gate do
+  [0012](0012-testes-isolados-por-plataforma.md)) roda sem a feature e sem GPU; a parte pura
+  (`tabbar.rs`, conversões, serde de `pending_actions`) é coberta por testes. O **bind de hardware**
+  está implementado em `layer.rs::run_event_loop` (uma `LayerSurface` `Overlay` por barra, ancorada no
+  topo do quadrante; `wl_pointer` resolvido por `tabbar::hit_test`; barras alimentadas por um canal
+  `tokio::watch` que só re-materializa superfícies quando o estado muda) sobre `smithay-client-toolkit`
+  + `calloop`. Fora de uma sessão com `wlr-layer-shell` (Mutter/headless/CI) o `LayerShell::bind` falha
+  e o loop **encerra gracioso**, então o binário é válido em qualquer ambiente. A `libwayland` é
+  carregada em **runtime via `dlopen`** (feature `wayland-client/dlopen`), mantendo o CI/devcontainer
+  **sem** dependência de build da `libwayland-client`. O `build-kde-release.sh` compila o daemon com
+  `--features wgpu-ui` (o release GNOME não, pois o Mutter não tem layer-shell). Validação interativa
+  real (clicar aba/X/desagrupar) é em hardware numa sessão KWin.
 
 ## Consequências
 
