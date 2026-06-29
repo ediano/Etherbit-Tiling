@@ -439,7 +439,13 @@ function retile(): void {
             width: command.width,
             height: command.height,
           };
-          win.keepAbove = true;
+          // Só escreve quando MUDA: reescrever `keepAbove = true` a cada relayout reemite
+          // `keepAboveChanged` e RE-EMPILHA a janela, podendo roubar o raise/foco de quem o usuário
+          // está usando (a "perda de foco errática"). Com a cascata da Frente C o floating já é raro;
+          // este guarda elimina o churn residual de quem permanece flutuante entre ciclos.
+          if (!win.keepAbove) {
+            win.keepAbove = true;
+          }
           floatingHere.add(windowId(win));
         }
         // Baixa quem deixou de flutuar (voltou ao grid): remove o keepAbove que nós pusemos.

@@ -44,10 +44,6 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
   private _autostartSwitch!: PopupMenu.PopupSwitchMenuItem;
   // Evita reentrância: ao refletir a config do daemon não queremos re-disparar handlers.
   private _syncing = false;
-  // Desconexões a rodar no destroy: os handlers do `clutter_text` das entries devem ser soltos ANTES
-  // do widget ser descartado, senão um `key-focus-out` pendente dispara sobre uma St.Entry já morta
-  // ("Object St.Entry ... has been already disposed").
-  private _cleanups: Array<() => void> = [];
 
   // PanelMenu.Button sempre cria um PopupMenu real quando não passamos dontCreateMenu.
   private get _menu(): PopupMenu.PopupMenu {
@@ -57,19 +53,6 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
   constructor(handlers: IndicatorHandlers) {
     super(0.0, 'Etherbit Tiling');
     this._handlers = handlers;
-
-    // Ao destruir o indicador (disable da extensão), solta os handlers das entries antes do teardown
-    // dos filhos — evita callbacks rodando sobre widgets já descartados.
-    this.connect('destroy', () => {
-      for (const cleanup of this._cleanups) {
-        try {
-          cleanup();
-        } catch (error) {
-          // widget já parcialmente descartado — ignora
-        }
-      }
-      this._cleanups = [];
-    });
 
     this.add_child(
       new St.Icon({
@@ -195,12 +178,18 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
       const parsed = Number.parseInt(text, 10);
       apply(Number.isFinite(parsed) ? parsed : value);
     };
-    const activateId = entry.clutter_text.connect('activate', () => commit());
-    const focusOutId = entry.clutter_text.connect('key-focus-out', () => commit());
-    // Solta esses handlers no destroy, antes do widget morrer (ver `_cleanups` no construtor).
-    this._cleanups.push(() => {
-      entry.clutter_text.disconnect(activateId);
-      entry.clutter_text.disconnect(focusOutId);
+    // Captura o `clutter_text` UMA vez e solta os handlers no `destroy` da PRÓPRIA entry. O Clutter
+    // emite 'destroy' no início da destruição, com o `clutter_text` ainda vivo — então a desconexão
+    // é segura e impede o `commit()` de disparar sobre uma entry já descartada. O código anterior
+    // soltava no destroy do INDICADOR, mas o PopupMenu (dono das entries) é destruído por outro
+    // caminho no shutdown do Shell, deixando o `clutter_text` morto e poluindo o journal com
+    // "Object St.Entry ... has been already disposed".
+    const clutterText = entry.clutter_text;
+    const activateId = clutterText.connect('activate', () => commit());
+    const focusOutId = clutterText.connect('key-focus-out', () => commit());
+    entry.connect('destroy', () => {
+      clutterText.disconnect(activateId);
+      clutterText.disconnect(focusOutId);
     });
 
     item.add_child(minus);

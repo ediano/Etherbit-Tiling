@@ -38,6 +38,24 @@ problemática sem desorganizar as demais.
   **lembra a posição** e re-tila quando houver espaço. Novo campo `floating` em `LayoutResult`/
   `LayoutResultDto` (retrocompatível).
 
+## Refinamento — a janela nova/focada dita o espaço (cascata, não flutua)
+
+Ajuste de política sobre a rede de segurança acima, mantendo todo o mecanismo. **Regra de ouro:** a
+janela **nova/em foco** sempre encaixa no grid com o seu mínimo; quem comprime são os vizinhos
+(cascata elástica). Ela **nunca** é jogada para flutuante.
+
+- `compute_constrained`/`enforce_min_sizes` passam a receber o `focused` (já existia no daemon, ia só
+  ao `reconcile`). A folha que representa a focada (ela mesma, ou a **âncora** do stack que a contém —
+  `focused_leaf_id`) é **PROTEGIDA**: nunca é escolhida como vítima do auto-float. Só os **não-focados**
+  flutuam, e apenas no caso degenerado em que, mesmo após espremer todos, o mínimo total ainda estoura
+  a tela.
+- No split forçado (`split_rect_clamped`), quando nem os dois mínimos cabem, o lado que contém a focada
+  (`FocusBias`) recebe o seu mínimo e o vizinho absorve o resto — em vez do proporcional puro. Os
+  retângulos seguem **ladrilhando** o espaço (nunca há sobreposição geométrica).
+- Limite físico (documentado): se o mínimo da PRÓPRIA focada já excede a tela, ela permanece tilada na
+  maior geometria possível (melhor esforço) — não há como caber o mínimo, e flutuá-la seria contra a
+  regra. Sobreposição visual só pode então vir do **clamp silencioso do compositor**, não da geometria.
+
 - **Stacks (v1):** a folha-âncora de um stack agrega o **`max`** dos mínimos dos membros presentes
   (+ `tab_bar_height` na altura). Stacks **não** são auto-flutuados na v1 (limitação documentada).
 

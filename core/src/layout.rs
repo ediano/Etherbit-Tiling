@@ -696,10 +696,19 @@ fn min_extent(node: &Node, axis: Axis, gap: f64, min: &MinSizes) -> f64 {
     }
 }
 
+/// Em qual subárvore de um split vive a janela FOCADA/nova. No caso degenerado em que os dois mínimos
+/// não cabem, o lado focado recebe o seu mínimo e o vizinho absorve o resto (ver `split_rect_clamped`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FocusBias {
+    Neither,
+    First,
+    Second,
+}
+
 /// Como `split_rect`, mas CLAMPA a posição do corte para que cada lado receba ao menos seu mínimo
 /// (`min_first`/`min_second`, já no eixo do corte). É o "modo proporcional forçado": a janela restrita
 /// recebe seu mínimo e o vizinho maleável encolhe. Se nem os dois mínimos cabem (`min_first +
-/// min_second > avail`), cai no proporcional puro — mas esse caso já foi removido por `enforce_min_sizes`.
+/// min_second > avail`), prioriza o lado da janela focada (`bias`); sem foco, cai no proporcional puro.
 fn split_rect_clamped(
     rect: Rectf,
     gap: f64,
@@ -707,13 +716,32 @@ fn split_rect_clamped(
     ratio: f64,
     min_first: f64,
     min_second: f64,
+    bias: FocusBias,
 ) -> (Rectf, Rectf) {
+    // Tamanho da PRIMEIRA subárvore no eixo do corte, sobre o espaço útil `avail`.
+    let primary = |avail: f64| -> f64 {
+        let lo = min_first.clamp(0.0, avail);
+        let hi = (avail - min_second).max(0.0);
+        if lo <= hi {
+            // Caminho normal: respeita ambos os mínimos em torno do ratio persistido.
+            (avail * ratio).clamp(lo, hi)
+        } else {
+            // Degenerado: os dois mínimos não cabem (caso da janela focada PROTEGIDA do auto-float,
+            // que `enforce_min_sizes` não removeu). Em vez do proporcional puro — que daria à focada
+            // menos que o seu mínimo —, a subárvore que CONTÉM a focada recebe o seu mínimo e o
+            // vizinho absorve o resto. Geometricamente os dois retângulos seguem ladrilhando `avail`
+            // (nunca há sobreposição); o vizinho é que fica abaixo do próprio mínimo.
+            match bias {
+                FocusBias::First => min_first.min(avail),
+                FocusBias::Second => (avail - min_second).max(0.0),
+                FocusBias::Neither => avail * ratio,
+            }
+        }
+    };
     match axis {
         Axis::Horizontal => {
             let avail = (rect.w - gap).max(0.0);
-            let lo = min_first.clamp(0.0, avail);
-            let hi = (avail - min_second).max(0.0);
-            let w1 = if lo <= hi { (avail * ratio).clamp(lo, hi) } else { avail * ratio };
+            let w1 = primary(avail);
             (
                 Rectf { x: rect.x, y: rect.y, w: w1, h: rect.h },
                 Rectf { x: rect.x + w1 + gap, y: rect.y, w: avail - w1, h: rect.h },
@@ -721,9 +749,7 @@ fn split_rect_clamped(
         }
         Axis::Vertical => {
             let avail = (rect.h - gap).max(0.0);
-            let lo = min_first.clamp(0.0, avail);
-            let hi = (avail - min_second).max(0.0);
-            let h1 = if lo <= hi { (avail * ratio).clamp(lo, hi) } else { avail * ratio };
+            let h1 = primary(avail);
             (
                 Rectf { x: rect.x, y: rect.y, w: rect.w, h: h1 },
                 Rectf { x: rect.x, y: rect.y + h1 + gap, w: rect.w, h: avail - h1 },
@@ -739,6 +765,7 @@ fn geom_leaves_min(
     rect: Rectf,
     gap: f64,
     min: &MinSizes,
+    focused: Option<u64>,
     out: &mut Vec<(u64, Rectf)>,
 ) {
     match node {
@@ -751,9 +778,15 @@ fn geom_leaves_min(
         Node::Split { axis, ratio, first, second } => {
             let mf = min_extent(first, *axis, gap, min);
             let ms = min_extent(second, *axis, gap, min);
-            let (a, b) = split_rect_clamped(rect, gap, *axis, *ratio, mf, ms);
-            geom_leaves_min(first, a, gap, min, out);
-            geom_leaves_min(second, b, gap, min, out);
+            // Em qual lado está a janela focada/nova — para o split forçado priorizá-la.
+            let bias = match focused {
+                Some(f) if node_contains(first, f) => FocusBias::First,
+                Some(f) if node_contains(second, f) => FocusBias::Second,
+                _ => FocusBias::Neither,
+            };
+            let (a, b) = split_rect_clamped(rect, gap, *axis, *ratio, mf, ms, bias);
+            geom_leaves_min(first, a, gap, min, focused, out);
+            geom_leaves_min(second, b, gap, min, focused, out);
         }
     }
 }
@@ -872,7 +905,7 @@ pub fn compute_geometry(
     group_ids: &[u64],
 ) -> LayoutResult {
     let _ = (stacks, group_ids);
-    geometry_from_tree(tree, area, opts, &MinSizes::new())
+    geometry_from_tree(tree, area, opts, &MinSizes::new(), None)
 }
 
 /// Núcleo de `compute_geometry`: percorre a árvore aplicando ratios e CLAMPANDO aos mínimos de `min`
@@ -883,6 +916,7 @@ fn geometry_from_tree(
     area: &WorkArea,
     opts: &LayoutOptions,
     min: &MinSizes,
+    focused: Option<u64>,
 ) -> LayoutResult {
     let mut rects = Vec::new();
     let mut tab_bars = Vec::new();
@@ -892,7 +926,7 @@ fn geometry_from_tree(
     };
     let inner = inner_rect(area, opts.outer_gap as f64);
     let mut leaves = Vec::new();
-    geom_leaves_min(root, inner, opts.inner_gap as f64, min, &mut leaves);
+    geom_leaves_min(root, inner, opts.inner_gap as f64, min, focused, &mut leaves);
     let mut stack_nodes = HashMap::new();
     collect_stack_nodes(root, &mut stack_nodes);
     for (id, r) in leaves {
@@ -947,20 +981,49 @@ fn build_min_sizes(
     map
 }
 
+/// Id da folha que REPRESENTA a janela focada/nova na árvore: ela mesma, se for folha solta; ou a
+/// âncora do `Node::Stack` que a contém. `None` se a focada não está na árvore. Base da proteção
+/// contra auto-floating — a janela nova "dita o espaço" e nunca é isolada do grid.
+fn focused_leaf_id(tree: &LayoutTree, focused: Option<u64>) -> Option<u64> {
+    let f = focused?;
+    fn walk(node: &Node, f: u64) -> Option<u64> {
+        match node {
+            Node::Leaf(id) => (*id == f).then_some(*id),
+            Node::Stack { members, .. } => {
+                if members.contains(&f) {
+                    members.first().copied()
+                } else {
+                    None
+                }
+            }
+            Node::Split { first, second, .. } => walk(first, f).or_else(|| walk(second, f)),
+        }
+    }
+    walk(tree.root.as_ref()?, f)
+}
+
 /// Remove da árvore (para fins de GEOMETRIA) as folhas cujos mínimos tornam o layout inviável,
 /// devolvendo a árvore podada + os ids isolados (AUTO-FLOATING). Inviável = em algum eixo o mínimo
 /// total da raiz excede a área interna (num BSP os eixos são independentes, então basta checar largura
 /// e altura da raiz). A cada passo isola a folha que mais pesa no(s) eixo(s) violado(s) — desempate por
 /// MENOR id (determinístico) — e repete até caber. PURA e idempotente: NÃO persiste estado; a árvore
 /// COMPLETA continua sendo guardada pela ponte, então a janela volta a tilar quando o espaço cresce.
+///
+/// A janela `focused` (nova/em foco) é PROTEGIDA: nunca vira vítima do auto-float. Ela mantém o seu
+/// mínimo no grid e os vizinhos é que comprimem em cascata (regra "a janela nova dita o espaço", ver
+/// ADR 0021). O auto-float só sobra como rede de segurança degenerada: quando, mesmo após espremer
+/// todos os vizinhos, o mínimo TOTAL ainda estoura a tela, isola os NÃO-focados (a focada permanece).
 fn enforce_min_sizes(
     tree: &LayoutTree,
     area: &WorkArea,
     opts: &LayoutOptions,
     min: &MinSizes,
+    focused: Option<u64>,
 ) -> (LayoutTree, Vec<u64>) {
     let inner = inner_rect(area, opts.outer_gap as f64);
     let gap = opts.inner_gap as f64;
+    // Folha intocável (a focada/nova). Estável: nunca é colapsada, então basta computar uma vez.
+    let protected = focused_leaf_id(tree, focused);
     let mut tree = tree.clone();
     let mut floated: Vec<u64> = Vec::new();
     loop {
@@ -970,13 +1033,18 @@ fn enforce_min_sizes(
         if !over_w && !over_h {
             break;
         }
-        let victim = collect_leaf_ids(&tree).into_iter().max_by_key(|id| {
-            let (mw, mh) = min.get(id).copied().unwrap_or((0, 0));
-            let axis_weight = if over_w { mw.max(0) as i64 } else { 0 }
-                + if over_h { mh.max(0) as i64 } else { 0 };
-            // peso no eixo violado, depois área mínima; desempate por MENOR id (Reverse).
-            (axis_weight, (mw.max(0) as i64) * (mh.max(0) as i64), std::cmp::Reverse(*id))
-        });
+        let victim = collect_leaf_ids(&tree)
+            .into_iter()
+            .filter(|id| Some(*id) != protected)
+            .max_by_key(|id| {
+                let (mw, mh) = min.get(id).copied().unwrap_or((0, 0));
+                let axis_weight = if over_w { mw.max(0) as i64 } else { 0 }
+                    + if over_h { mh.max(0) as i64 } else { 0 };
+                // peso no eixo violado, depois área mínima; desempate por MENOR id (Reverse).
+                (axis_weight, (mw.max(0) as i64) * (mh.max(0) as i64), std::cmp::Reverse(*id))
+            });
+        // Sem vítima elegível (só a focada protegida sobrou e ainda não cabe): para. A focada
+        // permanece tilada na melhor geometria possível (split forçado prioriza o mínimo dela).
         let Some(victim) = victim else { break };
         tree = collapse_leaf(tree, victim);
         floated.push(victim);
@@ -1017,10 +1085,11 @@ pub fn compute_constrained(
     stacks: &[StackDescriptor],
     group_ids: &[u64],
     windows: &[WindowInfo],
+    focused: Option<u64>,
 ) -> LayoutResult {
     let min = build_min_sizes(windows, stacks, group_ids, opts);
-    let (geom_tree, floated) = enforce_min_sizes(tree, area, opts, &min);
-    let mut res = geometry_from_tree(&geom_tree, area, opts, &min);
+    let (geom_tree, floated) = enforce_min_sizes(tree, area, opts, &min, focused);
+    let mut res = geometry_from_tree(&geom_tree, area, opts, &min, focused);
     for id in floated {
         if let Some(w) = windows.iter().find(|w| w.id == id) {
             res.floating.push(floating_rect(area, opts, w, &min));
@@ -2250,7 +2319,7 @@ mod tests {
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
         let windows = vec![win_min(1, 700, 0), win(2, 0)];
-        let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows);
+        let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows, None);
         let r1 = res.rects.iter().find(|r| r.id == 1).unwrap();
         let r2 = res.rects.iter().find(|r| r.id == 2).unwrap();
         assert!(res.floating.is_empty());
@@ -2266,7 +2335,7 @@ mod tests {
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
         let windows = vec![win_min(1, 700, 0), win(2, 0)];
-        let _ = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows);
+        let _ = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows, None);
         let plain = compute_geometry(&tree, &area, &opts(), &[], &[1, 2]);
         assert_eq!(plain.rects.iter().find(|r| r.id == 1).unwrap().width, 484);
     }
@@ -2277,7 +2346,7 @@ mod tests {
         let area = WorkArea { index: 0, x: 0, y: 0, width: 4000, height: 800 };
         let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
         let windows = vec![win_min(1, 700, 0), win(2, 0)];
-        let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows);
+        let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows, None);
         let r1 = res.rects.iter().find(|r| r.id == 1).unwrap();
         let r2 = res.rects.iter().find(|r| r.id == 2).unwrap();
         assert_eq!(r1.width, r2.width, "espaço amplo → proporcional, sem clamp");
@@ -2289,7 +2358,7 @@ mod tests {
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
         let windows = vec![win_min(1, 2000, 0), win(2, 0)];
-        let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows);
+        let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows, None);
         assert_eq!(res.rects.len(), 1);
         assert_eq!(res.rects[0].id, 2);
         assert_eq!(res.rects[0].width, 976, "a vizinha ocupa a área interna inteira");
@@ -2304,8 +2373,8 @@ mod tests {
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], None, &area, &opts());
         let windows = vec![win_min(1, 2000, 0), win(2, 0), win(3, 0)];
-        let a = compute_constrained(&tree, &area, &opts(), &[], &[1, 2, 3], &windows);
-        let b = compute_constrained(&tree, &area, &opts(), &[], &[1, 2, 3], &windows);
+        let a = compute_constrained(&tree, &area, &opts(), &[], &[1, 2, 3], &windows, None);
+        let b = compute_constrained(&tree, &area, &opts(), &[], &[1, 2, 3], &windows, None);
         assert_eq!(a, b);
     }
 
@@ -2318,7 +2387,7 @@ mod tests {
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
         let windows = vec![win_min(1, 2000, 0), win_min(2, 2000, 0)];
-        let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows);
+        let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows, None);
         assert!(res.rects.is_empty(), "ninguém cabe → grid tilado vazio");
         assert_eq!(res.floating.len(), 2, "as 2 continuam visíveis via auto-floating");
     }
@@ -2345,7 +2414,7 @@ mod tests {
         assert_eq!(plain.rects.iter().find(|r| r.id == 1).unwrap().width, 184);
         // com min 600: a geometria satura em 600 (sem quebrar a UI), a vizinha fica com 368.
         let windows = vec![win_min(1, 600, 0), win(2, 0)];
-        let res = compute_constrained(&resized, &area, &opts(), &[], &[1, 2], &windows);
+        let res = compute_constrained(&resized, &area, &opts(), &[], &[1, 2], &windows, None);
         assert_eq!(res.rects.iter().find(|r| r.id == 1).unwrap().width, 600);
         assert_eq!(res.rects.iter().find(|r| r.id == 2).unwrap().width, 368);
     }
@@ -2357,7 +2426,7 @@ mod tests {
         let ids = [1u64, 2, 3, 4];
         let tree = reconcile(&LayoutTree::default(), &ids, &[], None, &area, &opts());
         let windows = vec![win_min(1, 400, 300), win_min(2, 200, 0), win(3, 0), win_min(4, 0, 250)];
-        let res = compute_constrained(&tree, &area, &opts(), &[], &ids, &windows);
+        let res = compute_constrained(&tree, &area, &opts(), &[], &ids, &windows, None);
         let rs = &res.rects;
         for i in 0..rs.len() {
             for j in (i + 1)..rs.len() {
@@ -2369,6 +2438,84 @@ mod tests {
                 assert!(disjoint, "rects {} e {} se sobrepõem", a.id, b.id);
             }
         }
+    }
+
+    #[test]
+    fn focada_com_min_rigido_encaixa_e_vizinhos_cascateiam_sem_floatar() {
+        // Regra "a janela nova dita o espaço" (ADR 0021): a focada (1) com min 500 e a vizinha 2 com
+        // min 200 recebem ao menos os seus mínimos no grid e a 3 (maleável) absorve o resto — ninguém
+        // flutua, nada se sobrepõe. Invariantes (independentes da topologia que `reconcile` escolher).
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], Some(1), &area, &opts());
+        let windows = vec![win_min(1, 500, 0), win_min(2, 200, 0), win(3, 0)];
+        let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2, 3], &windows, Some(1));
+        assert!(res.floating.is_empty(), "ninguém flutua: tudo cabe via cascata");
+        assert_eq!(res.rects.len(), 3, "as 3 ficam no grid");
+        let w = |id: u64| res.rects.iter().find(|r| r.id == id).unwrap().width;
+        assert!(w(1) >= 500, "a focada mantém ao menos o seu mínimo (got {})", w(1));
+        assert!(w(2) >= 200, "vizinha 2 mantém ao menos o seu mínimo (got {})", w(2));
+        assert!(w(3) >= 1, "vizinha 3 segue visível");
+        // Nenhum par de retângulos se sobrepõe.
+        let rs = &res.rects;
+        for i in 0..rs.len() {
+            for j in (i + 1)..rs.len() {
+                let (a, b) = (&rs[i], &rs[j]);
+                let disjoint = a.x + a.width <= b.x
+                    || b.x + b.width <= a.x
+                    || a.y + a.height <= b.y
+                    || b.y + b.height <= a.y;
+                assert!(disjoint, "rects {} e {} se sobrepõem", a.id, b.id);
+            }
+        }
+    }
+
+    #[test]
+    fn focada_protegida_do_autofloat_o_vizinho_e_que_cede() {
+        // Mesma entrada de `auto_floata_janela_cujo_minimo_nao_cabe`, mas AGORA a janela restrita (1)
+        // está FOCADA: ela é protegida e NÃO flutua — quem sai do grid é a vizinha. Contraste direto:
+        // sem foco, a 1 flutuava; com foco, a 1 permanece tilada (a nova janela nunca é jogada fora).
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], Some(1), &area, &opts());
+        let windows = vec![win_min(1, 2000, 0), win(2, 0)];
+        let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows, Some(1));
+        assert_eq!(res.rects.len(), 1);
+        assert_eq!(res.rects[0].id, 1, "a focada permanece no grid");
+        assert_eq!(res.rects[0].width, 976, "ocupa a área interna inteira (melhor esforço)");
+        assert_eq!(res.floating.len(), 1);
+        assert_eq!(res.floating[0].id, 2, "o vizinho não-focado é que flutua");
+    }
+
+    #[test]
+    fn focada_nunca_e_vitima_so_os_nao_focados_floatam() {
+        // Três janelas, a focada (1) com min inviável: o auto-float isola APENAS os não-focados
+        // (2 e 3), nunca a focada. Garante que a proteção vale mesmo com múltiplos candidatos.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], Some(1), &area, &opts());
+        let windows = vec![win_min(1, 4000, 0), win(2, 0), win(3, 0)];
+        let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2, 3], &windows, Some(1));
+        assert_eq!(res.rects.len(), 1);
+        assert_eq!(res.rects[0].id, 1, "a focada nunca é a vítima");
+        let floated: Vec<u64> = res.floating.iter().map(|r| r.id).collect();
+        assert!(floated.contains(&2) && floated.contains(&3));
+        assert!(!floated.contains(&1));
+    }
+
+    #[test]
+    fn split_clamped_fallback_prioriza_o_lado_focado() {
+        // Caso degenerado (os dois mínimos não cabem em `avail`): o lado da janela FOCADA recebe o
+        // seu mínimo e o vizinho absorve o resto — em vez do proporcional puro, que daria à focada
+        // menos que o mínimo. Sem foco em nenhum lado, mantém o proporcional. Nunca há sobreposição.
+        let rect = Rectf { x: 0.0, y: 0.0, w: 1000.0, h: 800.0 };
+        // avail = 1000 - gap(8) = 992; min_first + min_second = 1200 > 992 → fallback.
+        let (a, b) = split_rect_clamped(rect, 8.0, Axis::Horizontal, 0.5, 600.0, 600.0, FocusBias::First);
+        assert_eq!(a.w, 600.0, "1ª focada → recebe o mínimo");
+        assert_eq!(b.w, 992.0 - 600.0, "vizinha absorve o resto, sem sobrepor");
+        let (a2, _) =
+            split_rect_clamped(rect, 8.0, Axis::Horizontal, 0.5, 600.0, 600.0, FocusBias::Second);
+        assert_eq!(a2.w, 992.0 - 600.0, "2ª focada → 1ª cede");
+        let (a3, _) =
+            split_rect_clamped(rect, 8.0, Axis::Horizontal, 0.5, 600.0, 600.0, FocusBias::Neither);
+        assert_eq!(a3.w, 992.0 * 0.5, "sem foco → proporcional puro");
     }
 
     // ---- Unmaximize Recovery ----

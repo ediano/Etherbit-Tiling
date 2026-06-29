@@ -453,8 +453,17 @@ pub fn sync_windows(
                 if !state.disabled_groups.contains(&(monitor, workspace)) {
                     // `compute_constrained` respeita os mínimos (splits assimétricos) e isola por
                     // auto-floating quem não cabe — recebe a árvore COMPLETA e poda só p/ geometria.
-                    let res =
-                        compute_constrained(&tree, area, &opts, &stacks, &group_ids, &tileable);
+                    // `focused_opt` PROTEGE a janela nova/em foco do auto-float: ela mantém o mínimo
+                    // no grid e os vizinhos comprimem em cascata (ADR 0021).
+                    let res = compute_constrained(
+                        &tree,
+                        area,
+                        &opts,
+                        &stacks,
+                        &group_ids,
+                        &tileable,
+                        focused_opt,
+                    );
                     rects.extend(res.rects.iter().map(RectDto::from));
                     tab_bars.extend(res.tab_bars.iter().map(TabBarDto::from));
                     floating.extend(res.floating.iter().map(RectDto::from));
