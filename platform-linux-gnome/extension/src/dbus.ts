@@ -61,6 +61,7 @@ const IFACE_XML = `
       <arg type="s" direction="in" name="dragged_id"/>
       <arg type="s" direction="in" name="target_id"/>
       <arg type="s" direction="in" name="zone"/>
+      <arg type="s" direction="in" name="scope"/>
       <arg type="s" direction="out" name="trees_json"/>
     </method>
     <method name="ResizeWindow">
@@ -98,14 +99,15 @@ export interface TilingProxy {
     monitorsJson: string,
     targetJson: string,
   ): [string];
-  /// Drag-to-tile: move `draggedId` para junto de `targetId` no lado `zone`. Recebe o `stateJson`
-  /// (com as árvores) e devolve `{"trees":[...]}` para a ponte persistir; a geometria vem do
-  /// `SyncWindows` seguinte.
+  /// Drag-to-tile do jogo da velha (ADR 0026): move `draggedId` para junto de `targetId` no lado
+  /// `zone`, com `scope` (`local` = faixa de 1/3 na submatriz do alvo; `global` = bloco de 50%).
+  /// Recebe o `stateJson` (com as árvores) e devolve `{"trees":[...]}`; a geometria vem do `SyncWindows`.
   MoveWindowSync(
     stateJson: string,
     draggedId: string,
     targetId: string,
     zone: string,
+    scope: string,
   ): [string];
   /// Resize elástico: arrasta a borda `edge` da janela `id` em `deltaPx` (positivo = cresceu).
   /// Recebe monitores + `stateJson` (árvores) e devolve `{"trees":[...]}` para a ponte persistir.

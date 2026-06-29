@@ -1418,6 +1418,11 @@ pub fn move_window(
     };
     match scope {
         DropScope::Global => {
+            // Só o grupo que CONTÉM a arrastada é afetado (o daemon aplica a todas as árvores; as
+            // demais são no-op). Sem isto, a arrastada seria inserida em grupos a que não pertence.
+            if !tree.root.as_ref().map(|r| node_contains(r, dragged)).unwrap_or(false) {
+                return tree.clone();
+            }
             // Remove a arrastada e a reinsere como bloco de 50% sobre TODO o resto do workspace.
             let removed = collapse_leaf(tree.clone(), dragged);
             match removed.root {
@@ -2453,6 +2458,38 @@ mod tests {
         assert_eq!(move_window(&tree, 2, 1, DropZone::Center, DropScope::Local), tree);
         // Alvo ausente → inalterado (não perde a janela arrastada).
         assert_eq!(move_window(&tree, 2, 99, DropZone::Left, DropScope::Local), tree);
+    }
+
+    #[test]
+    fn move_window_global_insere_bloco_de_50_porcento() {
+        // [1,2,3]; mover 3 para a ESQUERDA em escopo GLOBAL → 3 ocupa ~50% da tela; 1 e 2 no outro 50%.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], None, &area, &opts());
+        let moved = move_window(&tree, 3, 0, DropZone::Left, DropScope::Global);
+        let geo = compute_geometry(&moved, &area, &opts(), &[], &[1, 2, 3]);
+        assert_eq!(geo.rects.len(), 3);
+        let r3 = geo.rects.iter().find(|r| r.id == 3).unwrap();
+        // 3 à esquerda ocupando ~metade da largura interna (976 - gap 8) / 2 = 484.
+        assert_eq!((r3.x, r3.width, r3.height), (12, 484, 776));
+        // 1 e 2 ficam à direita de 3 (no outro bloco de 50%).
+        for id in [1u64, 2] {
+            let r = geo.rects.iter().find(|r| r.id == id).unwrap();
+            assert!(r.x > r3.x + r3.width - 1, "janela {id} no bloco direito");
+        }
+    }
+
+    #[test]
+    fn move_window_local_da_um_terco_ao_arrastado() {
+        // [1,2]; soltar 2 sobre o EIXO superior de 1 (local) → 2 toma 1/3 da altura, 1 fica com 2/3.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let moved = move_window(&tree, 2, 1, DropZone::Top, DropScope::Local);
+        let geo = compute_geometry(&moved, &area, &opts(), &[], &[1, 2]);
+        let r1 = geo.rects.iter().find(|r| r.id == 1).unwrap();
+        let r2 = geo.rects.iter().find(|r| r.id == 2).unwrap();
+        // 2 no topo, mais baixa que 1 (1/3 vs 2/3); empilhadas verticalmente.
+        assert!(r2.y < r1.y);
+        assert!(r2.height < r1.height);
     }
 
     #[test]
