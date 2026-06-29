@@ -59,6 +59,43 @@ if [ ! -f "$HERE/extension/extension.js" ] || [ ! -f "$HERE/extension/metadata.j
   exit 1
 fi
 
+# --- Detecção de versão e upgrade idempotente ----------------------------------
+# Fonte de verdade da versão = arquivo VERSION do tarball (semver do semantic-release). O daemon
+# (etherbit-tiling-daemon) NÃO tem `--version`; comparamos contra um marcador persistido na
+# instalação anterior. Decisão ANTES de copiar/registrar (passo 1 do upgrade).
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/etherbit-tiling"
+VERSION_FILE="$STATE_DIR/version"
+NEW_VERSION="$([ -f "$HERE/VERSION" ] && tr -d '[:space:]' < "$HERE/VERSION" || true)"
+OLD_VERSION="$([ -f "$VERSION_FILE" ] && tr -d '[:space:]' < "$VERSION_FILE" || true)"
+
+# version_gt A B → 0 (true) se A > B em ordem de versão (sort -V, coreutils).
+version_gt() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]; }
+
+if [ -z "$OLD_VERSION" ]; then
+  echo ">> Instalação limpa${NEW_VERSION:+ (v$NEW_VERSION)}."
+elif [ -z "$NEW_VERSION" ]; then
+  echo ">> VERSION ausente no pacote — reinstalação forçada sobre v$OLD_VERSION."
+elif [ "$NEW_VERSION" = "$OLD_VERSION" ]; then
+  echo ">> Mesma versão (v$OLD_VERSION) — reaplicando arquivos (idempotente)."
+elif version_gt "$NEW_VERSION" "$OLD_VERSION"; then
+  echo ">> Atualizando v$OLD_VERSION → v$NEW_VERSION."
+elif [ "${ETHERBIT_FORCE:-0}" = "1" ]; then
+  echo ">> ETHERBIT_FORCE=1 — downgrade v$OLD_VERSION → v$NEW_VERSION."
+else
+  echo "aviso: o pacote (v$NEW_VERSION) é mais antigo que o instalado (v$OLD_VERSION); mantendo o atual." >&2
+  echo "       Para forçar o downgrade: ETHERBIT_FORCE=1 bash <este-script>" >&2
+  exit 0
+fi
+
+# Parada segura ANTES da sobrescrita: o `enable --now` adiante NÃO reinicia um serviço já ativo
+# (`start` é no-op num unit ativo). Sem parar aqui, o `install` troca os bytes em disco mas o daemon
+# ANTIGO segue em memória — binário novo no disco, código velho rodando — até um logout/restart. A
+# sequência parar → sobrescrever → start garante que o daemon NOVO assuma. No-op inofensivo na
+# instalação limpa (unit ainda ausente).
+if command -v systemctl >/dev/null; then
+  systemctl --user stop "$SERVICE" 2>/dev/null || true
+fi
+
 # --- Daemon --------------------------------------------------------------------
 echo ">> Instalando daemon em $BIN_DIR"
 mkdir -p "$BIN_DIR"
@@ -133,6 +170,13 @@ enable_extension() {
 }
 echo ">> Habilitando a extensão no perfil do usuário ($UUID)"
 enable_extension || echo "aviso: não foi possível habilitar agora; habilite com 'gnome-extensions enable $UUID'."
+
+# --- Marcador de versão --------------------------------------------------------
+# Registra a versão instalada — base de comparação do próximo run (upgrade idempotente).
+if [ -n "$NEW_VERSION" ]; then
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "$NEW_VERSION" > "$VERSION_FILE"
+fi
 
 # --- Fim -----------------------------------------------------------------------
 echo

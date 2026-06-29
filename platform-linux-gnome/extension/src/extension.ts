@@ -1040,8 +1040,33 @@ export default class EtherbitTilingExtension extends Extension {
 
   /// `true` se a janela está maximizada em AMBOS os eixos (estado, não a capacidade `can_maximize`).
   /// Base do Unmaximize Recovery: o core mantém janelas maximizadas fora do grid (ou preserva o slot).
+  ///
+  /// A API do Mutter para ler o estado de maximização mudou entre versões do GNOME Shell
+  /// (45→50). Em alvos onde `get_maximized()` não existe o Shell lança em loop
+  /// `TypeError: window.get_maximized is not a function`, paralisando o relayout. Por isso
+  /// detectamos o método disponível em runtime — mesmo padrão defensivo de `_minSize` —, sempre
+  /// exigindo AMBOS os eixos (o contrato da função; um `!== 0` cru marcaria como maximizada uma
+  /// janela maximizada só na horizontal/vertical e a tiraria do grid indevidamente).
   private _isMaximized(window: Meta.Window): boolean {
-    return window.get_maximized() === Meta.MaximizeFlags.BOTH;
+    const w = window as unknown as {
+      get_maximized_state?: () => number;
+      get_maximized?: () => number;
+      maximized_horizontally?: boolean;
+      maximized_vertically?: boolean;
+    };
+    try {
+      const both = Meta.MaximizeFlags.BOTH;
+      if (typeof w.get_maximized_state === 'function') {
+        return w.get_maximized_state() === both;
+      }
+      if (typeof w.get_maximized === 'function') {
+        return w.get_maximized() === both;
+      }
+      // Fallback universal: propriedades booleanas estáveis em toda a linha do Meta.Window.
+      return w.maximized_horizontally === true && w.maximized_vertically === true;
+    } catch {
+      return false;
+    }
   }
 
   /// Tamanho mínimo (px de frame) imposto pelo app via `Meta.Window.get_min_size()` — funciona em

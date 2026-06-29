@@ -22,7 +22,8 @@ Decisões a fixar: **o que** a camada KDE entrega, **como** é compilada e **com
 - **Tooling espelha o GNOME (ADR [0010](0010-tooling-extensao-e-zbus.md)): TypeScript + Vite + pnpm + vitest.**
   Diferença crítica: o KWin avalia `main.js` num contexto de **script clássico** (QJSEngine do Qt), sem
   `import`/`export` em runtime. Por isso o Vite empacota em **IIFE** (bundle único auto-executável),
-  não ESM. `minify: false`; alvo `es2019`. Como não há `@girs/*` para o KWin, os globais são tipados
+  não ESM. `minify: false`; alvo `es2019` (**corrigido para `es2018`** — ver emenda 2026-06 abaixo).
+  Como não há `@girs/*` para o KWin, os globais são tipados
   à mão em `kwin-globals.d.ts`. Lógica pura (`config.ts`, `tiling.ts`) fica isolada e testável em Node
   (ver estratégia de testes por plataforma).
 - **Configuração nativa do KWin Script** (não um plasmoid de bandeja nesta fase): `main.xml` + `config.ui`
@@ -39,7 +40,8 @@ Decisões a fixar: **o que** a camada KDE entrega, **como** é compilada e **com
 - O layout atual usa um **placeholder** (`tileColumns`) até o core (Ether Flow) decidir o layout —
   mesmo estágio do GNOME (TODO marcado em `main.ts`).
 - Requer Plasma 6 (`kpackagetool6`/`kwriteconfig6`/`qdbus6`). Não há fallback X11.
-- A baseline de JS do QJSEngine (es2019) é mais conservadora que a do GJS (ES2022); manter o alvo do Vite.
+- A baseline de JS do QJSEngine é mais conservadora que a do GJS (ES2022); manter o alvo do Vite
+  baixo (**`es2018`** — ver emenda 2026-06; a hipótese inicial de `es2019` provou-se otimista demais).
 
 ## Emenda (2026-06): linha de corte explícita, daemon em dev e observabilidade da ponte
 
@@ -56,3 +58,17 @@ Decisões a fixar: **o que** a camada KDE entrega, **como** é compilada e **com
   ponte passa a fazer um **handshake `Ping`** na carga e logar com prefixo `[etherbit]`; a regra de
   diagnóstico é "`ponte carregando` sem `Ping OK` ⇒ daemon inacessível". A chave `debug` (kwinrc)
   liga o detalhamento por evento. Ver [0020](0020-resiliencia-ipc-dbus.md) e `docs/DIAGNOSTICO-IPC.md`.
+
+## Emenda (2026-06): alvo do Vite `es2019` → `es2018` (optional catch binding)
+
+- **Sintoma real em VM limpa (Kubuntu/Plasma 6):** `kwin_scripting: .../main.js:23: error: Syntax error`
+  já na carga — o KWin rejeita o script inteiro e o tiling fica inerte.
+- **Causa:** a linha 23 é um `} catch {` (**optional catch binding**, uma feature **ES2019**). O
+  QJSEngine do Qt 6 **não** aceita `catch` sem a variável de erro. A premissa original ("QJSEngine
+  cobre ES2019 com folga") estava errada justamente na única adição sintática do ES2019. Como o alvo
+  era `es2019`, o esbuild **preservava** o `catch {` em vez de transpilá-lo.
+- **Correção:** alvo do Vite agora é **`es2018`**. O esbuild reescreve `} catch {` → `} catch (e) {`
+  (e qualquer sintaxe ≥ES2019, como `?.`/`??`), mantendo o bundle interpretável. Validado: bundle
+  gerado sem `catch {`, sem `?.`/`??` e sem `export`/`import` vazados, ainda como IIFE puro.
+- **Nota:** o `export`/`import` no runtime clássico continua sendo um risco real (daí a IIFE), mas
+  **não** era a causa deste `Syntax error` — o bundle já não continha ESM. A linha 23 era o `catch {`.
