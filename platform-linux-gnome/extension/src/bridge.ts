@@ -5,7 +5,7 @@
 // core (Rust). Aqui ficam só a montagem do JSON de saída e o parse defensivo do layout de volta —
 // isolados de `gi://` para serem testáveis em Node/vitest (ver ADR rules/0016).
 
-/// Espelha o `WindowDto` do daemon (platform-linux-daemon/daemon/src/protocol.rs).
+/// Espelha o `WindowDto` do daemon (etherbit-tiling-daemon/daemon/src/protocol.rs).
 export interface WindowSnapshot {
   id: number;
   app_id: string;

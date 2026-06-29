@@ -11,7 +11,7 @@ plataforma é testada e **como** os testes barram um release defeituoso.
 ## Decisão
 - **Uma suíte e um runner por plataforma — independentes entre si.** Rodar os testes de uma
   plataforma nunca exige a toolchain de outra.
-  - **core/** e **platform-linux-daemon/daemon/** (Rust): testes nativos `#[cfg(test)]` + `cargo test`,
+  - **core/** e **etherbit-tiling-daemon/daemon/** (Rust): testes nativos `#[cfg(test)]` + `cargo test`,
     cada um no seu workspace Cargo (o daemon é workspace separado, excluído da raiz).
   - **platform-linux-gnome/extension/** (TS): **`tsc --noEmit`** (type-check) + **vitest** em
     ambiente `node` — ambos no job de CI. O type-check ficou viável após alinhar os tipos `@girs`

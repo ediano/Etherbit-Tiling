@@ -8,7 +8,7 @@ Após ~10 min de ociosidade ou após suspender/retomar, o ecossistema parava de 
 janela não reorganizava, mudar gap não surtia efeito) e **só um reboot resolvia**. A investigação
 mostrou por que nunca se recuperava:
 
-- O **daemon** ([service.rs](../platform-linux-daemon/daemon/src/service.rs)) abria **uma** conexão
+- O **daemon** ([service.rs](../etherbit-tiling-daemon/daemon/src/service.rs)) abria **uma** conexão
   zbus de sessão e ficava vivo em `ctrl_c().await`; **sem reconexão** ao barramento, **sem ativação
   D-Bus** e lançado **só no login** (autostart `.desktop`). Se o processo morria/congelava na
   suspensão, ninguém o trazia de volta.
@@ -22,7 +22,7 @@ mostrou por que nunca se recuperava:
 Resiliência em **três camadas** que se reforçam (o daemon permanece **sem estado** — reiniciar é
 seguro, reafirma 0016/0019):
 
-- **Ativação D-Bus do daemon (correção central).** Novo [activation.rs](../platform-linux-daemon/daemon/src/activation.rs)
+- **Ativação D-Bus do daemon (correção central).** Novo [activation.rs](../etherbit-tiling-daemon/daemon/src/activation.rs)
   escreve, na inicialização (idempotente), `~/.local/share/dbus-1/services/dev.ediano.etherbit.Tiling.service`
   com `Exec=<current_exe>`. O `dbus-daemon` passa a **relançar o daemon sob demanda**: qualquer
   chamada ao nome o ativa se estiver fora. Transforma "morto até o reboot" em "revivido na próxima
@@ -34,15 +34,15 @@ seguro, reafirma 0016/0019):
   (boot/reativação/wake), refaz o handshake (`Ping`), relê a config e dispara relayout; ao sumir,
   descarta o proxy. O `ResolveDropZone` do arrasto (60 Hz, cosmético) fica best-effort sem reconectar
   (recupera no relayout seguinte) para não gerar tempestade de reconexões.
-- **Wake handshake no daemon via logind.** Novo [powermon.rs](../platform-linux-daemon/daemon/src/powermon.rs)
+- **Wake handshake no daemon via logind.** Novo [powermon.rs](../etherbit-tiling-daemon/daemon/src/powermon.rs)
   assina `PrepareForSleep(bool)` de `org.freedesktop.login1.Manager` (barramento de **sistema**;
   logind é **agnóstico de DE**, melhor que o `Mutter.IdleMonitor`, específico do GNOME). Ao **retomar**
   (`start=false`), re-emite `ConfigChanged` na sessão (a extensão já trata o sinal disparando
   relayout). Se a emissão falhar (canal de sessão morto), `std::process::exit(0)` → a ativação sobe
   uma instância nova e limpa. Best-effort: sem logind (containers), loga e desiste sem derrubar o
-  daemon. O keep-alive do [main.rs](../platform-linux-daemon/daemon/src/main.rs) virou
+  daemon. O keep-alive do [main.rs](../etherbit-tiling-daemon/daemon/src/main.rs) virou
   `tokio::select!` sobre `ctrl_c` + `SIGTERM`.
-- **Método `Ping() -> "ok"`** ([service.rs](../platform-linux-daemon/daemon/src/service.rs)):
+- **Método `Ping() -> "ok"`** ([service.rs](../etherbit-tiling-daemon/daemon/src/service.rs)):
   handshake/health-check barato, usado pelo watch de nome e no diagnóstico.
 
 > **Esclarecimento:** o **daemon não tem listeners do compositor** (Wayland/Mutter) — esses vivem na
@@ -69,12 +69,12 @@ A resiliência acima cobre o canal que **cai após estar de pé**. Um modo de fa
 **nunca** começou / parou de reagir a TUDO" — exigia tornar a falha **observável** e o core
 **à prova de pânico**:
 
-- **Guard de pânico no daemon** ([service.rs](../platform-linux-daemon/daemon/src/service.rs)): cada
+- **Guard de pânico no daemon** ([service.rs](../etherbit-tiling-daemon/daemon/src/service.rs)): cada
   handler D-Bus (`sync_windows`/`resolve_drop_zone`/`move_window`/`resize_window`) embrulha a chamada
   ao core em `catch_unwind`. Sem isso, um pânico (índice/`unwrap` em entrada degenerada) abortava a
   task em **silêncio** → cliente recebe `NoReply` → ponte inerte. Agora vira erro D-Bus recuperável +
   log; a próxima chamada volta a funcionar.
-- **Tolerância a entrada degenerada** ([protocol.rs](../platform-linux-daemon/daemon/src/protocol.rs)):
+- **Tolerância a entrada degenerada** ([protocol.rs](../etherbit-tiling-daemon/daemon/src/protocol.rs)):
   `monitor`/`workspace` desserializam saturando negativos a 0 (`de_index`), para um `monitor: -1`
   (`Meta.Window.get_monitor()` sem monitor) **não** invalidar o array inteiro e derrubar o sync. O
   core clampa geometria degenerada (`inner_rect`/`split_axis` a `>= 0`) para gaps/mínimos extremos

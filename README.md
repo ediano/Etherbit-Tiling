@@ -38,7 +38,7 @@ eventos de janela e aplica as decisões do core.
 Etherbit-Tiling/
 ├── core/                  # 🦀 Rust — algoritmo agnóstico "Ether Flow" (etherbit-tiling-core)
 ├── platform-macos/        # 🍎 Swift nativo (AppKit + Accessibility) — build no host macOS
-├── platform-linux-daemon/ # 🐧 Linux — daemon (Rust/D-Bus) compartilhado por GNOME e KDE
+├── etherbit-tiling-daemon/ # 🐧 Linux — daemon (Rust/D-Bus) compartilhado por GNOME e KDE
 ├── platform-linux-gnome/  # 🐧 Linux/GNOME — extension (Vite/TS); usa o daemon
 ├── platform-linux-kde/    # 🐧 Linux/KDE Plasma 6 (Wayland) — KWin Script (Vite/TS); reusa o daemon
 ├── web/                   # 🌐 Landing page global (Vite + CSS3 puro) — hub de downloads
@@ -61,7 +61,7 @@ O desenvolvimento do **core (Rust)** e da **extension (TypeScript/Vite)** roda d
 # 2. Build do core (workspace raiz, agnóstico):
 cargo build
 # 3. Build/execução do daemon Linux (workspace próprio, compartilhado por GNOME/KDE):
-cd platform-linux-daemon && cargo build                         # ou: cargo run -p etherbit-tiling-daemon (sobe o D-Bus dev.ediano.etherbit.Tiling)
+cd etherbit-tiling-daemon && cargo build                         # ou: cargo run -p etherbit-tiling-daemon (sobe o D-Bus dev.ediano.etherbit.Tiling)
 # 4. Build/instalação da extensão GNOME (pnpm via corepack):
 cd platform-linux-gnome/extension && pnpm install && pnpm run install:ext
 # 5. Build/instalação do KWin Script KDE (Plasma 6/Wayland; reusa o daemon):

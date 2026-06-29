@@ -4,8 +4,8 @@ members = [
     "core",
 ]
 
-# platform-linux-daemon é um workspace independente (daemon Linux compartilhado por GNOME/KDE).
+# etherbit-tiling-daemon é um workspace independente (daemon Linux compartilhado por GNOME/KDE).
 # A raiz é agnóstica e não deve enxergar crates de plataforma.
 exclude = [
-    "platform-linux-daemon",
+    "etherbit-tiling-daemon",
 ]

@@ -5,7 +5,7 @@ Camada nativa do **Etherbit Tiling** para **KDE Plasma 6**, exclusivamente sob *
 No KDE/Wayland, o compositor e gerenciador de janelas é o **KWin**. Ele não aceita "extensions"
 no estilo GNOME Shell — o ponto de extensão equivalente é um **KWin Script** (JavaScript executado
 dentro do próprio KWin). Por isso esta camada entrega **apenas o KWin Script** (`kwin-script/`):
-o daemon Rust (`etherbit-tiling-daemon`) é **reaproveitado** da camada `platform-linux-daemon`, pois
+o daemon Rust (`etherbit-tiling-daemon`) é **reaproveitado** da camada `etherbit-tiling-daemon`, pois
 já é agnóstico de ambiente de desktop (config TOML + serviço D-Bus `dev.ediano.etherbit.Tiling` + autostart).
 
 > Ver ADR [0013](../rules/0013-camada-kde-kwin-script.md) (camada KDE) e
@@ -59,7 +59,7 @@ pnpm run install:script   # build + kpackagetool6 -i/-u + habilita + reconfigure
 > rode o daemon à parte (senão o tiling fica inerte):
 >
 > ```bash
-> RUST_LOG=debug cargo run --manifest-path platform-linux-daemon/Cargo.toml
+> RUST_LOG=debug cargo run --manifest-path etherbit-tiling-daemon/Cargo.toml
 > ```
 
 Logs do script em runtime: `journalctl -f QT_CATEGORY=kwin_scripting`

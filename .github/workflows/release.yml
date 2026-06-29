@@ -9,7 +9,7 @@ on:
     branches: [main]
     paths:
       - 'core/**'
-      - 'platform-linux-daemon/**'
+      - 'etherbit-tiling-daemon/**'
       - 'platform-linux-gnome/**'
       - 'platform-linux-kde/**'
       # - 'platform-macos/**'   # futuro (ver job comentado abaixo)
@@ -65,7 +65,7 @@ jobs:
       - name: Cache de build do Cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: platform-linux-daemon
+          workspaces: etherbit-tiling-daemon
 
       - name: Node + corepack (pnpm)
         uses: actions/setup-node@v4

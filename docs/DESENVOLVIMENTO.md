@@ -36,7 +36,7 @@ cargo test          # testes do core
 
 **Daemon Linux (workspace próprio, compartilhado por GNOME/KDE):**
 ```bash
-cd platform-linux-daemon
+cd etherbit-tiling-daemon
 cargo build                          # compila etherbit-tiling-daemon (puxa etherbit-tiling-core por path)
 cargo run -p etherbit-tiling-daemon  # sobe o serviço D-Bus dev.ediano.etherbit.Tiling no barramento de sessão
 ```
@@ -143,7 +143,7 @@ AppKit e da Accessibility API da Apple.
 
 1. **Container builda** após "Reopen in Container" (libdbus/pkg-config instalados).
 2. `cargo build` na raiz compila `etherbit-tiling-core` sem erros.
-3. Em `platform-linux-daemon/`, `cargo build` compila `etherbit-tiling-daemon`; com um barramento de
+3. Em `etherbit-tiling-daemon/`, `cargo build` compila `etherbit-tiling-daemon`; com um barramento de
    sessão (`dbus-run-session`), `cargo run -p etherbit-tiling-daemon` registra `dev.ediano.etherbit.Tiling`.
 4. Na `extension/`, `pnpm install`, `pnpm typecheck` e `pnpm build` concluem; `dist/extension.js`
    preserva os imports `gi://`/`resource:///`.
@@ -155,7 +155,7 @@ AppKit e da Accessibility API da Apple.
 
 ## Notas de versionamento
 
-- **`Cargo.lock` é versionado** — cada workspace tem o seu (raiz/core e `platform-linux-daemon/`);
+- **`Cargo.lock` é versionado** — cada workspace tem o seu (raiz/core e `etherbit-tiling-daemon/`);
   como há um binário (`etherbit-tiling-daemon`), os lockfiles são commitados para builds reproduzíveis.
 - **`.vscode/`** é parcialmente versionado: ignoramos arquivos locais, mas mantemos `settings.json`,
   `extensions.json`, `launch.json` e `tasks.json` para compartilhar a config do Dev Container.

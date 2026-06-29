@@ -49,7 +49,7 @@ Decisões a fixar: **o que** a camada KDE entrega, **como** é compilada e **com
   pode ser o do **Qt 5** e falar com o KWin errado. Sem nenhum dos dois, o install avisa/erra.
 - **O daemon é cliente-obrigatório, e em DEV vem à parte:** como a camada KDE entrega só o KWin
   Script, o `scripts/install.sh` agora faz um *health-check* (`busctl --user status …`) e orienta
-  rodar o daemon (`cargo run --manifest-path platform-linux-daemon/Cargo.toml`) ou o pacote completo.
+  rodar o daemon (`cargo run --manifest-path etherbit-tiling-daemon/Cargo.toml`) ou o pacote completo.
   O `install-kde.sh` valida o daemon com `Ping` após subir o systemd e corrige o `ExecStart` para o
   `$BIN_DIR` real (não o hardcode `%h/.local/bin`).
 - **Observabilidade contra a falha silenciosa:** o `callDBus` engole `ServiceUnknown` sem erro. A

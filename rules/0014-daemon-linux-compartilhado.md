@@ -18,17 +18,19 @@ significaria manter duas cópias quase idênticas (código, `Cargo.lock`, testes
   próprio nem cópia do daemon: entrega apenas o KWin Script. O isolamento por plataforma do ADR 0003
   passa a valer para a **camada nativa de UI/eventos** (extension vs. KWin Script), não para o daemon,
   que é infraestrutura comum.
-- **O binário mora num caminho neutro: `platform-linux-daemon/daemon`.** Ambos os scripts de
+- **O binário mora num caminho que espelha seu próprio nome: `etherbit-tiling-daemon/daemon`.** Ambos os scripts de
   empacotamento (`packaging/build-gnome-release.sh` e `packaging/build-kde-release.sh`) **reusam** esse
-  build (`cargo build --release --manifest-path platform-linux-daemon/Cargo.toml`) e empacotam o mesmo
+  build (`cargo build --release --manifest-path etherbit-tiling-daemon/Cargo.toml`) e empacotam o mesmo
   binário nos respectivos `.tar.gz`. A camada `platform-linux-gnome` passa a conter apenas a extension.
 - **Instalação coerente:** ambos os instaladores colocam o daemon em `~/.local/bin` e a mesma unit
   `etherbit-tiling-daemon.service`. Se o usuário tem as duas camadas, o daemon é o mesmo serviço.
 
 ## Consequências
-- **Nomenclatura honesta:** o daemon ficou num caminho neutro `platform-linux-daemon/`, nivelado com
-  `platform-linux-gnome/` (extension) e `platform-linux-kde/` (KWin Script). Isso elimina o trade-off
-  inicial de o binário compartilhado morar sob um caminho com "gnome" no nome. A dependência por path
-  `etherbit-tiling-core = { path = "../../core" }` permanece válida (mesma profundidade).
+- **Nomenclatura honesta:** o diretório foi renomeado de `platform-linux-daemon/` para
+  `etherbit-tiling-daemon/`, espelhando o nome do crate/binário compartilhado (agnóstico de DE). As
+  camadas de UI seguem `platform-linux-gnome/` (extension) e `platform-linux-kde/` (KWin Script). Isso
+  elimina o trade-off inicial de o binário compartilhado morar sob um caminho com "gnome" no nome — e
+  reserva o prefixo `platform-linux-*` às camadas de fato específicas de plataforma. A dependência por
+  path `etherbit-tiling-core = { path = "../../core" }` permanece válida (mesma profundidade).
 - Menos duplicação: um só código, um só `Cargo.lock`, uma só suíte de testes do daemon.
 - O desinstalador KDE avisa que, se a camada GNOME também estiver instalada, o daemon é compartilhado.
