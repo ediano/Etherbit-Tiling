@@ -7,7 +7,7 @@
 //    APLICA os retângulos-alvo devolvidos via `move_resize_frame` (geométrico e instantâneo).
 // Toda a matemática (Ether Flow) e a resiliência gráfica vivem no Rust (core/daemon).
 
-import type Clutter from 'gi://Clutter';
+import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
@@ -15,6 +15,7 @@ import Shell from 'gi://Shell';
 import St from 'gi://St';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {
   createTilingProxy,
@@ -64,6 +65,8 @@ const DRAG_TICK_MS = 16;
 interface Tracked {
   window: Meta.Window;
   unmanagedId: number;
+  /// Sinais `notify::maximized-*` da janela — reagem ao (des)maximizar disparando relayout.
+  notifyIds: number[];
 }
 
 export default class EtherbitTilingExtension extends Extension {
@@ -107,6 +110,11 @@ export default class EtherbitTilingExtension extends Extension {
   // Barras de abas desenhadas (recriadas a cada relayout). Settings do gschema (atalhos).
   private _tabBars: St.Widget[] = [];
   private _settings: Gio.Settings | null = null;
+  // Menu de contexto da aba (clique direito → "Desagrupar Janela"). O manager faz o grab (fecha ao
+  // clicar fora) a partir de um anchor ESTÁVEL — as barras de abas são efêmeras (recriadas no relayout).
+  private _tabMenuManager: PopupMenu.PopupMenuManager | null = null;
+  private _tabMenu: PopupMenu.PopupMenu | null = null;
+  private _tabMenuAnchor: St.Widget | null = null;
 
   // Estado do arrasto + overlay de preview da drop zone.
   private _dragSource = 0;
@@ -300,9 +308,13 @@ export default class EtherbitTilingExtension extends Extension {
       this._settings = null;
     }
 
-    // Restaura janelas que minimizamos como abas inativas e descarta as barras de abas.
+    // Restaura janelas que minimizamos como abas inativas e descarta as barras de abas e o menu.
     this._restoreHiddenWindows();
     this._destroyTabBars();
+    this._destroyTabMenu();
+    this._tabMenuManager = null;
+    this._tabMenuAnchor?.destroy();
+    this._tabMenuAnchor = null;
 
     // Encerra um arrasto em andamento (ex.: troca de extensão durante o drag) sem deixar lixo.
     this._stopDrag();
@@ -325,8 +337,11 @@ export default class EtherbitTilingExtension extends Extension {
       this._monitorsId = 0;
     }
 
-    for (const { window, unmanagedId } of this._tracked.values()) {
+    for (const { window, unmanagedId, notifyIds } of this._tracked.values()) {
       window.disconnect(unmanagedId);
+      for (const sigId of notifyIds) {
+        window.disconnect(sigId);
+      }
       // Remove o efeito de cantos arredondados para deixar as janelas no estado original.
       const actor = window.get_compositor_private() as Clutter.Actor | null;
       if (actor) {
@@ -355,6 +370,9 @@ export default class EtherbitTilingExtension extends Extension {
         const tracked = this._tracked.get(id);
         if (tracked) {
           tracked.window.disconnect(tracked.unmanagedId);
+          for (const sigId of tracked.notifyIds) {
+            tracked.window.disconnect(sigId);
+          }
           this._tracked.delete(id);
         }
         removeFromOrder(this._order, id);
@@ -362,7 +380,13 @@ export default class EtherbitTilingExtension extends Extension {
         this._stackHidden.delete(id);
         this._scheduleRelayout();
       });
-      this._tracked.set(id, { window, unmanagedId });
+      // (Des)maximizar muda quais janelas entram no grid (Unmaximize Recovery): re-tila. O sinal só
+      // dispara na transição de estado (não em todo resize), então não há loop com a aplicação.
+      const notifyIds = [
+        window.connect('notify::maximized-horizontally', () => this._scheduleRelayout()),
+        window.connect('notify::maximized-vertically', () => this._scheduleRelayout()),
+      ];
+      this._tracked.set(id, { window, unmanagedId, notifyIds });
     }
     this._scheduleRelayout();
   }
@@ -467,10 +491,19 @@ export default class EtherbitTilingExtension extends Extension {
       // Aplica a geometria das janelas visíveis (singles + aba ativa de cada stack).
       for (const command of commands) {
         const window = byId.get(command.id);
+        if (!window) {
+          continue;
+        }
+        // Não sobrescrever a geometria de uma janela MAXIMIZADA — isso a desmaximizaria. O compositor
+        // a mantém maximizada por cima do seu slot reservado; ao desmaximizar, o evento dispara um
+        // novo relayout que aplica a geometria do slot (Unmaximize Recovery).
+        if (this._isMaximized(window)) {
+          continue;
+        }
         // user_op=false: reposicionamento programático, instantâneo e puramente geométrico.
-        window?.move_resize_frame(false, command.x, command.y, command.width, command.height);
+        window.move_resize_frame(false, command.x, command.y, command.width, command.height);
         // Cantos arredondados (efeito no ator) conforme a config — best-effort, nunca quebra.
-        const actor = window?.get_compositor_private() as Clutter.Actor | null;
+        const actor = window.get_compositor_private() as Clutter.Actor | null;
         if (actor) {
           if (this._config.rounded_corners) {
             applyRoundedCorners(actor, this._config.corner_radius);
@@ -629,6 +662,14 @@ export default class EtherbitTilingExtension extends Extension {
       actor.hide();
       return;
     }
+    // Realça a intenção: zona "stack" (empilhar como nova aba) em VERDE; split/swap no azul Nord.
+    actor.set_style(
+      preview.zone === 'stack'
+        ? 'background-color: rgba(163, 190, 140, 0.30);' +
+            'border: 2px solid rgba(163, 190, 140, 0.95); border-radius: 12px;'
+        : 'background-color: rgba(94, 129, 172, 0.28);' +
+            'border: 2px solid rgba(94, 129, 172, 0.9); border-radius: 12px;',
+    );
     actor.set_position(preview.x, preview.y);
     actor.set_size(preview.width, preview.height);
     actor.show();
@@ -820,39 +861,114 @@ export default class EtherbitTilingExtension extends Extension {
     }
   }
 
-  /// Botão de uma aba: ícone (via Shell.WindowTracker) + título da janela. Clique → ativa a aba.
+  /// Uma guia (aba): container reativo com [conteúdo clicável → ativa a aba] + [ícone "x" → fecha o
+  /// app]. Clique com o botão DIREITO em qualquer ponto da guia abre o menu de contexto "Desagrupar".
   private _makeTabButton(
     window: Meta.Window | undefined,
     memberId: number,
     isActive: boolean,
-  ): St.Button {
+  ): St.Widget {
+    const tab = new St.BoxLayout({
+      style_class: isActive ? 'etherbit-tab etherbit-tab-active' : 'etherbit-tab',
+      reactive: true,
+      x_expand: true,
+    });
+    tab.set_style(
+      isActive
+        ? 'background-color: rgba(94, 129, 172, 0.95); border-radius: 6px; color: #eceff4;'
+        : 'background-color: transparent; border-radius: 6px; color: #d8dee9;',
+    );
+
+    // Conteúdo: ícone (via Shell.WindowTracker) + título. Clique esquerdo → ativa a aba.
     const content = new St.BoxLayout({ style_class: 'etherbit-tab-content' });
     content.set_style('spacing: 6px; padding: 0 8px;');
     const app = window ? Shell.WindowTracker.get_default().get_window_app(window) : null;
     if (app) {
       content.add_child(app.create_icon_texture(16));
     }
-    content.add_child(new St.Label({ text: window?.get_title() ?? '' }));
-
-    const button = new St.Button({
-      style_class: isActive ? 'etherbit-tab etherbit-tab-active' : 'etherbit-tab',
-      x_expand: true,
-      child: content,
-    });
-    button.set_style(
-      isActive
-        ? 'background-color: rgba(94, 129, 172, 0.95); border-radius: 6px; color: #eceff4;'
-        : 'background-color: transparent; border-radius: 6px; color: #d8dee9;',
+    content.add_child(
+      new St.Label({ text: window?.get_title() ?? '', y_align: Clutter.ActorAlign.CENTER }),
     );
-    button.connect('clicked', () => {
+    const activateBtn = new St.Button({ x_expand: true, child: content });
+    activateBtn.set_style('background-color: transparent; border-radius: 6px;');
+    activateBtn.connect('clicked', () => {
       if (setActiveMember(this._stacks, memberId)) {
         this._scheduleRelayout();
       }
     });
-    return button;
+    tab.add_child(activateBtn);
+
+    // Ícone de fechar "x": clique esquerdo encerra o app daquela janela (o sinal `unmanaged` limpa
+    // ordem/stacks e re-tila). Mínimo e à direita do título, como pede o ADR.
+    const closeBtn = new St.Button({
+      style_class: 'etherbit-tab-close',
+      child: new St.Icon({ icon_name: 'window-close-symbolic', icon_size: 14 }),
+      y_align: Clutter.ActorAlign.CENTER,
+    });
+    closeBtn.set_style('padding: 0 4px;');
+    closeBtn.connect('clicked', () => {
+      window?.delete(global.get_current_time());
+    });
+    tab.add_child(closeBtn);
+
+    // Clique com o botão DIREITO em qualquer ponto da guia → menu de contexto.
+    tab.connect('button-press-event', (_actor: Clutter.Actor, event: Clutter.Event) => {
+      if (event.get_button() === Clutter.BUTTON_SECONDARY) {
+        this._openTabContextMenu(tab, memberId);
+        return Clutter.EVENT_STOP;
+      }
+      return Clutter.EVENT_PROPAGATE;
+    });
+
+    return tab;
+  }
+
+  /// Abre o menu de contexto da aba: um único item "Desagrupar Janela", que tira a janela do stack e a
+  /// devolve ao grid como nó independente. `removeIdFromStacks` muta o estado leve; o `reconcile`
+  /// reexpande a folha no próximo relayout.
+  private _openTabContextMenu(source: St.Widget, memberId: number): void {
+    this._destroyTabMenu();
+    if (!this._tabMenuAnchor) {
+      // Anchor estável para o grab do manager (as guias são efêmeras — recriadas no relayout).
+      this._tabMenuAnchor = new St.Widget({ reactive: false });
+      Main.layoutManager.uiGroup.add_child(this._tabMenuAnchor);
+    }
+    if (!this._tabMenuManager) {
+      this._tabMenuManager = new PopupMenu.PopupMenuManager(this._tabMenuAnchor);
+    }
+    const menu = new PopupMenu.PopupMenu(source, 0.5, St.Side.TOP);
+    menu.addAction('Desagrupar Janela', () => {
+      if (removeIdFromStacks(this._stacks, memberId)) {
+        this._scheduleRelayout();
+      }
+    });
+    Main.layoutManager.uiGroup.add_child(menu.actor);
+    menu.actor.hide();
+    this._tabMenuManager.addMenu(menu);
+    menu.connect('open-state-changed', (_m, isOpen: boolean) => {
+      if (!isOpen) {
+        this._destroyTabMenu();
+      }
+      return false;
+    });
+    this._tabMenu = menu;
+    menu.open();
+  }
+
+  /// Fecha e descarta o menu de contexto atual (se houver). Idempotente.
+  private _destroyTabMenu(): void {
+    const menu = this._tabMenu;
+    if (!menu) {
+      return;
+    }
+    this._tabMenu = null;
+    this._tabMenuManager?.removeMenu(menu);
+    menu.destroy();
   }
 
   private _destroyTabBars(): void {
+    // Fecha o menu ANTES de destruir as guias (o menu é ancorado numa guia).
+    this._destroyTabMenu();
     for (const box of this._tabBars) {
       box.destroy();
     }
@@ -902,7 +1018,14 @@ export default class EtherbitTilingExtension extends Extension {
       workspace: workspace ? workspace.index() : 0,
       min_width: minWidth,
       min_height: minHeight,
+      maximized: this._isMaximized(window),
     };
+  }
+
+  /// `true` se a janela está maximizada em AMBOS os eixos (estado, não a capacidade `can_maximize`).
+  /// Base do Unmaximize Recovery: o core mantém janelas maximizadas fora do grid (ou preserva o slot).
+  private _isMaximized(window: Meta.Window): boolean {
+    return window.get_maximized() === Meta.MaximizeFlags.BOTH;
   }
 
   /// Tamanho mínimo (px de frame) imposto pelo app via `Meta.Window.get_min_size()` — funciona em

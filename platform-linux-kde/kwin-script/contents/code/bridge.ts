@@ -21,6 +21,8 @@ export interface WindowSnapshot {
   /// Tamanho mínimo imposto pelo app (geometry hint); 0 = sem restrição.
   min_width: number;
   min_height: number;
+  /// Janela maximizada no momento (estado). Dispara o tratamento de unmaximize no core.
+  maximized: boolean;
 }
 
 /// Espelha o `MonitorDto` do daemon (área útil de um monitor).
@@ -301,11 +303,13 @@ export interface Stack {
 /// Árvore BSP persistente com ids INTERNOS (internalId string) — a forma canônica guardada na ponte.
 export type TreeNode =
   | { win: string }
+  | { stack: { members: string[]; active: string } }
   | { split: { axis: 'h' | 'v'; ratio: number; first: TreeNode; second: TreeNode } };
 
 /// Árvore com ids de TRANSPORTE (números), como trafega no contrato D-Bus (igual ao GNOME).
 export type TransportNode =
   | { win: number }
+  | { stack: { members: number[]; active: number } }
   | { split: { axis: 'h' | 'v'; ratio: number; first: TransportNode; second: TransportNode } };
 
 /// internalId-tree → transport-tree. Folha sem transporte (janela fechada) é COLAPSADA (o irmão
@@ -317,6 +321,26 @@ export function treeToTransport(
   if ('win' in node) {
     const t = transportOf.get(node.win);
     return t === undefined ? null : { win: t };
+  }
+  if ('stack' in node) {
+    // Traduz cada membro; membros sem transporte (janela fechada) caem. < 2 → degrada (folha/colapso).
+    const members: number[] = [];
+    for (const m of node.stack.members) {
+      const t = transportOf.get(m);
+      if (t !== undefined) {
+        members.push(t);
+      }
+    }
+    if (members.length === 0) {
+      return null;
+    }
+    if (members.length === 1) {
+      return { win: members[0] as number };
+    }
+    const activeT = transportOf.get(node.stack.active);
+    const active =
+      activeT !== undefined && members.includes(activeT) ? activeT : (members[0] as number);
+    return { stack: { members, active } };
   }
   const first = treeToTransport(node.split.first, transportOf);
   const second = treeToTransport(node.split.second, transportOf);
@@ -334,6 +358,25 @@ export function treeFromTransport(
   if ('win' in node) {
     const s = toStable.get(node.win);
     return s === undefined ? null : { win: s };
+  }
+  if ('stack' in node) {
+    const members: string[] = [];
+    for (const m of node.stack.members) {
+      const s = toStable.get(m);
+      if (s !== undefined) {
+        members.push(s);
+      }
+    }
+    if (members.length === 0) {
+      return null;
+    }
+    if (members.length === 1) {
+      return { win: members[0] as string };
+    }
+    const activeS = toStable.get(node.stack.active);
+    const active =
+      activeS !== undefined && members.includes(activeS) ? activeS : (members[0] as string);
+    return { stack: { members, active } };
   }
   const first = treeFromTransport(node.split.first, toStable);
   const second = treeFromTransport(node.split.second, toStable);

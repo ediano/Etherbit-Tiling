@@ -85,6 +85,11 @@ interface KWinWindow {
   readonly interactiveMoveResizeStepped: KWinSignal<[QRect]>;
   /** Fim do move/resize interativo (soltar). */
   readonly interactiveMoveResizeFinished: KWinSignal<[]>;
+  /**
+   * (Des)maximização da janela. OPCIONAL: nem toda versão do KWin script expõe este sinal — conecte
+   * sempre com checagem (`if (win.maximizedChanged) …`). Usado pelo Unmaximize Recovery para re-tilar.
+   */
+  readonly maximizedChanged?: KWinSignal<[]>;
 }
 
 /** Sinal Qt exposto ao script. */

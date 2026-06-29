@@ -43,6 +43,7 @@ const win: WindowSnapshot = {
   workspace: 0,
   min_width: 0,
   min_height: 0,
+  maximized: false,
 };
 
 describe('serializeWindows / serializeMonitors', () => {
