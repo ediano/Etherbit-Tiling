@@ -2507,7 +2507,8 @@ mod tests {
         // menos que o mínimo. Sem foco em nenhum lado, mantém o proporcional. Nunca há sobreposição.
         let rect = Rectf { x: 0.0, y: 0.0, w: 1000.0, h: 800.0 };
         // avail = 1000 - gap(8) = 992; min_first + min_second = 1200 > 992 → fallback.
-        let (a, b) = split_rect_clamped(rect, 8.0, Axis::Horizontal, 0.5, 600.0, 600.0, FocusBias::First);
+        let (a, b) =
+            split_rect_clamped(rect, 8.0, Axis::Horizontal, 0.5, 600.0, 600.0, FocusBias::First);
         assert_eq!(a.w, 600.0, "1ª focada → recebe o mínimo");
         assert_eq!(b.w, 992.0 - 600.0, "vizinha absorve o resto, sem sobrepor");
         let (a2, _) =
