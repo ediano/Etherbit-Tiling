@@ -44,7 +44,7 @@ estado, ponte aplica" (ADR [0002](0002-arquitetura-core-agnostico.md)/[0016](001
     balanceado;
   - janela maximizada que **já era folha** (maximizada temporariamente) **preserva o slot** e volta à
     posição/proporção exatas ao desmaximizar (sai de graça da árvore persistente).
-  As pontes detectam o estado (GNOME `get_maximized() === BOTH`; KDE comparando com a `MaximizeArea`),
+  As pontes detectam o estado (GNOME `get_maximized() === BOTH` — **ver emenda 2026-06 abaixo**; KDE comparando com a `MaximizeArea`),
   **não aplicam geometria** em janelas maximizadas e re-tilam no evento de (des)maximização (GNOME
   `notify::maximized-*`; KDE `maximizedChanged`, conectado defensivamente). Nenhum método D-Bus novo —
   o evento vira um `SyncWindows` (daemon sem estado).
@@ -87,4 +87,15 @@ consumível diretamente** pela ponte KDE. O transporte da ação ao KDE será re
 método tipo `PollTabActions` que a ponte drena) **ou** migrando a barra para um **KWin Effect** (que tem
 acesso pleno). Decisão e ADR próprios quando a integração de hardware for feita; muda a "apresentação
 nativa minimizada" do 0018 para o KDE.
+
+## Emenda (2026-06): detecção de maximização no GNOME por feature-detection → ver [0023](0023-compat-api-mutter-feature-detection.md)
+
+A detecção `GNOME get_maximized() === BOTH` acima quebrou numa VM limpa: em parte da faixa
+`shell-version 45–50` o `Meta.Window.get_maximized()` **não existe** e lançava
+`TypeError: ... is not a function` em loop, paralisando o relayout. O `_isMaximized` passa a detectar
+o método em runtime (`get_maximized_state` → `get_maximized` → propriedades booleanas
+`maximized_horizontally`/`maximized_vertically`), **preservando a semântica AMBOS os eixos** (`=== BOTH`,
+nunca `!== 0`). O contrato `maximized` e o Unmaximize Recovery deste ADR não mudam. Detalhes e a regra
+geral de acesso defensivo à API do Mutter em [0023](0023-compat-api-mutter-feature-detection.md).
+Status permanece **✅ Aceita**.
 

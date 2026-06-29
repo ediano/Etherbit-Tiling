@@ -32,6 +32,8 @@ arqueologia de commits.
 | [0020](0020-resiliencia-ipc-dbus.md) | Resiliência de IPC (D-Bus): ativação, reconexão e wake handshake | ✅ Aceita |
 | [0021](0021-tamanhos-minimos-geometry-hints.md) | Tamanhos mínimos (geometry hints): splits assimétricos e auto-floating | ✅ Aceita |
 | [0022](0022-stacknode-arvore-fechar-desagrupar-unmaximize.md) | `Node::Stack` na árvore, fechar/desagrupar na barra de abas e Unmaximize Recovery | ✅ Aceita |
+| [0023](0023-compat-api-mutter-feature-detection.md) | Compatibilidade da API do Mutter na ponte GNOME (feature-detection defensiva) | ✅ Aceita |
+| [0024](0024-instaladores-upgrade-idempotente-autostart.md) | Instaladores idempotentes: autostart, upgrade com checagem de versão e parada segura do daemon | ✅ Aceita |
 
 ## Como adicionar uma nova decisão
 1. Copie o formato de um ADR existente.
