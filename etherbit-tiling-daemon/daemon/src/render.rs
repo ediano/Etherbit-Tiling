@@ -62,6 +62,10 @@ pub struct RenderContext {
     adapter_name: String,
     device_type: String,
     software_fallback: bool,
+    /// A `Instance` é RETIDA: `layer.rs::run_event_loop` precisa dela (mesma instância que originou o
+    /// adapter/device) para `create_surface_unsafe` da `wlr-layer-shell`. Descartá-la aqui invalidaria
+    /// o backend ao criar a superfície.
+    pub instance: wgpu::Instance,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
 }
@@ -133,6 +137,7 @@ pub async fn init_render() -> Result<RenderContext> {
         adapter_name: info.name,
         device_type: format!("{:?}", info.device_type),
         software_fallback,
+        instance,
         device,
         queue,
     })

@@ -55,7 +55,11 @@ async fn main() -> Result<()> {
         }
     };
 
-    let connection = service::serve(config).await?;
+    let (connection, shared) = service::serve(config).await?;
+    // `shared` (fila de ações de aba + receptor de barras) só é consumido pela UI wgpu; sem a feature
+    // ele é intencionalmente ocioso.
+    #[cfg(not(feature = "wgpu-ui"))]
+    let _ = shared;
 
     println!(
         "Etherbit daemon — core {} — servindo {} em {}",
@@ -73,10 +77,12 @@ async fn main() -> Result<()> {
     // (CI/headless/GNOME) o loop encerra graciosamente — a barra do GNOME segue na extensão.
     #[cfg(feature = "wgpu-ui")]
     if let Some(ctx) = render_ctx {
-        let overlay = layer::TabBarOverlay::new(ctx, connection.clone());
+        let overlay =
+            layer::TabBarOverlay::new(ctx, connection.clone(), shared.pending_actions.clone());
         println!("Etherbit daemon — overlay de abas pronto (formato {:?}).", overlay.format());
+        let bars_rx = shared.bars_rx.clone();
         tokio::spawn(async move {
-            if let Err(err) = layer::run_event_loop(overlay).await {
+            if let Err(err) = layer::run_event_loop(overlay, bars_rx).await {
                 eprintln!("Etherbit daemon — overlay de abas indisponível: {err:#}");
             }
         });
