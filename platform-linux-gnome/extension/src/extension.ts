@@ -229,12 +229,14 @@ export default class EtherbitTilingExtension extends Extension {
 
     // 2) Indicador na barra. Cada ação roteia por `_call` (resiliente a queda do canal).
     this._indicator = new EtherbitIndicator({
+      // Chave geral: persiste no daemon e propaga via ConfigChanged → o `_relayout` lê `enabled` e
+      // pausa/retoma o laço.
+      onEnabled: (enabled) => this._call((p) => p.SetEnabledSync(enabled)),
       onGap: (gap) => this._call((p) => p.SetGapSync(gap)),
+      // O raio é a única fonte de verdade do arredondamento: `> 0` liga, `0` desliga. Derivamos o
+      // `rounded_corners` do contrato a partir disso (não há mais toggle separado).
       onCornerRadius: (radius) =>
-        this._call((p) => p.SetRoundedCornersSync(this._config.rounded_corners, radius)),
-      onAutostart: (enabled) => this._call((p) => p.SetAutostartSync(enabled)),
-      onRoundedCorners: (enabled) =>
-        this._call((p) => p.SetRoundedCornersSync(enabled, this._config.corner_radius)),
+        this._call((p) => p.SetRoundedCornersSync(radius > 0, radius)),
     });
     Main.panel.addToStatusArea(this.uuid, this._indicator);
 
@@ -430,6 +432,16 @@ export default class EtherbitTilingExtension extends Extension {
       return;
     }
 
+    // Chave geral DESLIGADA: pausa o laço (não envia `SyncWindows`) e LIBERA as janelas para o
+    // comportamento flutuante do sistema — desfaz só o que NÓS impusemos (minimizadas como aba,
+    // elevadas por auto-floating, cantos arredondados, barras de aba). O daemon segue vivo. O estado
+    // leve (ordem/stacks/árvores) é PRESERVADO, então religar (`enabled = true`) reorganiza tudo de
+    // volta no grid. Idempotente: chamadas repetidas com tudo já liberado são no-op.
+    if (!this._config.enabled) {
+      this._releaseToFloating();
+      return;
+    }
+
     const workspace = global.workspace_manager.get_active_workspace();
     const windows = workspace ? workspace.list_windows() : [];
 
@@ -531,10 +543,11 @@ export default class EtherbitTilingExtension extends Extension {
           // Clamp ≥ 1px: rect inválido (width/height ≤ 0) quebraria o framebuffer do Cogl.
           const g = clampGeometry(command);
           window.move_resize_frame(false, g.x, g.y, g.width, g.height);
-          // Cantos arredondados (efeito no ator) conforme a config — best-effort, nunca quebra.
+          // Cantos arredondados (efeito no ator): o RAIO é a única fonte de verdade — `> 0` aplica o
+          // efeito; `0` o remove (não há mais toggle separado). Best-effort, nunca quebra.
           const actor = window.get_compositor_private() as Clutter.Actor | null;
           if (actor) {
-            if (this._config.rounded_corners) {
+            if (this._config.corner_radius > 0) {
               applyRoundedCorners(actor, this._config.corner_radius);
             } else {
               clearRoundedCorners(actor);
@@ -1085,6 +1098,20 @@ export default class EtherbitTilingExtension extends Extension {
       box.destroy();
     }
     this._tabBars = [];
+  }
+
+  /// Libera as janelas do grid para o comportamento flutuante do sistema (chave geral desligada):
+  /// desminimiza abas, baixa as elevadas, descarta as barras de aba e remove o efeito de cantos. NÃO
+  /// limpa o estado leve (ordem/stacks/árvores) — assim religar o tiling reorganiza tudo de volta.
+  private _releaseToFloating(): void {
+    this._restoreHiddenWindows();
+    this._destroyTabBars();
+    for (const { window } of this._tracked.values()) {
+      const actor = window.get_compositor_private() as Clutter.Actor | null;
+      if (actor) {
+        clearRoundedCorners(actor);
+      }
+    }
   }
 
   /// Restaura o estado que NÓS impusemos: desminimiza abas inativas e baixa (remove always-on-top)

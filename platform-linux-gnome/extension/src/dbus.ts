@@ -25,6 +25,9 @@ const IFACE_XML = `
     <method name="GetConfig">
       <arg type="s" direction="out" name="config_json"/>
     </method>
+    <method name="SetEnabled">
+      <arg type="b" direction="in" name="enabled"/>
+    </method>
     <method name="SetGap">
       <arg type="u" direction="in" name="gap"/>
     </method>
@@ -83,6 +86,8 @@ export interface TilingProxy {
   /// Handshake/health-check: devolve `["ok"]` se o daemon está vivo.
   PingSync(): [string];
   GetConfigSync(): [string];
+  /// Chave geral do tiling: `false` libera as janelas (a ponte pausa o laço); `true` re-tila.
+  SetEnabledSync(enabled: boolean): void;
   SetGapSync(gap: number): void;
   SetActiveBorderSync(enabled: boolean, color: string, width: number): void;
   SetIgnoreListSync(appIds: string[]): void;
