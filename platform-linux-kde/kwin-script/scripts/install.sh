@@ -63,7 +63,7 @@ if command -v busctl >/dev/null; then
     echo ">> Daemon ATIVO no barramento de sessão."
   else
     echo "AVISO: o daemon NÃO está no barramento — o tiling ficará INERTE. Em dev, rode-o à parte:"
-    echo "         RUST_LOG=debug cargo run --manifest-path platform-linux-daemon/Cargo.toml"
+    echo "         RUST_LOG=debug cargo run --manifest-path etherbit-tiling-daemon/Cargo.toml"
     echo "       Ou instale o pacote completo (daemon + systemd --user): bash packaging/install-kde.sh"
   fi
 fi

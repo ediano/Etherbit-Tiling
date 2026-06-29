@@ -5,7 +5,7 @@
 // devolvidos. Toda decisão de layout vive no core (Rust). Aqui só a montagem do JSON e o parse
 // defensivo — isolados das globais do KWin para serem testáveis em Node/vitest (ver ADR rules/0016).
 
-/// Espelha o `WindowDto` do daemon (platform-linux-daemon/daemon/src/protocol.rs).
+/// Espelha o `WindowDto` do daemon (etherbit-tiling-daemon/daemon/src/protocol.rs).
 export interface WindowSnapshot {
   id: number;
   app_id: string;

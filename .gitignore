@@ -6,7 +6,7 @@
 /etherbit-tiling-kde.tar.gz
 
 # ─────────────────────────────────────────────
-#  Rust / Cargo  (core + platform-linux-daemon/daemon)
+#  Rust / Cargo  (core + etherbit-tiling-daemon/daemon)
 # ─────────────────────────────────────────────
 /target/
 **/target/

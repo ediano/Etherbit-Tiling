@@ -6,6 +6,9 @@ D-Bus caiu. O Etherbit já se auto-recupera (ativação D-Bus + reconexão na po
 ver [ADR 0020](../rules/0020-resiliencia-ipc-dbus.md)); estes comandos servem para confirmar o
 diagnóstico e investigar regressões.
 
+> Histórico da regressão "falha total" (v2.2.0 → v2.5.0) e do conserto (v2.5.1):
+> [RELATORIO-REGRESSAO-v2.5.md](RELATORIO-REGRESSAO-v2.5.md).
+
 > Arquitetura: o **daemon** Rust serve `dev.ediano.etherbit.Tiling` no barramento de **sessão**; a
 > **extensão GNOME** / **script KWin** são clientes. O daemon é **sem estado** — reiniciá-lo é seguro.
 
@@ -29,7 +32,7 @@ journalctl --user -u etherbit-tiling-daemon.service -b 0
 
 # Rodar o daemon em primeiro plano com log detalhado (vê nº de janelas recebidas / rects / PÂNICO):
 systemctl --user stop etherbit-tiling-daemon.service 2>/dev/null
-RUST_LOG=debug ~/.local/bin/etherbit-tiling-daemon     # ou: cargo run --manifest-path platform-linux-daemon/Cargo.toml
+RUST_LOG=debug ~/.local/bin/etherbit-tiling-daemon     # ou: cargo run --manifest-path etherbit-tiling-daemon/Cargo.toml
 
 # O daemon responde? (a chamada também dispara a ativação D-Bus)
 busctl --user call dev.ediano.etherbit.Tiling /dev/ediano/etherbit/Tiling \

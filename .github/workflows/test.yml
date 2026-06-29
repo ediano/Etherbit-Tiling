@@ -36,7 +36,7 @@ jobs:
       - name: cargo test (core)
         run: cargo test
 
-  # platform-linux-daemon/daemon/ — binário Rust (workspace Cargo separado, compartilhado por GNOME/KDE).
+  # etherbit-tiling-daemon/daemon/ — binário Rust (workspace Cargo separado, compartilhado por GNOME/KDE).
   test-daemon:
     name: Testes — daemon (Rust)
     runs-on: ubuntu-latest
@@ -47,13 +47,13 @@ jobs:
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: platform-linux-daemon
+          workspaces: etherbit-tiling-daemon
       - name: Dependências de build do daemon
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config build-essential
       - name: cargo fmt --check (daemon)
-        run: cargo fmt --manifest-path platform-linux-daemon/Cargo.toml --check
+        run: cargo fmt --manifest-path etherbit-tiling-daemon/Cargo.toml --check
       - name: cargo test (daemon)
-        run: cargo test --manifest-path platform-linux-daemon/Cargo.toml
+        run: cargo test --manifest-path etherbit-tiling-daemon/Cargo.toml
 
   # platform-linux-gnome/extension/ — TypeScript (vitest em ambiente node).
   test-extension:

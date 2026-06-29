@@ -15,11 +15,11 @@ Adotar um **monorepo com workspaces Cargo independentes**, um por domínio de bu
 [workspace]
 resolver = "2"
 members = ["core"]
-exclude = ["platform-linux-daemon"]
+exclude = ["etherbit-tiling-daemon"]
 ```
 
 ```toml
-# platform-linux-daemon/Cargo.toml (daemon Linux, compartilhado por GNOME/KDE)
+# etherbit-tiling-daemon/Cargo.toml (daemon Linux, compartilhado por GNOME/KDE)
 [workspace]
 resolver = "2"
 members = ["daemon"]
@@ -31,6 +31,11 @@ members = ["daemon"]
   aninhado).
 - Cada workspace tem seu próprio `Cargo.lock`. Crates usam `edition = "2021"`.
 - `platform-macos` (Swift) **não** entra em workspace Cargo — é compilado por Xcode/SwiftPM no host.
+- **Diretório do daemon = nome do binário (`etherbit-tiling-daemon/`).** O diretório foi renomeado de
+  `platform-linux-daemon/` para espelhar o crate/binário `etherbit-tiling-daemon` (agnóstico de DE).
+  Como o caminho é resolvido por `--manifest-path` (build) e o runtime pelo bus name D-Bus — nunca pelo
+  nome da pasta — alinhar pasta e binário remove ambiguidade. O prefixo `platform-linux-*` fica reservado
+  às camadas de **UI** de fato específicas de plataforma (`platform-linux-gnome/`, `platform-linux-kde/`).
 
 ## Consequências
 - **Builds isolados:** o core compila sem nada de plataforma; o daemon compila no seu próprio workspace.
