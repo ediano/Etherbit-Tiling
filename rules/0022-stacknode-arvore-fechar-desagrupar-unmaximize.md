@@ -1,6 +1,8 @@
 # 0022 — `Node::Stack` na árvore, fechar/desagrupar na barra de abas e Unmaximize Recovery
 
-**Status:** ✅ Aceita
+**Status:** 🔄 Topologia substituída por [#0026](0026-grid-fractal-3x3-elastico-e-hud.md) (o `Node::Stack`
+agora convive com `Node::Grid` no lugar do `Node::Split`). Permanecem válidos: `Stack` como variante de
+primeira classe, fechar/desagrupar na barra, e o **Unmaximize Recovery** (adaptado ao grid).
 
 ## Contexto
 
