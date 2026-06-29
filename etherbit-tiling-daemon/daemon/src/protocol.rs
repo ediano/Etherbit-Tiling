@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 
 use etherbit_tiling_core::{
     compute_constrained, detect_drop_target, is_tileable, move_window as core_move_window,
-    reconcile, resize_window as core_resize_window, retain_tileable_when_maximized, Axis,
-    DropPreview, DropZone, Edge, LayoutOptions, LayoutTree, Node, PreviewRect, StackDescriptor,
-    TabBarRect, WindowInfo, WindowRect, WorkArea, MIN_RATIO,
+    reconcile, resize_window as core_resize_window, retain_tileable_when_maximized, DropPreview,
+    DropScope, DropZone, Edge, GridChild, LayoutOptions, LayoutTree, Node, PreviewRect,
+    StackDescriptor, TabBarRect, WindowInfo, WindowRect, WorkArea,
 };
 
 /// Desserializa um índice (monitor/workspace) de forma TOLERANTE: aceita inteiro e SATURA negativos a
@@ -123,24 +123,43 @@ pub struct SyncStateDto {
     pub focused_id: u64,
 }
 
-/// Nó da árvore BSP no contrato D-Bus (untagged): folha `{ "win": id }`, divisão
-/// `{ "split": { axis, ratio, first, second } }` ou stack (abas) `{ "stack": { members, active } }`.
-/// Espelha `etherbit_tiling_core::Node`.
+/// Nó da árvore no contrato D-Bus (untagged): folha `{ "win": id }`, grid
+/// `{ "grid": { cols, rows, cells } }` ou stack (abas) `{ "stack": { members, active } }`. Espelha
+/// `etherbit_tiling_core::Node` (ADR 0026: o `Grid` elástico 3×3 substitui o `Split` binário).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum NodeDto {
-    Split { split: SplitDto },
+    Grid { grid: GridDto },
     Stack { stack: StackNodeDto },
     Win { win: u64 },
 }
 
+/// Matriz elástica de até 3 colunas × 3 linhas: frações por eixo + células posicionadas. Espelha
+/// `etherbit_tiling_core::Node::Grid`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SplitDto {
-    /// "h" = lado a lado (Horizontal); "v" = empilhado (Vertical).
-    pub axis: String,
-    pub ratio: f64,
-    pub first: Box<NodeDto>,
-    pub second: Box<NodeDto>,
+pub struct GridDto {
+    pub cols: Vec<f64>,
+    pub rows: Vec<f64>,
+    pub cells: Vec<GridCellDto>,
+}
+
+/// Célula de um `GridDto`: o nó recursivo + posição `(col, row)` (0-based) e span em colunas/linhas.
+/// `col_span`/`row_span` ausentes → 1 (retrocompat defensivo).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GridCellDto {
+    pub node: Box<NodeDto>,
+    #[serde(default)]
+    pub col: u8,
+    #[serde(default)]
+    pub row: u8,
+    #[serde(default = "one_u8")]
+    pub col_span: u8,
+    #[serde(default = "one_u8")]
+    pub row_span: u8,
+}
+
+fn one_u8() -> u8 {
+    1
 }
 
 /// Container empilhado (abas) na árvore: membros na ordem das abas + aba ativa. Espelha
@@ -269,6 +288,15 @@ fn parse_edge(s: &str) -> Edge {
     }
 }
 
+/// Rótulo do escopo do drop → `DropScope` (ADR 0026). `"global"` = nó principal do workspace (50%);
+/// qualquer outro (incl. `"local"`/ausente) = subdivisão local da janela-alvo.
+fn parse_scope(s: &str) -> DropScope {
+    match s {
+        "global" => DropScope::Global,
+        _ => DropScope::Local,
+    }
+}
+
 /// Saída de `move_window`/`resize_window`: só as árvores atualizadas (a ponte persiste e re-sincroniza
 /// a geometria).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -361,18 +389,41 @@ impl From<&TabBarRect> for TabBarDto {
     }
 }
 
-/// Converte um nó do contrato D-Bus para o tipo do core (recursivo). Faz clamp defensivo do `ratio`.
+/// Normaliza frações de tracks (defensivo): vazio → `[1.0]`; soma ≤ 0 → uniforme; senão renormaliza
+/// para somar 1 (e satura negativos a 0).
+fn norm_fracs(f: &[f64]) -> Vec<f64> {
+    if f.is_empty() {
+        return vec![1.0];
+    }
+    let sum: f64 = f.iter().map(|x| x.max(0.0)).sum();
+    if sum <= 0.0 {
+        return vec![1.0 / f.len() as f64; f.len()];
+    }
+    f.iter().map(|x| x.max(0.0) / sum).collect()
+}
+
+/// Converte um nó do contrato D-Bus para o tipo do core (recursivo). Normaliza as frações e satura os
+/// spans a `>= 1` (defensivo).
 fn node_to_core(dto: &NodeDto) -> Node {
     match dto {
         NodeDto::Win { win } => Node::Leaf(*win),
         NodeDto::Stack { stack } => {
             Node::Stack { members: stack.members.clone(), active: stack.active }
         }
-        NodeDto::Split { split } => Node::Split {
-            axis: if split.axis == "v" { Axis::Vertical } else { Axis::Horizontal },
-            ratio: split.ratio.clamp(MIN_RATIO, 1.0 - MIN_RATIO),
-            first: Box::new(node_to_core(&split.first)),
-            second: Box::new(node_to_core(&split.second)),
+        NodeDto::Grid { grid } => Node::Grid {
+            cols: norm_fracs(&grid.cols),
+            rows: norm_fracs(&grid.rows),
+            cells: grid
+                .cells
+                .iter()
+                .map(|c| GridChild {
+                    node: Box::new(node_to_core(&c.node)),
+                    col: c.col,
+                    row: c.row,
+                    col_span: c.col_span.max(1),
+                    row_span: c.row_span.max(1),
+                })
+                .collect(),
         },
     }
 }
@@ -384,12 +435,20 @@ fn node_to_dto(node: &Node) -> NodeDto {
         Node::Stack { members, active } => {
             NodeDto::Stack { stack: StackNodeDto { members: members.clone(), active: *active } }
         }
-        Node::Split { axis, ratio, first, second } => NodeDto::Split {
-            split: SplitDto {
-                axis: if *axis == Axis::Vertical { "v".to_string() } else { "h".to_string() },
-                ratio: *ratio,
-                first: Box::new(node_to_dto(first)),
-                second: Box::new(node_to_dto(second)),
+        Node::Grid { cols, rows, cells } => NodeDto::Grid {
+            grid: GridDto {
+                cols: cols.clone(),
+                rows: rows.clone(),
+                cells: cells
+                    .iter()
+                    .map(|c| GridCellDto {
+                        node: Box::new(node_to_dto(&c.node)),
+                        col: c.col,
+                        row: c.row,
+                        col_span: c.col_span,
+                        row_span: c.row_span,
+                    })
+                    .collect(),
             },
         },
     }
@@ -614,13 +673,17 @@ pub fn move_window(
     dragged_id: u64,
     target_id: u64,
     zone: &str,
+    scope: &str,
 ) -> Result<String> {
     let state = parse_state(state_json)?;
     let zone = parse_zone(zone);
+    let scope = parse_scope(scope);
     let trees = parse_trees(&state);
     let dtos: Vec<TreeDto> = trees
         .iter()
-        .map(|(m, w, t)| tree_to_dto(*m, *w, &core_move_window(t, dragged_id, target_id, zone)))
+        .map(|(m, w, t)| {
+            tree_to_dto(*m, *w, &core_move_window(t, dragged_id, target_id, zone, scope))
+        })
         .collect();
     serde_json::to_string(&TreesDto { trees: dtos }).context("falha ao serializar trees_json")
 }
@@ -931,7 +994,7 @@ mod tests {
         let r1 = layout_of(&first);
         let trees_json = serde_json::to_string(&r1.trees).unwrap();
         let state = format!(r#"{{"trees":{trees_json}}}"#);
-        let out = move_window(&state, 3, 1, "left").expect("move ok");
+        let out = move_window(&state, 3, 1, "left", "local").expect("move ok");
         let moved: TreesDto = serde_json::from_str(&out).expect("trees válidas");
         assert_eq!(moved.trees.len(), 1);
         // Re-sincroniza com as árvores movidas: 3 deve estar à esquerda de 1.
@@ -945,7 +1008,7 @@ mod tests {
 
     #[test]
     fn move_window_rejects_invalid_state() {
-        assert!(move_window("{bad", 1, 2, "left").is_err());
+        assert!(move_window("{bad", 1, 2, "left", "local").is_err());
     }
 
     #[test]

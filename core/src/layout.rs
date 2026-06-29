@@ -189,22 +189,71 @@ pub enum Axis {
     Vertical,
 }
 
-/// Nó da árvore BSP persistente:
-///  - `Leaf` — uma janela ocupando um slot;
-///  - `Split` — divisão binária com `ratio` (fração da PRIMEIRA criança no eixo, `0<ratio<1`);
+/// Nó da árvore de tiling (GRID FRACTAL — ver ADR 0026, substitui o `Node::Split` do 0019):
+///  - `Leaf` — uma janela ocupando um slot (100% se for a raiz);
 ///  - `Stack` — um CONTAINER EMPILHADO (abas) ocupando UM slot: `members` na ordem das abas (todos
 ///    presentes no grupo) e `active` é a aba visível. Todas as `members` herdam o mesmo `(X,Y,W,H)` do
 ///    slot (a barra come o topo); só a `active` entra em `rects`. A âncora/identidade é `members[0]`.
+///  - `Grid` — uma MATRIZ ELÁSTICA de até 3 colunas × 3 linhas. `cols`/`rows` são frações (somam ~1,
+///    elásticas) e cada `GridChild` posiciona um filho recursivo numa faixa de células
+///    `[col..col+col_span) × [row..row+row_span)`. Um split binário é o caso de **2 tracks** num eixo
+///    (`split_h`/`split_v`), então a geometria de 2 janelas é IDÊNTICA ao BSP legado. A subdivisão
+///    fractal vem de aninhar grids (a célula-alvo vira um sub-`Grid`); o `span` cobre o min-size.
 ///
 /// A lógica de TOPOLOGIA do `reconcile` (inserir/colapsar/balancear) opera sobre uma forma
 /// "desmaterializada" (cada `Stack` vira `Leaf(âncora)`), e o resultado é "materializado" de volta em
-/// `Stack` conforme o comando da ponte. Isso mantém a aritmética do BSP idêntica (um stack conta como
-/// 1) e a máquina de mínimos/auto-floating intacta. Ver ADR 0018/0019.
+/// `Stack` conforme o comando da ponte — mantendo a aritmética e a máquina de mínimos/auto-floating.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {
     Leaf(u64),
-    Split { axis: Axis, ratio: f64, first: Box<Node>, second: Box<Node> },
     Stack { members: Vec<u64>, active: u64 },
+    Grid { cols: Vec<f64>, rows: Vec<f64>, cells: Vec<GridChild> },
+}
+
+/// Filho posicionado de um `Node::Grid`: o nó recursivo + sua célula de origem `(col, row)` (0-based) e
+/// o `span` em colunas/linhas (1..=3). `span > 1` = a célula ocupa várias tracks (usado pelo min-size).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GridChild {
+    pub node: Box<Node>,
+    pub col: u8,
+    pub row: u8,
+    pub col_span: u8,
+    pub row_span: u8,
+}
+
+impl Node {
+    /// Célula simples (span 1×1) na posição `(col, row)`.
+    fn cell(node: Node, col: u8, row: u8) -> GridChild {
+        GridChild { node: Box::new(node), col, row, col_span: 1, row_span: 1 }
+    }
+
+    /// `Grid` de 2 colunas (lado a lado): `first` ocupa a coluna esquerda com fração `ratio`. Equivale
+    /// ao antigo `Split { axis: Horizontal, ratio, .. }` — mesma geometria.
+    fn split_h(ratio: f64, first: Node, second: Node) -> Node {
+        Node::Grid {
+            cols: vec![ratio, 1.0 - ratio],
+            rows: vec![1.0],
+            cells: vec![Node::cell(first, 0, 0), Node::cell(second, 1, 0)],
+        }
+    }
+
+    /// `Grid` de 2 linhas (empilhado): `first` ocupa a linha superior com fração `ratio`. Equivale ao
+    /// antigo `Split { axis: Vertical, ratio, .. }`.
+    fn split_v(ratio: f64, first: Node, second: Node) -> Node {
+        Node::Grid {
+            cols: vec![1.0],
+            rows: vec![ratio, 1.0 - ratio],
+            cells: vec![Node::cell(first, 0, 0), Node::cell(second, 0, 1)],
+        }
+    }
+
+    /// Constrói um split binário no `axis` dado (helper de topologia).
+    fn split_on(axis: Axis, ratio: f64, first: Node, second: Node) -> Node {
+        match axis {
+            Axis::Horizontal => Node::split_h(ratio, first, second),
+            Axis::Vertical => Node::split_v(ratio, first, second),
+        }
+    }
 }
 
 /// Árvore de um grupo `(monitor, workspace)`. `root: None` = grupo vazio.
@@ -220,6 +269,15 @@ pub enum Edge {
     Right,
     Top,
     Bottom,
+}
+
+/// Escopo de um drop (ADR 0026): `Local` subdivide DENTRO da submatriz da janela-alvo (faixa de 1/3 no
+/// eixo); `Global` insere a arrastada como NÓ PRINCIPAL do workspace (bloco de 50%). A ponte decide o
+/// escopo (cursor sobre o corpo de uma janela = local; perto das bordas da tela ou em gap = global).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropScope {
+    Local,
+    Global,
 }
 
 /// Proporção mínima de um nó (evita folhas degeneradas); o resize faz clamp a isto.
@@ -620,30 +678,86 @@ fn inner_rect(area: &WorkArea, outer: f64) -> Rectf {
     }
 }
 
-/// Divide `rect` em duas partes no `axis`, separadas por `gap`, com a PRIMEIRA ocupando `ratio` do
-/// espaço útil (após descontar o gap). Generaliza `split_axis` (que é o caso `ratio = 0.5`).
-fn split_rect(rect: Rectf, gap: f64, axis: Axis, ratio: f64) -> (Rectf, Rectf) {
-    match axis {
-        Axis::Horizontal => {
-            let avail = (rect.w - gap).max(0.0);
-            let w1 = avail * ratio;
-            (
-                Rectf { x: rect.x, y: rect.y, w: w1, h: rect.h },
-                Rectf { x: rect.x + w1 + gap, y: rect.y, w: avail - w1, h: rect.h },
-            )
-        }
-        Axis::Vertical => {
-            let avail = (rect.h - gap).max(0.0);
-            let h1 = avail * ratio;
-            (
-                Rectf { x: rect.x, y: rect.y, w: rect.w, h: h1 },
-                Rectf { x: rect.x, y: rect.y + h1 + gap, w: rect.w, h: avail - h1 },
-            )
-        }
+/// Limites `(offset, size)` de cada track ao distribuir `total` por `fracs` (somam ~1) com `gap` entre
+/// tracks, a partir de `start`. Replica `split_axis`/o split binário no caso de 2 tracks iguais
+/// (geometria idêntica ao BSP de 2 janelas).
+fn track_bounds(start: f64, total: f64, fracs: &[f64], gap: f64) -> Vec<(f64, f64)> {
+    let n = fracs.len();
+    if n == 0 {
+        return Vec::new();
     }
+    let sum: f64 = fracs.iter().sum::<f64>().max(1e-9);
+    let avail = (total - gap * (n.saturating_sub(1)) as f64).max(0.0);
+    let mut out = Vec::with_capacity(n);
+    let mut cursor = start;
+    for f in fracs {
+        let size = avail * (f / sum);
+        out.push((cursor, size));
+        cursor += size + gap;
+    }
+    out
 }
 
-/// Atribui um `Rectf` a cada folha da árvore, aplicando os ratios e o `gap` em cada costura.
+/// Resolve os tamanhos das tracks RESPEITANDO os mínimos por track (cascata elástica): parte das
+/// frações desejadas e SATURA as tracks que ficariam abaixo do mínimo, redistribuindo o restante às
+/// demais proporcionalmente à fração. Se nem os mínimos cabem, satura todas no mínimo (overflow tratado
+/// a montante por auto-float). Com `mins` todos 0, é idêntico a `track_bounds`.
+fn solve_tracks(start: f64, total: f64, fracs: &[f64], mins: &[f64], gap: f64) -> Vec<(f64, f64)> {
+    let n = fracs.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let sum: f64 = fracs.iter().sum::<f64>().max(1e-9);
+    let avail = (total - gap * (n.saturating_sub(1)) as f64).max(0.0);
+    let mut size: Vec<f64> = fracs.iter().map(|f| avail * (f / sum)).collect();
+    let mut fixed = vec![false; n];
+    // Itera saturando as tracks abaixo do mínimo; converge em no máximo `n` passos.
+    for _ in 0..n {
+        let fixed_sum: f64 = (0..n).filter(|&i| fixed[i]).map(|i| size[i]).sum();
+        let free_frac: f64 =
+            (0..n).filter(|&i| !fixed[i]).map(|i| fracs[i]).sum::<f64>().max(1e-9);
+        let free_avail = (avail - fixed_sum).max(0.0);
+        for i in 0..n {
+            if !fixed[i] {
+                size[i] = free_avail * (fracs[i] / free_frac);
+            }
+        }
+        let mut changed = false;
+        for i in 0..n {
+            if !fixed[i] && size[i] < mins[i] {
+                size[i] = mins[i];
+                fixed[i] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut out = Vec::with_capacity(n);
+    let mut cursor = start;
+    for s in size {
+        out.push((cursor, s));
+        cursor += s + gap;
+    }
+    out
+}
+
+/// Retângulo de uma célula que cobre `[col..col+col_span) × [row..row+row_span)`, dados os limites de
+/// coluna `xb` e de linha `yb`. Inclui os gaps internos ao span (as posições já os embutem).
+fn cell_rect(xb: &[(f64, f64)], yb: &[(f64, f64)], c: &GridChild) -> Rectf {
+    let c0 = (c.col as usize).min(xb.len().saturating_sub(1));
+    let c1 = ((c.col + c.col_span.max(1)) as usize).clamp(1, xb.len());
+    let r0 = (c.row as usize).min(yb.len().saturating_sub(1));
+    let r1 = ((c.row + c.row_span.max(1)) as usize).clamp(1, yb.len());
+    let x = xb[c0].0;
+    let xend = xb[c1 - 1].0 + xb[c1 - 1].1;
+    let y = yb[r0].0;
+    let yend = yb[r1 - 1].0 + yb[r1 - 1].1;
+    Rectf { x, y, w: (xend - x).max(0.0), h: (yend - y).max(0.0) }
+}
+
+/// Atribui um `Rectf` a cada folha da árvore, aplicando as frações das tracks e o `gap` em cada costura.
 fn geom_leaves(node: &Node, rect: Rectf, gap: f64, out: &mut Vec<(u64, Rectf)>) {
     match node {
         Node::Leaf(id) => out.push((*id, rect)),
@@ -653,10 +767,12 @@ fn geom_leaves(node: &Node, rect: Rectf, gap: f64, out: &mut Vec<(u64, Rectf)>) 
                 out.push((*anchor, rect));
             }
         }
-        Node::Split { axis, ratio, first, second } => {
-            let (a, b) = split_rect(rect, gap, *axis, *ratio);
-            geom_leaves(first, a, gap, out);
-            geom_leaves(second, b, gap, out);
+        Node::Grid { cols, rows, cells } => {
+            let xb = track_bounds(rect.x, rect.w, cols, gap);
+            let yb = track_bounds(rect.y, rect.h, rows, gap);
+            for c in cells {
+                geom_leaves(&c.node, cell_rect(&xb, &yb, c), gap, out);
+            }
         }
     }
 }
@@ -684,82 +800,50 @@ fn min_extent(node: &Node, axis: Axis, gap: f64, min: &MinSizes) -> f64 {
                 Axis::Vertical => mh.max(0) as f64,
             }
         }
-        Node::Split { axis: sa, first, second, .. } => {
-            let f = min_extent(first, axis, gap, min);
-            let s = min_extent(second, axis, gap, min);
-            if *sa == axis {
-                f + gap + s
-            } else {
-                f.max(s)
-            }
+        // Num grid, o mínimo ao longo de um eixo é a SOMA dos mínimos por track (+ gaps) nesse eixo.
+        // Generaliza o split binário: para 2 tracks, soma os dois mínimos + 1 gap (idêntico ao antigo
+        // `f + gap + s`); no eixo PERPENDICULAR (1 track) é o `max` dos filhos (idêntico a `f.max(s)`).
+        Node::Grid { cols, rows, cells } => {
+            let ntracks = match axis {
+                Axis::Horizontal => cols.len(),
+                Axis::Vertical => rows.len(),
+            };
+            let tmins = track_mins(ntracks, cells, gap, min, axis);
+            tmins.iter().sum::<f64>() + gap * (ntracks.saturating_sub(1)) as f64
         }
     }
 }
 
-/// Em qual subárvore de um split vive a janela FOCADA/nova. No caso degenerado em que os dois mínimos
-/// não cabem, o lado focado recebe o seu mínimo e o vizinho absorve o resto (ver `split_rect_clamped`).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum FocusBias {
-    Neither,
-    First,
-    Second,
-}
-
-/// Como `split_rect`, mas CLAMPA a posição do corte para que cada lado receba ao menos seu mínimo
-/// (`min_first`/`min_second`, já no eixo do corte). É o "modo proporcional forçado": a janela restrita
-/// recebe seu mínimo e o vizinho maleável encolhe. Se nem os dois mínimos cabem (`min_first +
-/// min_second > avail`), prioriza o lado da janela focada (`bias`); sem foco, cai no proporcional puro.
-fn split_rect_clamped(
-    rect: Rectf,
+/// Mínimo por track (coluna se `axis == Horizontal`, linha se `Vertical`) de um grid: para cada track,
+/// o MAIOR entre os filhos que a cobrem do `min_extent` do filho no eixo, dividido pelo span do filho
+/// naquele eixo (distribui o mínimo de um filho com span entre as tracks que ele ocupa).
+fn track_mins(
+    ntracks: usize,
+    cells: &[GridChild],
     gap: f64,
+    min: &MinSizes,
     axis: Axis,
-    ratio: f64,
-    min_first: f64,
-    min_second: f64,
-    bias: FocusBias,
-) -> (Rectf, Rectf) {
-    // Tamanho da PRIMEIRA subárvore no eixo do corte, sobre o espaço útil `avail`.
-    let primary = |avail: f64| -> f64 {
-        let lo = min_first.clamp(0.0, avail);
-        let hi = (avail - min_second).max(0.0);
-        if lo <= hi {
-            // Caminho normal: respeita ambos os mínimos em torno do ratio persistido.
-            (avail * ratio).clamp(lo, hi)
-        } else {
-            // Degenerado: os dois mínimos não cabem (caso da janela focada PROTEGIDA do auto-float,
-            // que `enforce_min_sizes` não removeu). Em vez do proporcional puro — que daria à focada
-            // menos que o seu mínimo —, a subárvore que CONTÉM a focada recebe o seu mínimo e o
-            // vizinho absorve o resto. Geometricamente os dois retângulos seguem ladrilhando `avail`
-            // (nunca há sobreposição); o vizinho é que fica abaixo do próprio mínimo.
-            match bias {
-                FocusBias::First => min_first.min(avail),
-                FocusBias::Second => (avail - min_second).max(0.0),
-                FocusBias::Neither => avail * ratio,
+) -> Vec<f64> {
+    let mut out = vec![0.0; ntracks.max(1)];
+    for c in cells {
+        let (start, span) = match axis {
+            Axis::Horizontal => (c.col as usize, c.col_span.max(1) as usize),
+            Axis::Vertical => (c.row as usize, c.row_span.max(1) as usize),
+        };
+        let me = min_extent(&c.node, axis, gap, min);
+        let internal_gap = gap * (span.saturating_sub(1)) as f64;
+        let per = ((me - internal_gap).max(0.0)) / span as f64;
+        for t in start..(start + span).min(out.len()) {
+            if per > out[t] {
+                out[t] = per;
             }
         }
-    };
-    match axis {
-        Axis::Horizontal => {
-            let avail = (rect.w - gap).max(0.0);
-            let w1 = primary(avail);
-            (
-                Rectf { x: rect.x, y: rect.y, w: w1, h: rect.h },
-                Rectf { x: rect.x + w1 + gap, y: rect.y, w: avail - w1, h: rect.h },
-            )
-        }
-        Axis::Vertical => {
-            let avail = (rect.h - gap).max(0.0);
-            let h1 = primary(avail);
-            (
-                Rectf { x: rect.x, y: rect.y, w: rect.w, h: h1 },
-                Rectf { x: rect.x, y: rect.y + h1 + gap, w: rect.w, h: avail - h1 },
-            )
-        }
     }
+    out
 }
 
-/// Como `geom_leaves`, mas em cada split CLAMPA o corte aos mínimos das duas subárvores (via
-/// `min_extent`). Com `min` vazio (todos os mínimos 0) o resultado é idêntico ao `geom_leaves` puro.
+/// Como `geom_leaves`, mas em cada grid CLAMPA as tracks aos mínimos das subárvores (via `min_extent`
+/// → `solve_tracks`). Com `min` vazio (todos os mínimos 0) o resultado é idêntico ao `geom_leaves` puro.
 fn geom_leaves_min(
     node: &Node,
     rect: Rectf,
@@ -775,18 +859,16 @@ fn geom_leaves_min(
                 out.push((*anchor, rect));
             }
         }
-        Node::Split { axis, ratio, first, second } => {
-            let mf = min_extent(first, *axis, gap, min);
-            let ms = min_extent(second, *axis, gap, min);
-            // Em qual lado está a janela focada/nova — para o split forçado priorizá-la.
-            let bias = match focused {
-                Some(f) if node_contains(first, f) => FocusBias::First,
-                Some(f) if node_contains(second, f) => FocusBias::Second,
-                _ => FocusBias::Neither,
-            };
-            let (a, b) = split_rect_clamped(rect, gap, *axis, *ratio, mf, ms, bias);
-            geom_leaves_min(first, a, gap, min, focused, out);
-            geom_leaves_min(second, b, gap, min, focused, out);
+        Node::Grid { cols, rows, cells } => {
+            // Mínimos por track (cascata elástica): a track de um filho restrito recebe seu mínimo e
+            // as vizinhas maleáveis encolhem; quando o espaço cresce, tudo volta às frações.
+            let col_mins = track_mins(cols.len(), cells, gap, min, Axis::Horizontal);
+            let row_mins = track_mins(rows.len(), cells, gap, min, Axis::Vertical);
+            let xb = solve_tracks(rect.x, rect.w, cols, &col_mins, gap);
+            let yb = solve_tracks(rect.y, rect.h, rows, &row_mins, gap);
+            for c in cells {
+                geom_leaves_min(&c.node, cell_rect(&xb, &yb, c), gap, min, focused, out);
+            }
         }
     }
 }
@@ -884,9 +966,10 @@ fn collect_stack_nodes(node: &Node, out: &mut HashMap<u64, (Vec<u64>, u64)>) {
                 out.insert(*anchor, (members.clone(), *active));
             }
         }
-        Node::Split { first, second, .. } => {
-            collect_stack_nodes(first, out);
-            collect_stack_nodes(second, out);
+        Node::Grid { cells, .. } => {
+            for c in cells {
+                collect_stack_nodes(&c.node, out);
+            }
         }
         Node::Leaf(_) => {}
     }
@@ -996,7 +1079,7 @@ fn focused_leaf_id(tree: &LayoutTree, focused: Option<u64>) -> Option<u64> {
                     None
                 }
             }
-            Node::Split { first, second, .. } => walk(first, f).or_else(|| walk(second, f)),
+            Node::Grid { cells, .. } => cells.iter().find_map(|c| walk(&c.node, f)),
         }
     }
     walk(tree.root.as_ref()?, f)
@@ -1103,7 +1186,7 @@ fn node_contains(node: &Node, id: u64) -> bool {
     match node {
         Node::Leaf(lid) => *lid == id,
         Node::Stack { members, .. } => members.contains(&id),
-        Node::Split { first, second, .. } => node_contains(first, id) || node_contains(second, id),
+        Node::Grid { cells, .. } => cells.iter().any(|c| node_contains(&c.node, id)),
     }
 }
 
@@ -1139,9 +1222,10 @@ fn collect_leaf_ids(tree: &LayoutTree) -> Vec<u64> {
                     out.push(*anchor);
                 }
             }
-            Node::Split { first, second, .. } => {
-                walk(first, out);
-                walk(second, out);
+            Node::Grid { cells, .. } => {
+                for c in cells {
+                    walk(&c.node, out);
+                }
             }
         }
     }
@@ -1185,13 +1269,27 @@ fn collapse_leaf(tree: LayoutTree, id: u64) -> LayoutTree {
                     Some(Node::Stack { members, active })
                 }
             }
-            Node::Split { axis, ratio, first, second } => {
-                match (walk(*first, id), walk(*second, id)) {
-                    (None, None) => None,
-                    (Some(n), None) | (None, Some(n)) => Some(n),
-                    (Some(a), Some(b)) => {
-                        Some(Node::Split { axis, ratio, first: Box::new(a), second: Box::new(b) })
+            Node::Grid { cols, rows, cells } => {
+                // Colapsa o id dentro de cada célula; remove as que ficaram vazias.
+                let mut kept: Vec<GridChild> = Vec::new();
+                for c in cells {
+                    if let Some(n) = walk(*c.node, id) {
+                        kept.push(GridChild {
+                            node: Box::new(n),
+                            col: c.col,
+                            row: c.row,
+                            col_span: c.col_span,
+                            row_span: c.row_span,
+                        });
                     }
+                }
+                match kept.len() {
+                    0 => None,
+                    // Sobrou 1 → o sobrevivente ABSORVE o slot inteiro (achata o grid: "o irmão sobe").
+                    1 => Some(*kept.into_iter().next().unwrap().node),
+                    // ≥2 sobreviventes (grids com >2 células, fora da construção binária) → preserva as
+                    // tracks; as posições das células remanescentes seguem válidas.
+                    _ => Some(Node::Grid { cols, rows, cells: kept }),
                 }
             }
         }
@@ -1199,33 +1297,54 @@ fn collapse_leaf(tree: LayoutTree, id: u64) -> LayoutTree {
     LayoutTree { root: tree.root.and_then(|r| walk(r, id)) }
 }
 
-/// Racha a folha `target` em duas (ratio 0.5, eixo `axis`): `new_id` fica em `first` se
-/// `new_first`, senão em `second`. As demais folhas não se mexem.
-fn split_leaf_into(node: Node, target: u64, new_id: u64, axis: Axis, new_first: bool) -> Node {
+/// Cria um split binário (grid de 2 tracks) com a janela NOVA (`new_node`) ocupando `new_frac` do eixo,
+/// do lado indicado por `new_first`. `new_frac` 0.5 = split balanceado; 1/3 = a nova toma uma faixa de
+/// um terço (zona de eixo do jogo da velha) e a antiga é empurrada para os 2/3 restantes.
+fn make_split(axis: Axis, new_first: bool, new_frac: f64, new_node: Node, old_node: Node) -> Node {
+    let nf = new_frac.clamp(MIN_RATIO, 1.0 - MIN_RATIO);
+    if new_first {
+        Node::split_on(axis, nf, new_node, old_node)
+    } else {
+        Node::split_on(axis, 1.0 - nf, old_node, new_node)
+    }
+}
+
+/// Racha a folha (ou o slot de stack) `target` em duas: `new_id` ocupa `new_frac` do eixo `axis`, no
+/// lado `new_first`. As demais folhas não se mexem (estabilidade). Recorre nas células de cada `Grid`.
+fn split_leaf_into(
+    node: Node,
+    target: u64,
+    new_id: u64,
+    axis: Axis,
+    new_first: bool,
+    new_frac: f64,
+) -> Node {
     match node {
         Node::Leaf(id) if id == target => {
-            let (first, second) = if new_first {
-                (Node::Leaf(new_id), Node::Leaf(target))
-            } else {
-                (Node::Leaf(target), Node::Leaf(new_id))
-            };
-            Node::Split { axis, ratio: 0.5, first: Box::new(first), second: Box::new(second) }
+            make_split(axis, new_first, new_frac, Node::Leaf(new_id), Node::Leaf(target))
         }
         Node::Leaf(id) => Node::Leaf(id),
         // Soltar ao lado de um stack (alvo = qualquer membro): racha o SLOT do stack, mantendo o
         // container intacto de um lado e a nova folha do outro. O stack não é dividido por dentro.
         Node::Stack { members, active } if members.contains(&target) => {
-            let stack = Node::Stack { members, active };
-            let (first, second) =
-                if new_first { (Node::Leaf(new_id), stack) } else { (stack, Node::Leaf(new_id)) };
-            Node::Split { axis, ratio: 0.5, first: Box::new(first), second: Box::new(second) }
+            make_split(axis, new_first, new_frac, Node::Leaf(new_id), Node::Stack { members, active })
         }
         Node::Stack { members, active } => Node::Stack { members, active },
-        Node::Split { axis: a, ratio, first, second } => Node::Split {
-            axis: a,
-            ratio,
-            first: Box::new(split_leaf_into(*first, target, new_id, axis, new_first)),
-            second: Box::new(split_leaf_into(*second, target, new_id, axis, new_first)),
+        Node::Grid { cols, rows, cells } => Node::Grid {
+            cols,
+            rows,
+            cells: cells
+                .into_iter()
+                .map(|c| GridChild {
+                    node: Box::new(split_leaf_into(
+                        *c.node, target, new_id, axis, new_first, new_frac,
+                    )),
+                    col: c.col,
+                    row: c.row,
+                    col_span: c.col_span,
+                    row_span: c.row_span,
+                })
+                .collect(),
         },
     }
 }
@@ -1271,36 +1390,89 @@ fn insert_one(
         .find(|(id, _)| *id == target)
         .map(|(_, r)| if r.w >= r.h { Axis::Horizontal } else { Axis::Vertical })
         .unwrap_or(Axis::Horizontal);
-    LayoutTree { root: Some(split_leaf_into(root, target, new_id, axis, false)) }
+    LayoutTree { root: Some(split_leaf_into(root, target, new_id, axis, false, 0.5)) }
 }
 
-/// Move a janela `dragged` para junto de `target`, rachando a folha do alvo no lado da `zone`
-/// (`Left/Right` → corte horizontal; `Top/Bottom` → vertical; o arrastado fica do lado indicado).
-/// Remove o arrastado de onde estava (o irmão sobe) e o reinsere com ratio 0.5. Zonas que não são
-/// um lado (`Center`/`Stack`/`None`/cantos) ou alvo ausente → árvore inalterada (nunca perde janela).
-pub fn move_window(tree: &LayoutTree, dragged: u64, target: u64, zone: DropZone) -> LayoutTree {
-    if dragged == target {
-        return tree.clone();
-    }
+/// Aplica um drop do jogo da velha (ADR 0026). A `zone` dá o eixo e o lado; o `scope` decide a escala:
+///  - `Local` — a arrastada toma uma faixa de **1/3** do lado da zona DENTRO do slot do alvo, que é
+///    empurrado para os 2/3 restantes (subdivisão fractal da submatriz da janela-alvo);
+///  - `Global` — a arrastada vira **nó principal** do workspace, ocupando um bloco de **50%**; todo o
+///    resto cascateia no outro 50%.
+/// O irmão sempre sobe ao remover a arrastada (nunca perde janela). Zonas de fusão (`Center`/`Stack`)
+/// são tratadas pela PONTE (`addToStack`), não aqui → no-op. Cantos caem no eixo horizontal mais
+/// próximo (a ponte já resolve a borda dominante; ver ADR 0026 — 2 retângulos exigem um corte único).
+pub fn move_window(
+    tree: &LayoutTree,
+    dragged: u64,
+    target: u64,
+    zone: DropZone,
+    scope: DropScope,
+) -> LayoutTree {
     let (axis, dragged_first) = match zone {
-        DropZone::Left => (Axis::Horizontal, true),
-        DropZone::Right => (Axis::Horizontal, false),
+        DropZone::Left | DropZone::TopLeft | DropZone::BottomLeft => (Axis::Horizontal, true),
+        DropZone::Right | DropZone::TopRight | DropZone::BottomRight => (Axis::Horizontal, false),
         DropZone::Top => (Axis::Vertical, true),
         DropZone::Bottom => (Axis::Vertical, false),
+        // Fusão em abas (Center/Stack) é da ponte; None = sem ação.
         _ => return tree.clone(),
     };
-    // Remove o arrastado; se o alvo não está nesta árvore, desfaz (mantém a árvore original).
-    let removed = collapse_leaf(tree.clone(), dragged);
-    let root = match removed.root {
-        Some(r) if node_contains(&r, target) => r,
-        _ => return tree.clone(),
-    };
-    LayoutTree { root: Some(split_leaf_into(root, target, dragged, axis, dragged_first)) }
+    match scope {
+        DropScope::Global => {
+            // Só o grupo que CONTÉM a arrastada é afetado (o daemon aplica a todas as árvores; as
+            // demais são no-op). Sem isto, a arrastada seria inserida em grupos a que não pertence.
+            if !tree.root.as_ref().map(|r| node_contains(r, dragged)).unwrap_or(false) {
+                return tree.clone();
+            }
+            // Remove a arrastada e a reinsere como bloco de 50% sobre TODO o resto do workspace.
+            let removed = collapse_leaf(tree.clone(), dragged);
+            match removed.root {
+                None => LayoutTree { root: Some(Node::Leaf(dragged)) },
+                Some(rest) => LayoutTree {
+                    root: Some(make_split(axis, dragged_first, 0.5, Node::Leaf(dragged), rest)),
+                },
+            }
+        }
+        DropScope::Local => {
+            if dragged == target {
+                return tree.clone();
+            }
+            // Remove o arrastado; se o alvo não está nesta árvore, desfaz (mantém a original).
+            let removed = collapse_leaf(tree.clone(), dragged);
+            let root = match removed.root {
+                Some(r) if node_contains(&r, target) => r,
+                _ => return tree.clone(),
+            };
+            LayoutTree {
+                root: Some(split_leaf_into(root, target, dragged, axis, dragged_first, 1.0 / 3.0)),
+            }
+        }
+    }
+}
+
+/// Dois subretângulos iguais (ratio 0.5) de `rect` no `axis`, separados por `gap` — equivalente ao
+/// antigo `split_axis`. Usado pelo bootstrap balanceado para recorrer aspect-aware.
+fn half_rects(rect: Rectf, gap: f64, axis: Axis) -> (Rectf, Rectf) {
+    match axis {
+        Axis::Horizontal => {
+            let xb = track_bounds(rect.x, rect.w, &[0.5, 0.5], gap);
+            (
+                Rectf { x: xb[0].0, y: rect.y, w: xb[0].1, h: rect.h },
+                Rectf { x: xb[1].0, y: rect.y, w: xb[1].1, h: rect.h },
+            )
+        }
+        Axis::Vertical => {
+            let yb = track_bounds(rect.y, rect.h, &[0.5, 0.5], gap);
+            (
+                Rectf { x: rect.x, y: yb[0].0, w: rect.w, h: yb[0].1 },
+                Rectf { x: rect.x, y: yb[1].0, w: rect.w, h: yb[1].1 },
+            )
+        }
+    }
 }
 
 /// Constrói uma árvore BALANCEADA a partir de `ids` (ordem preservada), aspect-aware e com ratio
-/// 0.5 — geometria idêntica ao BSP de `bsp_rects`. Usada no bootstrap (árvore vazia) para um layout
-/// inicial simétrico antes de o usuário rearranjar.
+/// 0.5 — geometria idêntica ao BSP de `bsp_rects` (grids binários aninhados). Usada no bootstrap
+/// (árvore vazia) para um layout inicial simétrico antes de o usuário rearranjar.
 fn balanced_node(ids: &[u64], rect: Rectf, gap: f64) -> Option<Node> {
     match ids.len() {
         0 => None,
@@ -1308,10 +1480,10 @@ fn balanced_node(ids: &[u64], rect: Rectf, gap: f64) -> Option<Node> {
         n => {
             let left_count = n.div_ceil(2);
             let axis = if rect.w >= rect.h { Axis::Horizontal } else { Axis::Vertical };
-            let (a, b) = split_rect(rect, gap, axis, 0.5);
+            let (a, b) = half_rects(rect, gap, axis);
             let first = balanced_node(&ids[..left_count], a, gap)?;
             let second = balanced_node(&ids[left_count..], b, gap)?;
-            Some(Node::Split { axis, ratio: 0.5, first: Box::new(first), second: Box::new(second) })
+            Some(Node::split_on(axis, 0.5, first, second))
         }
     }
 }
@@ -1323,11 +1495,19 @@ fn dematerialize_stacks(node: Node) -> Node {
     match node {
         Node::Stack { members, .. } => Node::Leaf(members.first().copied().unwrap_or(0)),
         Node::Leaf(id) => Node::Leaf(id),
-        Node::Split { axis, ratio, first, second } => Node::Split {
-            axis,
-            ratio,
-            first: Box::new(dematerialize_stacks(*first)),
-            second: Box::new(dematerialize_stacks(*second)),
+        Node::Grid { cols, rows, cells } => Node::Grid {
+            cols,
+            rows,
+            cells: cells
+                .into_iter()
+                .map(|c| GridChild {
+                    node: Box::new(dematerialize_stacks(*c.node)),
+                    col: c.col,
+                    row: c.row,
+                    col_span: c.col_span,
+                    row_span: c.row_span,
+                })
+                .collect(),
         },
     }
 }
@@ -1351,11 +1531,19 @@ fn materialize_stacks(node: Node, stacks: &[StackDescriptor], current_ids: &[u64
             Node::Leaf(id)
         }
         Node::Stack { members, active } => Node::Stack { members, active },
-        Node::Split { axis, ratio, first, second } => Node::Split {
-            axis,
-            ratio,
-            first: Box::new(materialize_stacks(*first, stacks, current_ids)),
-            second: Box::new(materialize_stacks(*second, stacks, current_ids)),
+        Node::Grid { cols, rows, cells } => Node::Grid {
+            cols,
+            rows,
+            cells: cells
+                .into_iter()
+                .map(|c| GridChild {
+                    node: Box::new(materialize_stacks(*c.node, stacks, current_ids)),
+                    col: c.col,
+                    row: c.row,
+                    col_span: c.col_span,
+                    row_span: c.row_span,
+                })
+                .collect(),
         },
     }
 }
@@ -1447,20 +1635,47 @@ fn find_path(node: &Node, id: u64, rect: Rectf, gap: f64, out: &mut Vec<Decision
         Node::Leaf(lid) => *lid == id,
         // O stack é um slot atômico: redimensionar qualquer membro redimensiona o slot inteiro.
         Node::Stack { members, .. } => members.contains(&id),
-        Node::Split { axis, ratio, first, second } => {
-            let (a, b) = split_rect(rect, gap, *axis, *ratio);
-            out.push(Decision { rect, axis: *axis, first: true });
-            if find_path(first, id, a, gap, out) {
-                return true;
+        Node::Grid { cols, rows, cells } => {
+            let xb = track_bounds(rect.x, rect.w, cols, gap);
+            let yb = track_bounds(rect.y, rect.h, rows, gap);
+            // Eixo "binário" do grid (2 tracks num eixo, 1 no outro) — o caso da construção aninhada,
+            // o único que o resize governa. Grids não-binários (raros) são atravessados sem decisão.
+            let binary_axis = binary_grid_axis(cols, rows);
+            for c in cells {
+                let cr = cell_rect(&xb, &yb, c);
+                match binary_axis {
+                    Some(axis) => {
+                        let first = match axis {
+                            Axis::Horizontal => c.col == 0,
+                            Axis::Vertical => c.row == 0,
+                        };
+                        out.push(Decision { rect, axis, first });
+                        if find_path(&c.node, id, cr, gap, out) {
+                            return true;
+                        }
+                        out.pop();
+                    }
+                    None => {
+                        if find_path(&c.node, id, cr, gap, out) {
+                            return true;
+                        }
+                    }
+                }
             }
-            out.pop();
-            out.push(Decision { rect, axis: *axis, first: false });
-            if find_path(second, id, b, gap, out) {
-                return true;
-            }
-            out.pop();
             false
         }
+    }
+}
+
+/// Eixo de um grid BINÁRIO (2 tracks num eixo, 1 no outro): `Horizontal` se 2 colunas × 1 linha,
+/// `Vertical` se 1 coluna × 2 linhas. `None` para qualquer outra forma (não governável por resize).
+fn binary_grid_axis(cols: &[f64], rows: &[f64]) -> Option<Axis> {
+    if cols.len() == 2 && rows.len() == 1 {
+        Some(Axis::Horizontal)
+    } else if rows.len() == 2 && cols.len() == 1 {
+        Some(Axis::Vertical)
+    } else {
+        None
     }
 }
 
@@ -1468,24 +1683,49 @@ fn find_path(node: &Node, id: u64, rect: Rectf, gap: f64, out: &mut Vec<Decision
 /// first/second) a partir de `node`. `path` vazio = este nó é o alvo.
 fn adjust_ratio(node: Node, path: &[bool], delta: f64) -> Node {
     match node {
-        Node::Split { axis, ratio, first, second } => {
+        Node::Grid { cols, rows, cells } => {
+            let Some(axis) = binary_grid_axis(&cols, &rows) else {
+                // Grid não-binário: o resize não o governa (no-op defensivo).
+                return Node::Grid { cols, rows, cells };
+            };
             if path.is_empty() {
-                let nr = (ratio + delta).clamp(MIN_RATIO, 1.0 - MIN_RATIO);
-                Node::Split { axis, ratio: nr, first, second }
-            } else if path[0] {
-                Node::Split {
-                    axis,
-                    ratio,
-                    first: Box::new(adjust_ratio(*first, &path[1..], delta)),
-                    second,
+                // Grid governante: ajusta a fração da track 0 (a track 1 absorve; soma constante = 1).
+                let (mut tracks, horizontal) = match axis {
+                    Axis::Horizontal => (cols.clone(), true),
+                    Axis::Vertical => (rows.clone(), false),
+                };
+                let nr = (tracks[0] + delta).clamp(MIN_RATIO, 1.0 - MIN_RATIO);
+                tracks[0] = nr;
+                tracks[1] = 1.0 - nr;
+                if horizontal {
+                    Node::Grid { cols: tracks, rows, cells }
+                } else {
+                    Node::Grid { cols, rows: tracks, cells }
                 }
             } else {
-                Node::Split {
-                    axis,
-                    ratio,
-                    first,
-                    second: Box::new(adjust_ratio(*second, &path[1..], delta)),
-                }
+                // Desce na célula do lado indicado por `path[0]`.
+                let want_first = path[0];
+                let new_cells = cells
+                    .into_iter()
+                    .map(|c| {
+                        let side_first = match axis {
+                            Axis::Horizontal => c.col == 0,
+                            Axis::Vertical => c.row == 0,
+                        };
+                        if side_first == want_first {
+                            GridChild {
+                                node: Box::new(adjust_ratio(*c.node, &path[1..], delta)),
+                                col: c.col,
+                                row: c.row,
+                                col_span: c.col_span,
+                                row_span: c.row_span,
+                            }
+                        } else {
+                            c
+                        }
+                    })
+                    .collect();
+                Node::Grid { cols, rows, cells: new_cells }
             }
         }
         leaf => leaf,
@@ -2144,9 +2384,7 @@ mod tests {
     fn find_stack_node(n: &Node) -> Option<(Vec<u64>, u64)> {
         match n {
             Node::Stack { members, active } => Some((members.clone(), *active)),
-            Node::Split { first, second, .. } => {
-                find_stack_node(first).or_else(|| find_stack_node(second))
-            }
+            Node::Grid { cells, .. } => cells.iter().find_map(|c| find_stack_node(&c.node)),
             Node::Leaf(_) => None,
         }
     }
@@ -2200,25 +2438,58 @@ mod tests {
         // [1,2,3] balanceada; mover 3 para a ESQUERDA de 1 → 3 fica à esquerda de 1.
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], None, &area, &opts());
-        let moved = move_window(&tree, 3, 1, DropZone::Left);
+        let moved = move_window(&tree, 3, 1, DropZone::Left, DropScope::Local);
         let geo = compute_geometry(&moved, &area, &opts(), &[], &[1, 2, 3]);
         assert_eq!(geo.rects.len(), 3);
         let r1 = geo.rects.iter().find(|r| r.id == 1).unwrap();
         let r3 = geo.rects.iter().find(|r| r.id == 3).unwrap();
-        // 3 à esquerda de 1 (mesma faixa vertical, x menor).
+        // 3 à esquerda de 1 (mesma faixa vertical, x menor); 3 toma 1/3, 1 fica com 2/3.
         assert!(r3.x < r1.x);
         assert_eq!(r3.y, r1.y);
         assert_eq!(r3.height, r1.height);
+        assert!(r3.width < r1.width, "a faixa de 1/3 da arrastada é menor que os 2/3 do alvo");
     }
 
     #[test]
     fn move_window_noop_for_center_and_missing_target() {
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
-        // Center → inalterado.
-        assert_eq!(move_window(&tree, 2, 1, DropZone::Center), tree);
+        // Center → inalterado (fusão em abas é tratada pela ponte).
+        assert_eq!(move_window(&tree, 2, 1, DropZone::Center, DropScope::Local), tree);
         // Alvo ausente → inalterado (não perde a janela arrastada).
-        assert_eq!(move_window(&tree, 2, 99, DropZone::Left), tree);
+        assert_eq!(move_window(&tree, 2, 99, DropZone::Left, DropScope::Local), tree);
+    }
+
+    #[test]
+    fn move_window_global_insere_bloco_de_50_porcento() {
+        // [1,2,3]; mover 3 para a ESQUERDA em escopo GLOBAL → 3 ocupa ~50% da tela; 1 e 2 no outro 50%.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], None, &area, &opts());
+        let moved = move_window(&tree, 3, 0, DropZone::Left, DropScope::Global);
+        let geo = compute_geometry(&moved, &area, &opts(), &[], &[1, 2, 3]);
+        assert_eq!(geo.rects.len(), 3);
+        let r3 = geo.rects.iter().find(|r| r.id == 3).unwrap();
+        // 3 à esquerda ocupando ~metade da largura interna (976 - gap 8) / 2 = 484.
+        assert_eq!((r3.x, r3.width, r3.height), (12, 484, 776));
+        // 1 e 2 ficam à direita de 3 (no outro bloco de 50%).
+        for id in [1u64, 2] {
+            let r = geo.rects.iter().find(|r| r.id == id).unwrap();
+            assert!(r.x > r3.x + r3.width - 1, "janela {id} no bloco direito");
+        }
+    }
+
+    #[test]
+    fn move_window_local_da_um_terco_ao_arrastado() {
+        // [1,2]; soltar 2 sobre o EIXO superior de 1 (local) → 2 toma 1/3 da altura, 1 fica com 2/3.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let moved = move_window(&tree, 2, 1, DropZone::Top, DropScope::Local);
+        let geo = compute_geometry(&moved, &area, &opts(), &[], &[1, 2]);
+        let r1 = geo.rects.iter().find(|r| r.id == 1).unwrap();
+        let r2 = geo.rects.iter().find(|r| r.id == 2).unwrap();
+        // 2 no topo, mais baixa que 1 (1/3 vs 2/3); empilhadas verticalmente.
+        assert!(r2.y < r1.y);
+        assert!(r2.height < r1.height);
     }
 
     #[test]
@@ -2296,15 +2567,8 @@ mod tests {
 
     #[test]
     fn min_extent_soma_no_mesmo_eixo_e_max_no_perpendicular() {
-        // Split HORIZONTAL de (1,2): largura = min1 + gap + min2; altura = max(min1, min2).
-        let tree = LayoutTree {
-            root: Some(Node::Split {
-                axis: Axis::Horizontal,
-                ratio: 0.5,
-                first: Box::new(Node::Leaf(1)),
-                second: Box::new(Node::Leaf(2)),
-            }),
-        };
+        // Grid de 2 colunas (1,2): largura = min1 + gap + min2; altura = max(min1, min2).
+        let tree = LayoutTree { root: Some(Node::split_h(0.5, Node::Leaf(1), Node::Leaf(2))) };
         let mut min = MinSizes::new();
         min.insert(1, (300, 200));
         min.insert(2, (100, 150));
@@ -2501,22 +2765,20 @@ mod tests {
     }
 
     #[test]
-    fn split_clamped_fallback_prioriza_o_lado_focado() {
-        // Caso degenerado (os dois mínimos não cabem em `avail`): o lado da janela FOCADA recebe o
-        // seu mínimo e o vizinho absorve o resto — em vez do proporcional puro, que daria à focada
-        // menos que o mínimo. Sem foco em nenhum lado, mantém o proporcional. Nunca há sobreposição.
-        let rect = Rectf { x: 0.0, y: 0.0, w: 1000.0, h: 800.0 };
-        // avail = 1000 - gap(8) = 992; min_first + min_second = 1200 > 992 → fallback.
-        let (a, b) =
-            split_rect_clamped(rect, 8.0, Axis::Horizontal, 0.5, 600.0, 600.0, FocusBias::First);
-        assert_eq!(a.w, 600.0, "1ª focada → recebe o mínimo");
-        assert_eq!(b.w, 992.0 - 600.0, "vizinha absorve o resto, sem sobrepor");
-        let (a2, _) =
-            split_rect_clamped(rect, 8.0, Axis::Horizontal, 0.5, 600.0, 600.0, FocusBias::Second);
-        assert_eq!(a2.w, 992.0 - 600.0, "2ª focada → 1ª cede");
-        let (a3, _) =
-            split_rect_clamped(rect, 8.0, Axis::Horizontal, 0.5, 600.0, 600.0, FocusBias::Neither);
-        assert_eq!(a3.w, 992.0 * 0.5, "sem foco → proporcional puro");
+    fn solve_tracks_respeita_minimos_e_espreme_em_cascata() {
+        // 2 tracks 50/50 com mínimo só na 1ª (600): a 1ª recebe 600 e a 2ª encolhe (cascata elástica).
+        // avail = 1000 - gap(8) = 992 → 2ª fica com 992 - 600 = 392.
+        let t = solve_tracks(0.0, 1000.0, &[0.5, 0.5], &[600.0, 0.0], 8.0);
+        assert_eq!(t.len(), 2);
+        assert!((t[0].1 - 600.0).abs() < 1e-6, "1ª track recebe o mínimo");
+        assert!((t[1].1 - 392.0).abs() < 1e-6, "2ª track absorve o resto (cascata)");
+        // Sem mínimos, é idêntico à distribuição pura (track_bounds): 50/50 de 992.
+        let p = solve_tracks(0.0, 1000.0, &[0.5, 0.5], &[0.0, 0.0], 8.0);
+        assert!((p[0].1 - 496.0).abs() < 1e-6 && (p[1].1 - 496.0).abs() < 1e-6);
+        // Caso degenerado (os dois mínimos > avail): ambas SATURAM no mínimo (overflow tratado a
+        // montante por auto-float); nunca há track negativa.
+        let d = solve_tracks(0.0, 1000.0, &[0.5, 0.5], &[600.0, 600.0], 8.0);
+        assert!((d[0].1 - 600.0).abs() < 1e-6 && (d[1].1 - 600.0).abs() < 1e-6);
     }
 
     // ---- Unmaximize Recovery ----

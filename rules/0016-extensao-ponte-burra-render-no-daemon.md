@@ -100,6 +100,16 @@ D-Bus** (o daemon é relançado sob demanda), **reconexão + watch de nome na po
 handshake via logind**. O daemon segue **sem estado** — o que torna "sair e reativar" uma recuperação
 segura. Status permanece **✅ Aceita**.
 
+## Emenda (2026): Grid 3×3 e HUD calculado na ponte → ver [0026](0026-grid-fractal-3x3-elastico-e-hud.md)
+
+O motor evoluiu do BSP binário para um **grid 3×3 elástico** ([0026](0026-grid-fractal-3x3-elastico-e-hud.md)).
+Junto, o **preview de drag deixa de ser resolvido no Rust por tick** (`ResolveDropZone`): a matemática das
+9 zonas (dividir o alvo por 3 / bordas do monitor) vira um **módulo puro espelhado na ponte**
+(`resolveHotZone`), e o **core só é acionado no drop** (`MoveWindow`). Isso **não** revoga este ADR — a
+ponte continua a única que desenha (GNOME = células `St.Widget`; KDE = `showOutline` da zona resultante),
+o daemon continua **sem estado** e o core continua puro; apenas a aritmética **barata e efêmera** do
+preview migra para a ponte (desempenho em VMs). Status permanece **✅ Aceita**.
+
 ## Consequências
 - **Resiliência estrutural:** como a extensão não renderiza layout e aplica geometria instantânea, o
   congelamento em LLVMpipe deixa de ocorrer — sem precisar detectar render por software no compositor.

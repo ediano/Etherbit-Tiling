@@ -22,6 +22,8 @@ import {
   setActiveMember,
   toggleGroupDisabled,
   parseOrderKey,
+  resolveHotZone,
+  serializeScope,
   type Stack,
   type TreeNode,
   type WindowSnapshot,
@@ -343,5 +345,55 @@ describe('clampGeometry', () => {
   it('não altera dimensões válidas', () => {
     const ok = { id: 1, x: -3, y: 4, width: 800, height: 600 };
     expect(clampGeometry(ok)).toEqual(ok);
+  });
+
+  // ---- HUD do jogo da velha (resolveHotZone — ADR 0026) ----
+  const MON = { x: 0, y: 0, width: 900, height: 900 };
+  const TARGET = { x: 300, y: 300, width: 300, height: 300 }; // miolo do monitor (longe das bordas)
+
+  it('centro do alvo → fusão (center) com a janela-alvo inteira no outline', () => {
+    const hz = resolveHotZone({ x: 450, y: 450 }, TARGET, MON);
+    expect(hz.scope).toBe('local');
+    expect(hz.dropZone).toBe('center');
+    expect(hz.cells).toHaveLength(9);
+    expect(hz.outline).toEqual(TARGET);
+  });
+
+  it('eixo esquerdo do alvo → coluna inteira (left), faixa de 1/3', () => {
+    const hz = resolveHotZone({ x: 350, y: 450 }, TARGET, MON);
+    expect(hz.scope).toBe('local');
+    expect(hz.dropZone).toBe('left');
+    expect(hz.hot).toHaveLength(3); // coluna inteira (3 células)
+    expect(hz.outline).toEqual({ x: 300, y: 300, width: 100, height: 300 });
+  });
+
+  it('eixo superior do alvo → linha inteira (top)', () => {
+    const hz = resolveHotZone({ x: 450, y: 350 }, TARGET, MON);
+    expect(hz.dropZone).toBe('top');
+    expect(hz.outline).toEqual({ x: 300, y: 300, width: 300, height: 100 });
+  });
+
+  it('canto do alvo → célula única (top_left)', () => {
+    const hz = resolveHotZone({ x: 350, y: 350 }, TARGET, MON);
+    expect(hz.dropZone).toBe('top_left');
+    expect(hz.hot).toHaveLength(1);
+    expect(hz.outline).toEqual({ x: 300, y: 300, width: 100, height: 100 });
+  });
+
+  it('perto da borda da tela → escopo global, bloco de 50%', () => {
+    const hz = resolveHotZone({ x: 10, y: 450 }, TARGET, MON);
+    expect(hz.scope).toBe('global');
+    expect(hz.dropZone).toBe('left');
+    expect(hz.outline).toEqual({ x: 0, y: 0, width: 450, height: 900 });
+  });
+
+  it('sem janela sob o cursor (gap) → escopo global', () => {
+    const hz = resolveHotZone({ x: 450, y: 450 }, null, MON);
+    expect(hz.scope).toBe('global');
+  });
+
+  it('serializeScope mapeia local/global', () => {
+    expect(serializeScope('global')).toBe('global');
+    expect(serializeScope('local')).toBe('local');
   });
 });

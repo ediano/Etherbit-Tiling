@@ -22,13 +22,13 @@ import {
   serializeWindows,
   serializeMonitors,
   serializeState,
-  serializeTarget,
   parseLayout,
   parseTabBars,
   parseFloating,
   parsePendingActions,
   parseLayoutTrees,
-  parsePreview,
+  resolveHotZone,
+  serializeScope,
   resizeDeltaFrom,
   orderKey,
   appendToOrder,
@@ -41,9 +41,10 @@ import {
   setActiveMember,
   type Stack,
   type TreeNode,
+  type HotZone,
+  type Rect,
   type WindowSnapshot,
   type MonitorSnapshot,
-  type DropPreview,
 } from './bridge.js';
 
 const BUS_NAME = 'dev.ediano.etherbit.Tiling';
@@ -124,11 +125,11 @@ let lastTransportToStable = new Map<number, string>();
 
 /// `internalId` da janela em arrasto (null fora de um move).
 let draggedId: string | null = null;
-/// Último cursor amostrado (throttle por posição) e guarda de chamada D-Bus em voo.
+/// Último cursor amostrado (throttle por posição) e guarda de reentrância.
 let lastCursor: QPoint | null = null;
 let resolving = false;
-/// Zona resolvida no último passo do arrasto (define stack vs swap ao soltar).
-let lastZone = 'none';
+/// Zona quente resolvida no último passo do arrasto (define o drop: stack/split + escopo).
+let lastHot: HotZone | null = null;
 /// Resize manual em curso: internalId + frame inicial (para derivar borda/delta ao soltar).
 let resizeStart: { id: string; rect: { x: number; y: number; width: number; height: number } } | null =
   null;
@@ -574,19 +575,32 @@ registerShortcut(
 
 // ---- Arrasto + indicador de drop zone (outline nativo) ----
 
-/// Mostra/posiciona o outline para a zona resolvida; esconde quando não há zona (`none`/zerado). Para
-/// a zona `stack`, o retângulo é o da própria janela-alvo (indica "vai empilhar aqui").
-function updateOutline(preview: DropPreview | null): void {
-  if (!preview || preview.zone === 'none' || preview.width <= 0 || preview.height <= 0) {
+/// Mostra/posiciona o outline NATIVO para o retângulo resultante; esconde se `null`/zerado. O KWin
+/// Script só desenha 1 outline (não as 9 células — limitação do KWin Script, ver ADR 0026). Para a
+/// zona `center` (merge), o retângulo é a própria janela-alvo.
+function updateOutline(rect: Rect | null): void {
+  if (!rect || rect.width <= 0 || rect.height <= 0) {
     workspace.hideOutline();
     return;
   }
   workspace.showOutline({
-    x: preview.x,
-    y: preview.y,
-    width: preview.width,
-    height: preview.height,
+    x: Math.round(rect.x),
+    y: Math.round(rect.y),
+    width: Math.round(rect.width),
+    height: Math.round(rect.height),
   });
+}
+
+/// Área útil do monitor que contém `(x, y)` (fallback: o primeiro monitor, ou um retângulo zerado).
+function monitorRectUnder(x: number, y: number): Rect {
+  const monitors = monitorsFrom(collectOutputs());
+  const hit = monitors.find(
+    (m) => x >= m.x && x < m.x + m.width && y >= m.y && y < m.y + m.height,
+  );
+  const m = hit ?? monitors[0];
+  return m
+    ? { x: m.x, y: m.y, width: m.width, height: m.height }
+    : { x: 0, y: 0, width: 0, height: 0 };
 }
 
 /// Início de um move/resize interativo. MOVE → rastreia o cursor (drop zone). RESIZE → captura o
@@ -597,7 +611,7 @@ function onMoveStart(win: KWinWindow): void {
     draggedId = windowId(win);
     lastCursor = null;
     resolving = false;
-    lastZone = 'none';
+    lastHot = null;
     return;
   }
   if (win.resize) {
@@ -609,8 +623,8 @@ function onMoveStart(win: KWinWindow): void {
   }
 }
 
-/// Um passo do arrasto: resolve a zona no daemon (com o retângulo da janela sob o cursor) e atualiza
-/// o outline. Throttle por chamada em voo e por posição (pula se o cursor não moveu).
+/// Um passo do arrasto: calcula a zona quente LOCALMENTE (ADR 0026 — sem D-Bus por passo) e atualiza o
+/// outline nativo com o retângulo resultante. Throttle por posição (pula se o cursor não moveu).
 function onMoveStep(): void {
   if (draggedId === null || resolving) {
     return;
@@ -630,22 +644,11 @@ function onMoveStep(): void {
         height: target.frameGeometry.height,
       }
     : null;
-  callDBus(
-    BUS_NAME,
-    OBJECT_PATH,
-    IFACE,
-    'ResolveDropZone',
-    cursor.x,
-    cursor.y,
-    serializeMonitors(monitorsFrom(collectOutputs())),
-    serializeTarget(targetRect),
-    (previewJson: string) => {
-      resolving = false;
-      const preview = parsePreview(previewJson);
-      lastZone = preview?.zone ?? 'none';
-      updateOutline(preview);
-    },
-  );
+  const monitor = monitorRectUnder(cursor.x, cursor.y);
+  const hot = resolveHotZone({ x: cursor.x, y: cursor.y }, targetRect, monitor);
+  lastHot = hot;
+  updateOutline(hot.dropZone === 'none' ? null : hot.outline);
+  resolving = false;
 }
 
 /// Fim do arrasto: esconde o outline e consolida o drop. Zona `stack` → empilha em abas; zona de lado
@@ -653,11 +656,11 @@ function onMoveStep(): void {
 function onMoveFinish(win: KWinWindow): void {
   workspace.hideOutline();
   const dragged = draggedId;
-  const zone = lastZone;
+  const hot = lastHot;
   draggedId = null;
   lastCursor = null;
   resolving = false;
-  lastZone = 'none';
+  lastHot = null;
 
   if (dragged === null) {
     // Não era um move: pode ter sido um resize manual.
@@ -670,37 +673,53 @@ function onMoveFinish(win: KWinWindow): void {
   }
   const cursor = workspace.cursorPos;
   const target = windowUnderPointObj(cursor.x, cursor.y, dragged);
-  if (!target) {
-    retile();
-    return;
-  }
-  const targetId = windowId(target);
-  if (zone === 'stack') {
-    const monitor = collectOutputs().indexOf(win.output);
-    const key = orderKey(monitor < 0 ? 0 : monitor, desktopIndexOf(win));
-    addToStack(stacks, key, targetId, dragged);
-    retile();
-    return;
-  }
+  const monitor = collectOutputs().indexOf(win.output);
+  const key = orderKey(monitor < 0 ? 0 : monitor, desktopIndexOf(win));
   const draggedT = lastTransportOf.get(dragged);
-  const targetT = lastTransportOf.get(targetId);
-  if (zone !== 'none' && zone !== 'center' && draggedT !== undefined && targetT !== undefined) {
+
+  // MoveWindow (ADR 0026): IDs como string decimal (o `callDBus` do KWin não empacota uint64 — ADR
+  // 0009); `scope` define local (1/3 na submatriz) vs global (bloco de 50%).
+  const moveWindow = (targetT: number, zoneStr: string, scope: 'local' | 'global'): void => {
+    if (draggedT === undefined) {
+      retile();
+      return;
+    }
     callDBus(
       BUS_NAME,
       OBJECT_PATH,
       IFACE,
       'MoveWindow',
       serializeState(stacks, disabled, lastTransportOf, trees, dragged),
-      // IDs como string decimal: o `callDBus` do KWin não empacota uint64 (mandaria `i`/int32 e o
-      // daemon rejeitaria a assinatura). O daemon faz `parse::<u64>()`. Ver ADR 0009.
       String(draggedT),
       String(targetT),
-      zone,
+      zoneStr,
+      serializeScope(scope),
       (treesJson: string) => {
         trees = parseLayoutTrees(treesJson, lastTransportToStable);
         retile();
       },
     );
+  };
+
+  // Escopo global: insere como nó principal do workspace (50%) — não exige janela-alvo.
+  if (hot && hot.scope === 'global' && hot.dropZone !== 'none') {
+    moveWindow(0, hot.dropZone, 'global');
+    return;
+  }
+  if (!target) {
+    retile();
+    return;
+  }
+  const targetId = windowId(target);
+  // Centro da janela-alvo → empilha em abas (estado de stacks; o core não muta a árvore).
+  if (hot && hot.dropZone === 'center') {
+    addToStack(stacks, key, targetId, dragged);
+    retile();
+    return;
+  }
+  const targetT = lastTransportOf.get(targetId);
+  if (hot && hot.dropZone !== 'none' && targetT !== undefined) {
+    moveWindow(targetT, hot.dropZone, 'local');
     return;
   }
   retile();

@@ -1,6 +1,9 @@
 # 0018 — Abas (StackNode), atalhos globais e agrupar por arraste
 
-**Status:** ✅ Aceita
+**Status:** 🔄 Topologia substituída por [#0026](0026-grid-fractal-3x3-elastico-e-hud.md) (a árvore BSP
+deu lugar ao grid 3×3 elástico). Permanecem válidos: `Stack` (abas) como conceito, atalhos globais
+(`Super+Y`/`Super+S`), agrupar por arraste (agora zona **centro** do jogo da velha) e o estado leve na
+ponte.
 
 ## Contexto
 

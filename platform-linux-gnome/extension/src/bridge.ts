@@ -248,6 +248,157 @@ export function parsePreview(json: string): DropPreview | null {
   return { zone: v.zone, x: v.x, y: v.y, width: v.width, height: v.height };
 }
 
+// ---- HUD de preview do jogo da velha (cálculo LOCAL na ponte — ADR 0026) ----
+//
+// Durante o arrasto, a ponte NÃO chama o Rust por tick: lê o retângulo da janela-alvo sob o cursor,
+// divide por 3 (escopo LOCAL) ou usa as bordas do monitor (escopo GLOBAL) e devolve as 9 zonas quentes
+// + o destaque + o retângulo resultante. O core só é acionado no DROP (MoveWindow). Helpers PUROS
+// (testáveis sem GJS), espelhados na ponte KDE.
+
+/// Retângulo simples em px absolutos de tela.
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/// Resultado do HUD: a zona quente sob o cursor, as células a desenhar e o destino do drop.
+export interface HotZone {
+  /// `local` = subdivide a submatriz da janela-alvo; `global` = bloco de 50% do workspace.
+  scope: 'local' | 'global';
+  /// Comando a enviar no drop: `left|right|top|bottom|top_left|top_right|bottom_left|bottom_right|
+  /// center|none`. `center` = fusão em abas (a ponte chama `addToStack`, não o MoveWindow).
+  dropZone: string;
+  /// Células do jogo da velha a DESENHAR (9 no local; 1 bloco no global). GNOME usa todas; KDE ignora.
+  cells: Rect[];
+  /// Índices de `cells` a ACENDER (a zona ativa).
+  hot: number[];
+  /// Retângulo único do destino (KDE: `workspace.showOutline`). `center` = a janela-alvo inteira.
+  outline: Rect;
+}
+
+/// Faixa (fração do MONITOR) junto às bordas da tela que aciona o escopo GLOBAL.
+const SCREEN_EDGE_FRAC = 0.12;
+
+/// Calcula a zona quente do HUD sob o cursor, sem D-Bus. `target` é o retângulo da janela sob o cursor
+/// (ou `null` se o cursor está num gap vazio). `monitor` é a área útil do monitor sob o cursor.
+export function resolveHotZone(
+  pointer: { x: number; y: number },
+  target: Rect | null,
+  monitor: Rect,
+): HotZone {
+  const mfx = monitor.width > 0 ? (pointer.x - monitor.x) / monitor.width : 0.5;
+  const mfy = monitor.height > 0 ? (pointer.y - monitor.y) / monitor.height : 0.5;
+  const nearScreenEdge =
+    mfx < SCREEN_EDGE_FRAC ||
+    mfx > 1 - SCREEN_EDGE_FRAC ||
+    mfy < SCREEN_EDGE_FRAC ||
+    mfy > 1 - SCREEN_EDGE_FRAC;
+
+  // Global: perto das bordas da tela OU sem janela sob o cursor (gap vazio).
+  if (nearScreenEdge || !target || target.width <= 0 || target.height <= 0) {
+    return globalHotZone(mfx, mfy, monitor);
+  }
+  return localHotZone(pointer, target);
+}
+
+/// Escopo GLOBAL: a borda da tela mais próxima vira um bloco de 50% do monitor.
+function globalHotZone(mfx: number, mfy: number, monitor: Rect): HotZone {
+  const dl = mfx;
+  const dr = 1 - mfx;
+  const dt = mfy;
+  const db = 1 - mfy;
+  const nearest = Math.min(dl, dr, dt, db);
+  const hw = monitor.width / 2;
+  const hh = monitor.height / 2;
+  let dropZone: string;
+  let block: Rect;
+  if (nearest === dl) {
+    dropZone = 'left';
+    block = { x: monitor.x, y: monitor.y, width: hw, height: monitor.height };
+  } else if (nearest === dr) {
+    dropZone = 'right';
+    block = { x: monitor.x + hw, y: monitor.y, width: hw, height: monitor.height };
+  } else if (nearest === dt) {
+    dropZone = 'top';
+    block = { x: monitor.x, y: monitor.y, width: monitor.width, height: hh };
+  } else {
+    dropZone = 'bottom';
+    block = { x: monitor.x, y: monitor.y + hh, width: monitor.width, height: hh };
+  }
+  return { scope: 'global', dropZone, cells: [block], hot: [0], outline: block };
+}
+
+/// Escopo LOCAL: 3×3 dentro da janela-alvo. Centro = merge; eixos = linha/coluna inteira; cantos =
+/// célula única.
+function localHotZone(pointer: { x: number; y: number }, target: Rect): HotZone {
+  const cw = target.width / 3;
+  const ch = target.height / 3;
+  const cells: Rect[] = [];
+  for (let row = 0; row < 3; row += 1) {
+    for (let col = 0; col < 3; col += 1) {
+      cells.push({ x: target.x + col * cw, y: target.y + row * ch, width: cw, height: ch });
+    }
+  }
+  const idx = (r: number, c: number): number => r * 3 + c;
+  const fx = (pointer.x - target.x) / target.width;
+  const fy = (pointer.y - target.y) / target.height;
+  const col = Math.min(2, Math.max(0, Math.floor(fx * 3)));
+  const row = Math.min(2, Math.max(0, Math.floor(fy * 3)));
+
+  // Centro → fusão em abas (a janela-alvo inteira acende).
+  if (col === 1 && row === 1) {
+    return { scope: 'local', dropZone: 'center', cells, hot: [idx(1, 1)], outline: { ...target } };
+  }
+  // Eixos → linha/coluna inteira (faixa de 1/3 do lado).
+  if (col === 1 && row === 0) {
+    return localAxis('top', cells, [idx(0, 0), idx(0, 1), idx(0, 2)], {
+      x: target.x,
+      y: target.y,
+      width: target.width,
+      height: ch,
+    });
+  }
+  if (col === 1 && row === 2) {
+    return localAxis('bottom', cells, [idx(2, 0), idx(2, 1), idx(2, 2)], {
+      x: target.x,
+      y: target.y + 2 * ch,
+      width: target.width,
+      height: ch,
+    });
+  }
+  if (row === 1 && col === 0) {
+    return localAxis('left', cells, [idx(0, 0), idx(1, 0), idx(2, 0)], {
+      x: target.x,
+      y: target.y,
+      width: cw,
+      height: target.height,
+    });
+  }
+  if (row === 1 && col === 2) {
+    return localAxis('right', cells, [idx(0, 2), idx(1, 2), idx(2, 2)], {
+      x: target.x + 2 * cw,
+      y: target.y,
+      width: cw,
+      height: target.height,
+    });
+  }
+  // Cantos → célula única; o nome do canto vai ao core (que mapeia para a borda horizontal dominante).
+  const cornerZone = `${row === 0 ? 'top' : 'bottom'}_${col === 0 ? 'left' : 'right'}`;
+  const i = idx(row, col);
+  return { scope: 'local', dropZone: cornerZone, cells, hot: [i], outline: cells[i] as Rect };
+}
+
+function localAxis(dropZone: string, cells: Rect[], hot: number[], outline: Rect): HotZone {
+  return { scope: 'local', dropZone, cells, hot, outline };
+}
+
+/// Serializa o escopo do drop para o `MoveWindow` (ADR 0026): `"global"` ou `"local"`.
+export function serializeScope(scope: 'local' | 'global'): string {
+  return scope === 'global' ? 'global' : 'local';
+}
+
 // ---- Ordem estável das janelas (estado leve da ponte) ----
 //
 // O core é um BSP determinístico função da ORDEM de entrada; manter uma ordem estável por
@@ -310,13 +461,23 @@ export interface Stack {
   active: number;
 }
 
-/// Nó da árvore BSP persistente (espelha o blob do daemon `etherbit_tiling_core::Node`): folha
-/// `{ win }` ou divisão `{ split: { axis, ratio, first, second } }`. A ponte trata o `root` como
-/// OPACO (produzido/consumido pelo core) — só o transporta e o persiste por grupo.
+/// Célula de um `grid` na árvore (espelha `etherbit_tiling_core::GridChild`): nó recursivo + posição
+/// `(col,row)` (0-based) e span em colunas/linhas (1..=3).
+export interface TreeGridCell {
+  node: TreeNode;
+  col: number;
+  row: number;
+  col_span: number;
+  row_span: number;
+}
+
+/// Nó da árvore persistente (espelha o blob do daemon `etherbit_tiling_core::Node`, ADR 0026): folha
+/// `{ win }`, stack `{ stack }` ou grid elástico `{ grid: { cols, rows, cells } }`. A ponte GNOME trata
+/// o `root` como OPACO (produzido/consumido pelo core) — só o transporta e o persiste por grupo.
 export type TreeNode =
   | { win: number }
   | { stack: { members: number[]; active: number } }
-  | { split: { axis: 'h' | 'v'; ratio: number; first: TreeNode; second: TreeNode } };
+  | { grid: { cols: number[]; rows: number[]; cells: TreeGridCell[] } };
 
 /// Reverte `orderKey`: `"monitor:workspace"` → `[monitor, workspace]`.
 export function parseOrderKey(key: string): [number, number] {

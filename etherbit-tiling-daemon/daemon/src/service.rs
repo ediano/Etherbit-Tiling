@@ -242,21 +242,26 @@ impl Tiling {
         })
     }
 
-    /// Aplica um drag-to-tile: move `dragged_id` para junto de `target_id` no lado da `zone`
-    /// (left/right/top/bottom). Recebe o `state_json` (com as árvores) e devolve `{"trees":[...]}`
-    /// atualizado para a ponte persistir; a geometria vem do `SyncWindows` seguinte. Sem estado.
+    /// Aplica um drag-to-tile do jogo da velha (ADR 0026): move `dragged_id` para junto de `target_id`
+    /// no lado da `zone`, com o `scope` definindo a escala (`local` = faixa de 1/3 na submatriz do alvo;
+    /// `global` = bloco de 50% como nó principal do workspace). Recebe o `state_json` (com as árvores) e
+    /// devolve `{"trees":[...]}` atualizado para a ponte persistir; a geometria vem do `SyncWindows`
+    /// seguinte. Sem estado.
     async fn move_window(
         &self,
         state_json: String,
         dragged_id: String,
         target_id: String,
         zone: String,
+        scope: String,
     ) -> fdo::Result<String> {
         // IDs trafegam como string decimal (`s`): o `callDBus` do KWin não empacota `uint64`. Parse
         // tolerante (IDs reais são ≥ 1; `0` nunca casa → core vira no-op). Ver ADR 0009.
         let dragged_id = dragged_id.parse::<u64>().unwrap_or(0);
         let target_id = target_id.parse::<u64>().unwrap_or(0);
-        guard("move_window", || protocol::move_window(&state_json, dragged_id, target_id, &zone))
+        guard("move_window", || {
+            protocol::move_window(&state_json, dragged_id, target_id, &zone, &scope)
+        })
     }
 
     /// Resize manual elástico: arrasta a borda `edge` (left/right/top/bottom) da janela `id` em

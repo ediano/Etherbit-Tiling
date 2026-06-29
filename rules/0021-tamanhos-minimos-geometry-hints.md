@@ -1,6 +1,9 @@
 # 0021 — Tamanhos mínimos de janela (geometry hints): splits assimétricos e auto-floating
 
-**Status:** ✅ Aceita
+**Status:** 🔄 Topologia substituída por [#0026](0026-grid-fractal-3x3-elastico-e-hud.md) (os splits
+assimétricos viraram **span elástico de células** no grid 3×3). Permanecem válidos: captura do mínimo na
+ponte, proteção da janela focada, auto-floating como rede de segurança e o agregado de mínimo sob a
+âncora do stack.
 
 ## Contexto
 

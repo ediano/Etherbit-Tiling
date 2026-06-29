@@ -29,13 +29,13 @@ import {
   serializeWindows,
   serializeMonitors,
   serializeState,
-  serializeTarget,
   parseLayout,
   parseTabBars,
   parseFloating,
   clampGeometry,
   parseLayoutTrees,
-  parsePreview,
+  resolveHotZone,
+  serializeScope,
   resizeDeltaFrom,
   orderKey,
   appendToOrder,
@@ -49,6 +49,8 @@ import {
   type Stack,
   type TabBar,
   type TreeNode,
+  type HotZone,
+  type Rect,
   type WindowSnapshot,
   type MonitorSnapshot,
 } from './bridge.js';
@@ -125,14 +127,15 @@ export default class EtherbitTilingExtension extends Extension {
   private _tabMenu: PopupMenu.PopupMenu | null = null;
   private _tabMenuAnchor: St.Widget | null = null;
 
-  // Estado do arrasto + overlay de preview da drop zone.
+  // Estado do arrasto + HUD do jogo da velha (9 células).
   private _dragSource = 0;
   private _draggedId = 0;
-  private _previewActor: St.Widget | null = null;
+  // Até 9 células St.Widget reusadas a cada tick (criadas sob demanda em uiGroup).
+  private _hudCells: St.Widget[] = [];
   private _lastPointer: [number, number] | null = null;
-  // Zona resolvida no último tick do arrasto (define stack vs swap ao soltar).
-  private _lastPreviewZone = 'none';
-  // Em voo: evita empilhar chamadas D-Bus síncronas mais rápido que a resposta.
+  // Zona quente resolvida no último tick do arrasto (define o drop: stack/split + escopo).
+  private _lastHot: HotZone | null = null;
+  // Em voo: evita reentrância no tick.
   private _resolving = false;
   // Resize manual em curso: id + frame inicial (para derivar borda/delta ao soltar).
   private _resizeStart: {
@@ -680,7 +683,7 @@ export default class EtherbitTilingExtension extends Extension {
   /// Um tick do arrasto: lê o cursor, resolve a zona no daemon e atualiza o overlay. Faz throttle
   /// por posição (pula se o cursor não moveu) e por chamada em voo (não empilha D-Bus síncrono).
   private _onDragTick(): void {
-    if (!this._proxy || this._resolving) {
+    if (this._resolving) {
       return;
     }
     const [x, y] = global.get_pointer();
@@ -690,33 +693,37 @@ export default class EtherbitTilingExtension extends Extension {
     this._lastPointer = [x, y];
     this._resolving = true;
     try {
-      // Retângulo da janela sob o cursor (excluindo a arrastada) → o core decide se é empilhar.
+      // Cálculo 100% LOCAL (ADR 0026): sem D-Bus por tick. Lê a janela sob o cursor e o monitor,
+      // divide por 3 (local) ou usa as bordas do monitor (global). O core só é acionado no DROP.
       const target = this._windowUnderPointObj(x, y, this._draggedId);
       const targetRect = target ? this._frameRectOf(target) : null;
-      const [previewJson] = this._proxy.ResolveDropZoneSync(
-        x,
-        y,
-        serializeMonitors(this._collectMonitors()),
-        serializeTarget(targetRect),
-      );
-      const preview = parsePreview(previewJson);
-      const zone = preview?.zone ?? 'none';
-      // [DIAG drag-to-group] Loga só na MUDANÇA de zona (evita spam a 60 FPS). `stack` = faixa
-      // superior do alvo → empilhar. Se nunca virar `stack` ao passar pelo topo da janela, o
-      // problema é a detecção de zona (core/preview), não o estado de stacks. Temporário.
-      if (zone !== this._lastPreviewZone) {
+      const monitor = this._monitorRectUnder(x, y);
+      const hot = resolveHotZone({ x, y }, targetRect, monitor);
+      if (hot.dropZone !== (this._lastHot?.dropZone ?? '')) {
         console.log(
-          `[etherbit][drag] zona ${this._lastPreviewZone} → ${zone}` +
-            ` (alvo ${target ? target.get_stable_sequence() : 'nenhum'})`,
+          `[etherbit][drag] zona ${this._lastHot?.dropZone ?? 'none'} → ${hot.dropZone}` +
+            ` (escopo ${hot.scope}, alvo ${target ? target.get_stable_sequence() : 'nenhum'})`,
         );
       }
-      this._lastPreviewZone = zone;
-      this._updatePreview(preview);
+      this._lastHot = hot;
+      this._updateHud(hot);
     } catch (error) {
-      console.error(`Etherbit Tiling: ResolveDropZone falhou: ${error}`);
+      console.error(`Etherbit Tiling: HUD falhou: ${error}`);
     } finally {
       this._resolving = false;
     }
+  }
+
+  /// Área útil do monitor que contém `(x, y)` (fallback: o primeiro monitor, ou um retângulo zerado).
+  private _monitorRectUnder(x: number, y: number): Rect {
+    const monitors = this._collectMonitors();
+    const hit = monitors.find(
+      (m) => x >= m.x && x < m.x + m.width && y >= m.y && y < m.y + m.height,
+    );
+    const m = hit ?? monitors[0];
+    return m
+      ? { x: m.x, y: m.y, width: m.width, height: m.height }
+      : { x: 0, y: 0, width: 0, height: 0 };
   }
 
   /// Retângulo de frame de uma janela no formato do contrato (`{x,y,width,height}`).
@@ -730,93 +737,110 @@ export default class EtherbitTilingExtension extends Extension {
     return { x: r.x, y: r.y, width: r.width, height: r.height };
   }
 
-  /// Mostra/posiciona o overlay para a zona resolvida; esconde quando não há zona (`none`/zerado).
-  private _updatePreview(preview: ReturnType<typeof parsePreview>): void {
-    const actor = this._ensurePreviewActor();
-    if (!preview || preview.zone === 'none' || preview.width <= 0 || preview.height <= 0) {
-      actor.hide();
+  /// Desenha o HUD do jogo da velha (ADR 0026): posiciona/estiliza as células da zona quente e acende
+  /// as ativas. `null` ou vazio → esconde tudo. Centro (merge) em VERDE; eixos/cantos/global em AZUL
+  /// Nord; células não-acesas, um leve contorno. ESTÁTICO, sem animação (reafirma ADR 0016).
+  private _updateHud(hot: HotZone | null): void {
+    const cells = this._ensureHud();
+    if (!hot || hot.cells.length === 0 || hot.dropZone === 'none') {
+      for (const cell of cells) {
+        cell.hide();
+      }
       return;
     }
-    // Realça a intenção: zona "stack" (empilhar como nova aba) em VERDE; split/swap no azul Nord.
-    actor.set_style(
-      preview.zone === 'stack'
-        ? 'background-color: rgba(163, 190, 140, 0.30);' +
-            'border: 2px solid rgba(163, 190, 140, 0.95); border-radius: 12px;'
-        : 'background-color: rgba(94, 129, 172, 0.28);' +
-            'border: 2px solid rgba(94, 129, 172, 0.9); border-radius: 12px;',
-    );
-    actor.set_position(preview.x, preview.y);
-    actor.set_size(preview.width, preview.height);
-    actor.show();
-  }
-
-  /// Cria (uma vez) o ator do overlay: ESTÁTICO, semi-transparente, cantos arredondados, não
-  /// reativo (não rouba o ponteiro durante o grab). Em `uiGroup` (coords absolutas de stage, que
-  /// casam com `global.get_pointer()` e com o daemon) — não em `addChrome`, que mexeria nas áreas
-  /// úteis. Sem animação (ver ADR 0016): um único ator reposicionado, custo desprezível.
-  private _ensurePreviewActor(): St.Widget {
-    if (!this._previewActor) {
-      this._previewActor = new St.Widget({
-        style_class: 'etherbit-drop-preview',
-        reactive: false,
-        can_focus: false,
-        track_hover: false,
-      });
-      this._previewActor.set_style(
-        'background-color: rgba(94, 129, 172, 0.28);' +
-          'border: 2px solid rgba(94, 129, 172, 0.9);' +
-          'border-radius: 12px;',
-      );
-      Main.layoutManager.uiGroup.add_child(this._previewActor);
-    }
-    return this._previewActor;
-  }
-
-  private _destroyPreview(): void {
-    if (this._previewActor) {
-      this._previewActor.destroy();
-      this._previewActor = null;
+    const merge = hot.dropZone === 'center';
+    const HOT_MERGE =
+      'background-color: rgba(163, 190, 140, 0.34);' +
+      'border: 2px solid rgba(163, 190, 140, 0.95); border-radius: 10px;';
+    const HOT_SPLIT =
+      'background-color: rgba(94, 129, 172, 0.34);' +
+      'border: 2px solid rgba(94, 129, 172, 0.95); border-radius: 10px;';
+    const COLD =
+      'background-color: rgba(94, 129, 172, 0.08);' +
+      'border: 1px solid rgba(94, 129, 172, 0.35); border-radius: 8px;';
+    for (let i = 0; i < cells.length; i += 1) {
+      const cell = cells[i];
+      if (!cell) {
+        continue;
+      }
+      const rect = hot.cells[i];
+      if (!rect) {
+        cell.hide();
+        continue;
+      }
+      cell.set_style(hot.hot.includes(i) ? (merge ? HOT_MERGE : HOT_SPLIT) : COLD);
+      cell.set_position(Math.round(rect.x), Math.round(rect.y));
+      cell.set_size(Math.max(1, Math.round(rect.width)), Math.max(1, Math.round(rect.height)));
+      cell.show();
     }
   }
 
-  /// Fim do arrasto: consolida o drop. Zona `stack` → empilha em abas; zona de lado → MoveWindow
-  /// (move+split na árvore: o arrastado racha a folha do alvo no lado sobrevoado). O
-  /// `_scheduleRelayout()` (chamado pelo handler) re-tila a partir das árvores atualizadas.
+  /// Cria (uma vez) as 9 células do HUD: ESTÁTICAS, semi-transparentes, não reativas (não roubam o
+  /// ponteiro durante o grab). Em `uiGroup` (coords absolutas de stage, que casam com
+  /// `global.get_pointer()`). Sem animação (ver ADR 0016): atores reposicionados, custo desprezível.
+  private _ensureHud(): St.Widget[] {
+    if (this._hudCells.length === 0) {
+      for (let i = 0; i < 9; i += 1) {
+        const cell = new St.Widget({
+          style_class: 'etherbit-drop-preview',
+          reactive: false,
+          can_focus: false,
+          track_hover: false,
+        });
+        cell.hide();
+        Main.layoutManager.uiGroup.add_child(cell);
+        this._hudCells.push(cell);
+      }
+    }
+    return this._hudCells;
+  }
+
+  private _destroyHud(): void {
+    for (const cell of this._hudCells) {
+      cell.destroy();
+    }
+    this._hudCells = [];
+  }
+
+  /// Fim do arrasto: consolida o drop (ADR 0026). Centro local → empilha em abas; eixo/canto local →
+  /// MoveWindow escopo `local` (faixa de 1/3 na submatriz do alvo); escopo global → MoveWindow `global`
+  /// (bloco de 50% como nó principal). O `_scheduleRelayout()` re-tila das árvores atualizadas.
   private _onGrabEnd(window: Meta.Window | null): void {
     if (this._draggedId && window) {
       const [x, y] = global.get_pointer();
       const target = this._windowUnderPointObj(x, y, this._draggedId);
-      // [DIAG drag-to-group] Decisão final do drop. Se `alvo=nenhum`, `_windowUnderPointObj` não
-      // achou a janela sob o cursor; se `zona` ≠ `stack`, cai no move+split em vez de empilhar.
-      // Temporário (remover/baixar para debug após confirmar a causa).
+      const hot = this._lastHot;
+      const targetId = target ? target.get_stable_sequence() : 0;
+      const workspace = window.get_workspace();
+      const key = orderKey(window.get_monitor(), workspace ? workspace.index() : 0);
       console.log(
-        `[etherbit][drag] soltar: zona=${this._lastPreviewZone}` +
-          ` arrastada=${this._draggedId} alvo=${target ? target.get_stable_sequence() : 'nenhum'}`,
+        `[etherbit][drag] soltar: zona=${hot?.dropZone ?? 'none'} escopo=${hot?.scope ?? '-'}` +
+          ` arrastada=${this._draggedId} alvo=${target ? targetId : 'nenhum'}`,
       );
-      if (target) {
-        const targetId = target.get_stable_sequence();
-        const workspace = window.get_workspace();
-        const key = orderKey(window.get_monitor(), workspace ? workspace.index() : 0);
-        if (this._lastPreviewZone === 'stack') {
-          // Solto na faixa superior da janela-alvo → empilha em abas (estado de stacks).
-          const added = addToStack(this._stacks, key, targetId, this._draggedId);
-          console.log(
-            `[etherbit][drag] empilhar alvo=${targetId} arrastada=${this._draggedId}` +
-              ` → addToStack=${added}; stacks[${key}]=${JSON.stringify(this._stacks.get(key) ?? [])}`,
-          );
-        } else if (this._lastPreviewZone !== 'none' && this._lastPreviewZone !== 'center') {
-          // Solto sobre um lado da janela → move+split na árvore (persistente).
-          const res = this._call((p) =>
-            p.MoveWindowSync(
-              serializeState(this._stacks, this._disabledGroups, this._trees, this._draggedId),
-              String(this._draggedId),
-              String(targetId),
-              this._lastPreviewZone,
-            ),
-          );
-          if (res) {
-            this._trees = parseLayoutTrees(res[0]);
-          }
+      const moveWindow = (zoneStr: string, scope: 'local' | 'global'): void => {
+        const res = this._call((p) =>
+          p.MoveWindowSync(
+            serializeState(this._stacks, this._disabledGroups, this._trees, this._draggedId),
+            String(this._draggedId),
+            String(targetId),
+            zoneStr,
+            serializeScope(scope),
+          ),
+        );
+        if (res) {
+          this._trees = parseLayoutTrees(res[0]);
+        }
+      };
+      if (hot && hot.scope === 'global' && hot.dropZone !== 'none') {
+        // Escopo global: insere como nó principal do workspace (50%) — não exige janela-alvo.
+        moveWindow(hot.dropZone, 'global');
+      } else if (hot && target) {
+        if (hot.dropZone === 'center') {
+          // Centro da janela-alvo → empilha em abas (estado de stacks; o core não muta a árvore).
+          addToStack(this._stacks, key, targetId, this._draggedId);
+        } else if (hot.dropZone !== 'none') {
+          // Eixo/canto → move+split local (faixa de 1/3) na árvore persistente.
+          moveWindow(hot.dropZone, 'local');
         }
       }
     } else if (
@@ -886,10 +910,10 @@ export default class EtherbitTilingExtension extends Extension {
       GLib.source_remove(this._dragSource);
       this._dragSource = 0;
     }
-    this._destroyPreview();
+    this._destroyHud();
     this._draggedId = 0;
     this._lastPointer = null;
-    this._lastPreviewZone = 'none';
+    this._lastHot = null;
     this._resolving = false;
   }
 
