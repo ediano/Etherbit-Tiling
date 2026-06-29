@@ -15,6 +15,18 @@ use etherbit_tiling_core::{
     TabBarRect, WindowInfo, WindowRect, WorkArea, MIN_RATIO,
 };
 
+/// Desserializa um índice (monitor/workspace) de forma TOLERANTE: aceita inteiro e SATURA negativos a
+/// 0. Uma ponte pode enviar `-1` (ex.: `Meta.Window.get_monitor()` numa janela sem monitor); sem isto,
+/// o serde rejeitaria o ARRAY INTEIRO de janelas e TODO o `SyncWindows` falharia → tiling inerte (era
+/// uma das causas candidatas da regressão do GNOME, ver ADR 0020).
+fn de_index<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = i64::deserialize(deserializer)?;
+    Ok(raw.max(0) as u32)
+}
+
 /// Janela vinda da ponte. Espelha `windows_json` do contrato D-Bus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowDto {
@@ -31,9 +43,9 @@ pub struct WindowDto {
     pub resizable: bool,
     #[serde(default)]
     pub maximizable: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_index")]
     pub monitor: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_index")]
     pub workspace: u32,
     /// Largura mínima (px) do app (geometry hint). Ausente/0 = sem restrição (retrocompat).
     #[serde(default)]
@@ -50,6 +62,7 @@ pub struct WindowDto {
 /// Área útil de um monitor. Espelha `monitors_json` do contrato D-Bus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonitorDto {
+    #[serde(deserialize_with = "de_index")]
     pub index: u32,
     pub x: i32,
     pub y: i32,
@@ -388,6 +401,7 @@ pub fn sync_windows(
     let areas: Vec<WorkArea> = monitors.iter().map(WorkArea::from).collect();
 
     // Filtro cirúrgico centralizado no core; a ponte é burra e pode enviar tudo.
+    let n_windows = windows.len();
     let tileable: Vec<WindowInfo> =
         windows.into_iter().map(WindowInfo::from).filter(|w| is_tileable(w, ignore_list)).collect();
 
@@ -453,6 +467,14 @@ pub fn sync_windows(
             None => out_trees.push(tree_to_dto(monitor, workspace, &prev)),
         }
     }
+
+    crate::dlog!(
+        "sync_windows: {n_windows} recebida(s) → {} tileável(is) → {} rect(s), {} flutuante(s), {} grupo(s)",
+        tileable.len(),
+        rects.len(),
+        floating.len(),
+        out_trees.len()
+    );
 
     let dto = LayoutResultDto { rects, tab_bars, trees: out_trees, floating };
     serde_json::to_string(&dto).context("falha ao serializar layout_json")
@@ -820,6 +842,27 @@ mod tests {
         let dto: WindowDto = serde_json::from_str(&win_json(1, "a")).expect("parse");
         assert_eq!(dto.min_width, 0);
         assert_eq!(dto.min_height, 0);
+    }
+
+    #[test]
+    fn window_dto_negative_index_saturates_to_zero() {
+        // `monitor: -1` (janela sem monitor) NÃO pode quebrar o parse: `de_index` satura a 0.
+        let json = r#"{"id":1,"app_id":"a","x":0,"y":0,"width":100,"height":100,"normal":true,"resizable":true,"maximizable":true,"monitor":-1,"workspace":-1}"#;
+        let dto: WindowDto = serde_json::from_str(json).expect("parse tolerante");
+        assert_eq!(dto.monitor, 0);
+        assert_eq!(dto.workspace, 0);
+    }
+
+    #[test]
+    fn sync_tolerates_negative_monitor_in_array() {
+        // Um `monitor: -1` no array NÃO invalida o SyncWindows inteiro (era causa candidata de inércia
+        // no GNOME): a janela é tratada como monitor 0 e tilada normalmente.
+        let off = r#"{"id":1,"app_id":"a","x":0,"y":0,"width":100,"height":100,"normal":true,"resizable":true,"maximizable":true,"monitor":-1,"workspace":0}"#;
+        let out = sync_windows(&format!("[{off}]"), AREAS, "", &[], OPTS)
+            .expect("não deve falhar com monitor -1");
+        let res = layout_of(&out);
+        assert_eq!(res.rects.len(), 1);
+        assert_eq!(res.rects[0].id, 1);
     }
 
     #[test]

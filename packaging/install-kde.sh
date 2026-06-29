@@ -75,15 +75,20 @@ if command -v kwriteconfig6 >/dev/null; then
   kwriteconfig6 --file kwinrc --group Plugins --key "${ID}Enabled" true
 fi
 
-QDBUS="$(command -v qdbus6 || command -v qdbus-qt6 || command -v qdbus || true)"
+# Linha de corte Qt6/Plasma6: só qdbus6/qdbus-qt6 (o `qdbus` puro pode ser o do Qt5). Ver ADR 0013.
+QDBUS="$(command -v qdbus6 || command -v qdbus-qt6 || true)"
 if [ -n "$QDBUS" ]; then
   "$QDBUS" org.kde.KWin /KWin reconfigure || true
+else
+  echo "aviso: qdbus6/qdbus-qt6 não encontrado — recarregue o KWin manualmente (requer Plasma 6/Qt 6)."
 fi
 
 # --- Serviço systemd (--user) --------------------------------------------------
 echo ">> Instalando serviço systemd --user ($SERVICE)"
 mkdir -p "$SYSTEMD_DIR"
-cat > "$SYSTEMD_DIR/$SERVICE" <<'UNIT'
+# `ExecStart` usa o $BIN_DIR REAL (não o hardcode %h/.local/bin): respeita XDG_BIN_HOME e evita um
+# serviço que aponta para um binário inexistente — daemon que não sobe = tiling inerte.
+cat > "$SYSTEMD_DIR/$SERVICE" <<UNIT
 [Unit]
 Description=Etherbit Tiling Daemon
 After=graphical-session.target
@@ -91,7 +96,7 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/etherbit-tiling-daemon
+ExecStart=${BIN_DIR}/etherbit-tiling-daemon
 Restart=on-failure
 RestartSec=2
 
@@ -105,6 +110,19 @@ if command -v systemctl >/dev/null; then
     echo "aviso: não foi possível iniciar agora (sessão sem systemd --user?). Será iniciado no próximo login."
 else
   echo "aviso: systemctl indisponível — serviço instalado, mas não habilitado."
+fi
+
+# Health-check: o KWin Script é só o CLIENTE; sem o daemon respondendo, o tiling fica INERTE. Confirma
+# que o daemon detém o nome e responde ao Ping (a chamada também dispara a ativação D-Bus, se preciso).
+if command -v busctl >/dev/null; then
+  if busctl --user call dev.ediano.etherbit.Tiling /dev/ediano/etherbit/Tiling \
+       dev.ediano.etherbit.Tiling Ping >/dev/null 2>&1; then
+    echo ">> Daemon ATIVO e respondendo (Ping ok)."
+  else
+    echo "AVISO: o daemon não respondeu ao Ping — o tiling pode ficar inerte. Diagnostique com:"
+    echo "         systemctl --user status $SERVICE"
+    echo "         journalctl --user -u $SERVICE -b 0"
+  fi
 fi
 
 # --- Fim -----------------------------------------------------------------------

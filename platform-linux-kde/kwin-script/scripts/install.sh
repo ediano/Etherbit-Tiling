@@ -20,6 +20,14 @@ if [ ! -f "$HERE/metadata.json" ]; then
   exit 1
 fi
 
+# Anti-obsolescência: instalar um main.js velho é uma armadilha (o script "carrega", mas roda código
+# antigo). Se algum fonte for mais novo que o bundle, exige rebuild.
+if [ -n "$(find "$HERE/contents/code" -name '*.ts' -newer "$HERE/contents/code/main.js" -print -quit 2>/dev/null)" ]; then
+  echo "erro: contents/code/main.js está mais velho que os fontes .ts — rode 'pnpm build' antes" >&2
+  echo "       (ou use 'pnpm run install:script', que reconstrói automaticamente)." >&2
+  exit 1
+fi
+
 command -v kpackagetool6 >/dev/null || {
   echo "erro: kpackagetool6 não encontrado (precisa de Plasma 6)." >&2
   exit 1
@@ -40,11 +48,26 @@ if command -v kwriteconfig6 >/dev/null; then
   kwriteconfig6 --file kwinrc --group Plugins --key "${ID}Enabled" true
 fi
 
-QDBUS="$(command -v qdbus6 || command -v qdbus-qt6 || command -v qdbus || true)"
+# Linha de corte Qt6/Plasma6: só qdbus6/qdbus-qt6 (o `qdbus` puro pode ser o do Qt5, falando com o
+# KWin errado num sistema misto). Ver ADR rules/0013.
+QDBUS="$(command -v qdbus6 || command -v qdbus-qt6 || true)"
 if [ -n "$QDBUS" ]; then
   "$QDBUS" org.kde.KWin /KWin reconfigure || true
+else
+  echo "aviso: qdbus6/qdbus-qt6 não encontrado — recarregue o KWin manualmente (requer Plasma 6/Qt 6)."
+fi
+
+# O KWin Script é só o CLIENTE; em DEV o daemon precisa rodar à parte. Avisa se ele não está no bus.
+if command -v busctl >/dev/null; then
+  if busctl --user status dev.ediano.etherbit.Tiling >/dev/null 2>&1; then
+    echo ">> Daemon ATIVO no barramento de sessão."
+  else
+    echo "AVISO: o daemon NÃO está no barramento — o tiling ficará INERTE. Em dev, rode-o à parte:"
+    echo "         RUST_LOG=debug cargo run --manifest-path platform-linux-daemon/Cargo.toml"
+    echo "       Ou instale o pacote completo (daemon + systemd --user): bash packaging/install-kde.sh"
+  fi
 fi
 
 echo "Instalado e habilitado: $ID"
-echo "Logs: journalctl -f QT_CATEGORY=kwin_scripting"
+echo "Logs: journalctl -f QT_CATEGORY=kwin_scripting   (ligue a chave 'debug' p/ detalhe por evento)"
 echo "Config: Configurações do Sistema → KWin Scripts → Etherbit Tiling (⚙)"

@@ -332,14 +332,8 @@ pub fn compute_layout_with(
         // presente; os demais membros saem da sequência (existem só dentro do stack).
         let slots = build_slots(&ids, &group_stacks);
 
-        // Área interna: aplica `outer_gap` uma vez ao redor da área útil.
-        let outer = opts.outer_gap as f64;
-        let inner = Rectf {
-            x: area.x as f64 + outer,
-            y: area.y as f64 + outer,
-            w: area.width as f64 - 2.0 * outer,
-            h: area.height as f64 - 2.0 * outer,
-        };
+        // Área interna: aplica `outer_gap` uma vez ao redor da área útil (clampada a `>= 0`).
+        let inner = inner_rect(area, opts.outer_gap as f64);
 
         let slot_rects = bsp_rects(inner, slots.len(), opts.inner_gap as f64);
         for (slot, srect) in slots.iter().zip(slot_rects) {
@@ -412,13 +406,14 @@ fn bsp_rects(rect: Rectf, count: usize, inner_gap: f64) -> Vec<Rectf> {
 /// X (lado a lado); `vertical=false` divide no eixo Y (empilhado).
 fn split_axis(rect: Rectf, gap: f64, vertical: bool) -> (Rectf, Rectf) {
     if vertical {
-        let w = (rect.w - gap) / 2.0;
+        // Clampa a `>= 0`: se o gap exceder a largura (área minúscula), a metade não fica NEGATIVA.
+        let w = ((rect.w - gap) / 2.0).max(0.0);
         (
             Rectf { x: rect.x, y: rect.y, w, h: rect.h },
             Rectf { x: rect.x + w + gap, y: rect.y, w, h: rect.h },
         )
     } else {
-        let h = (rect.h - gap) / 2.0;
+        let h = ((rect.h - gap) / 2.0).max(0.0);
         (
             Rectf { x: rect.x, y: rect.y, w: rect.w, h },
             Rectf { x: rect.x, y: rect.y + h + gap, w: rect.w, h },
@@ -613,13 +608,15 @@ fn sub_rect_of_target(
     }
 }
 
-/// Área interna de um monitor: a área útil menos `outer` em cada borda.
+/// Área interna de um monitor: a área útil menos `outer` em cada borda. Largura/altura clampadas a
+/// `>= 0`: um `outer_gap` maior que metade da área (config degenerada) jamais gera dimensão NEGATIVA,
+/// que viraria retângulo inválido e a ponte descartaria — esvaziando o grid (ver ADR 0019).
 fn inner_rect(area: &WorkArea, outer: f64) -> Rectf {
     Rectf {
         x: area.x as f64 + outer,
         y: area.y as f64 + outer,
-        w: area.width as f64 - 2.0 * outer,
-        h: area.height as f64 - 2.0 * outer,
+        w: (area.width as f64 - 2.0 * outer).max(0.0),
+        h: (area.height as f64 - 2.0 * outer).max(0.0),
     }
 }
 
@@ -1548,6 +1545,20 @@ mod tests {
     fn layout_empty_for_no_windows() {
         let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, tab_bar_height: 28 };
         assert!(compute_layout(&[], &[area_1000x800()], &opts).is_empty());
+    }
+
+    #[test]
+    fn extreme_gaps_dont_break_layout() {
+        // Gap degenerado (maior que a própria área): o clamp em `inner_rect`/`split_axis` garante que
+        // o layout NÃO esvazie nem gere dimensão NEGATIVA (que a ponte descartaria → grid morto).
+        // Defesa em profundidade — a UI trava o gap em 0..=100, mas o core não pode quebrar (ADR 0019).
+        let opts = LayoutOptions { inner_gap: 2000, outer_gap: 2000, tab_bar_height: 28 };
+        let rects = compute_layout(&[win(1, 0), win(2, 0), win(3, 0)], &[area_1000x800()], &opts);
+        assert_eq!(rects.len(), 3, "todas as janelas devem receber um retângulo");
+        for r in &rects {
+            assert!(r.width >= 0, "largura negativa: {}", r.width);
+            assert!(r.height >= 0, "altura negativa: {}", r.height);
+        }
     }
 
     #[test]

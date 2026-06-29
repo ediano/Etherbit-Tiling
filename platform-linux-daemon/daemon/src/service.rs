@@ -56,6 +56,42 @@ impl Tiling {
     }
 }
 
+/// Executa uma chamada SÍNCRONA ao core capturando PÂNICO. Sem isso, um pânico no core (ex.: índice
+/// fora de faixa, `unwrap` em entrada degenerada) abortaria a task do método D-Bus em SILÊNCIO — o
+/// cliente recebe `NoReply` e a ponte fica INERTE sem nenhum log (foi o modo de falha investigado na
+/// regressão do GNOME; ver ADR 0020). Com o guard, o pânico vira erro D-Bus recuperável + log no
+/// journal, e a PRÓXIMA chamada volta a funcionar. `f` devolve `Result<String>` (o protocol já
+/// anexa o contexto do erro). Erros e pânicos são SEMPRE logados (não dependem de `RUST_LOG`).
+fn guard<F>(method: &str, f: F) -> fdo::Result<String>
+where
+    F: FnOnce() -> Result<String>,
+{
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(Ok(json)) => Ok(json),
+        Ok(Err(e)) => {
+            eprintln!("[etherbit-daemon] {method}: erro ao computar layout: {e:#}");
+            Err(fdo::Error::InvalidArgs(format!("{method}: {e}")))
+        }
+        Err(payload) => {
+            let msg = panic_message(payload.as_ref());
+            eprintln!("[etherbit-daemon] {method}: PÂNICO no core (recuperado pelo guard): {msg}");
+            Err(fdo::Error::Failed(format!("{method}: pânico no core: {msg}")))
+        }
+    }
+}
+
+/// Extrai a mensagem textual de um payload de pânico (`&str`/`String`), com marcador genérico se não
+/// for texto.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "pânico não-textual".to_string()
+    }
+}
+
 #[interface(name = "dev.ediano.etherbit.Tiling")]
 impl Tiling {
     /// Handshake/health-check barato: confirma que o daemon está vivo e respondendo. Usado pela ponte
@@ -145,14 +181,15 @@ impl Tiling {
         state_json: String,
     ) -> fdo::Result<String> {
         let opts = self.layout_options();
-        protocol::sync_windows(
-            &windows_json,
-            &monitors_json,
-            &state_json,
-            &self.config.ignore_list,
-            opts,
-        )
-        .map_err(|e| fdo::Error::InvalidArgs(format!("sync_windows: {e}")))
+        guard("sync_windows", || {
+            protocol::sync_windows(
+                &windows_json,
+                &monitors_json,
+                &state_json,
+                &self.config.ignore_list,
+                opts,
+            )
+        })
     }
 
     /// Resolve o destino de um drop sob o ponto `(x, y)`. A ponte chama isto em alta frequência
@@ -167,8 +204,9 @@ impl Tiling {
         target_json: String,
     ) -> fdo::Result<String> {
         let opts = self.layout_options();
-        protocol::resolve_drop_zone(&monitors_json, x, y, &target_json, opts)
-            .map_err(|e| fdo::Error::InvalidArgs(format!("resolve_drop_zone: {e}")))
+        guard("resolve_drop_zone", || {
+            protocol::resolve_drop_zone(&monitors_json, x, y, &target_json, opts)
+        })
     }
 
     /// Aplica um drag-to-tile: move `dragged_id` para junto de `target_id` no lado da `zone`
@@ -181,8 +219,7 @@ impl Tiling {
         target_id: u64,
         zone: String,
     ) -> fdo::Result<String> {
-        protocol::move_window(&state_json, dragged_id, target_id, &zone)
-            .map_err(|e| fdo::Error::InvalidArgs(format!("move_window: {e}")))
+        guard("move_window", || protocol::move_window(&state_json, dragged_id, target_id, &zone))
     }
 
     /// Resize manual elástico: arrasta a borda `edge` (left/right/top/bottom) da janela `id` em
@@ -197,8 +234,9 @@ impl Tiling {
         delta_px: i32,
     ) -> fdo::Result<String> {
         let opts = self.layout_options();
-        protocol::resize_window(&monitors_json, &state_json, id, &edge, delta_px, opts)
-            .map_err(|e| fdo::Error::InvalidArgs(format!("resize_window: {e}")))
+        guard("resize_window", || {
+            protocol::resize_window(&monitors_json, &state_json, id, &edge, delta_px, opts)
+        })
     }
 
     /// Sinal emitido sempre que a configuração muda. Carrega a config completa em JSON.

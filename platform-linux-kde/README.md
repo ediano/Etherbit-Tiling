@@ -11,6 +11,17 @@ já é agnóstico de ambiente de desktop (config TOML + serviço D-Bus `dev.edia
 > Ver ADR [0013](../rules/0013-camada-kde-kwin-script.md) (camada KDE) e
 > [0014](../rules/0014-daemon-linux-compartilhado.md) (daemon compartilhado GNOME/KDE).
 
+## Requisitos (linha de corte)
+
+Suporte **exclusivo** às versões modernas da stack KDE — **sem retrocompatibilidade**:
+
+- **KDE Plasma ≥ 6**
+- **KDE Frameworks ≥ 6**
+- **Qt ≥ 6**
+
+Sessão **Wayland** (sem X11). Os instaladores exigem `kpackagetool6`, `kwriteconfig6` e
+`qdbus6`/`qdbus-qt6` — o `qdbus` puro (que pode ser o do Qt 5) **não** é usado.
+
 ## Estrutura
 
 ```
@@ -44,8 +55,17 @@ pnpm build            # gera contents/code/main.js (IIFE)
 pnpm run install:script   # build + kpackagetool6 -i/-u + habilita + reconfigure
 ```
 
+> O KWin Script é só a **ponte/cliente** — ele fala com o daemon Rust via D-Bus. Em desenvolvimento,
+> rode o daemon à parte (senão o tiling fica inerte):
+>
+> ```bash
+> RUST_LOG=debug cargo run --manifest-path platform-linux-daemon/Cargo.toml
+> ```
+
 Logs do script em runtime: `journalctl -f QT_CATEGORY=kwin_scripting`
-(ou `QT_LOGGING_RULES="kwin_*.debug=true"`).
+(ou `QT_LOGGING_RULES="kwin_*.debug=true"`). Ligue a chave **`debug`** (kwinrc) para o detalhamento
+por evento (nº de janelas/retângulos). Diagnóstico de IPC: ver
+[docs/DIAGNOSTICO-IPC.md](../docs/DIAGNOSTICO-IPC.md).
 
 A configuração (gaps, borda, autostart) fica em **Configurações do Sistema → KWin Scripts →
 Etherbit Tiling (⚙)**; os valores são gravados no `~/.config/kwinrc` e propagados ao daemon.

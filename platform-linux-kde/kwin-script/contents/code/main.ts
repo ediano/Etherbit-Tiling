@@ -49,6 +49,22 @@ const BUS_NAME = 'dev.ediano.etherbit.Tiling';
 const OBJECT_PATH = '/dev/ediano/etherbit/Tiling';
 const IFACE = 'dev.ediano.etherbit.Tiling';
 
+/// Prefixo estável de log. A ÚNICA saída do QJSEngine é `print` (sem `console`/`setTimeout`); o prefixo
+/// permite `journalctl --user -f QT_CATEGORY=kwin_scripting | grep etherbit`. O handshake `Ping` e o
+/// aviso de "sem resposta" são SEMPRE logados (são o diagnóstico essencial da falha silenciosa).
+const LOG = '[etherbit]';
+function log(...args: unknown[]): void {
+  print(LOG, ...args);
+}
+/// Detalhamento POR EVENTO (contagem de janelas/retângulos), ligado pela chave `debug` do kwinrc
+/// (Configurações do Sistema → KWin Scripts → Etherbit, ou `kwriteconfig6`). Default desligado.
+const DEBUG = readConfig('debug', false) as boolean;
+function debug(...args: unknown[]): void {
+  if (DEBUG) {
+    print(LOG, ...args);
+  }
+}
+
 /// Lê a config do kwinrc (entradas de contents/config/main.xml), com fallback nos padrões.
 function loadConfig(): TilingConfig {
   return {
@@ -74,6 +90,14 @@ function pushConfigToDaemon(cfg: TilingConfig): void {
 
 const config = loadConfig();
 pushConfigToDaemon(config);
+
+// Handshake na carga: prova que o daemon está alcançável. REGRA DE DIAGNÓSTICO — ver `[etherbit]
+// ponte carregando` SEM o `Ping OK` seguinte no journal significa daemon fora/inacessível (a causa
+// da inércia silenciosa: o `callDBus` do KWin engole `ServiceUnknown` e o callback nunca dispara).
+log('ponte carregando; testando daemon em', BUS_NAME);
+callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'Ping', (status: string) => {
+  log('Ping OK — daemon respondeu:', status);
+});
 
 // ---- Estado leve da ponte (ver ADR 0016/0017: o daemon permanece sem estado) ----
 
@@ -109,6 +133,10 @@ let resizeStart: { id: string; rect: { x: number; y: number; width: number; heig
   null;
 /// Suprime retile reentrante enquanto aplicamos geometria/minimização.
 let applying = false;
+/// Sequência de SyncWindows enviados/confirmados. Sem `setTimeout` no sandbox, é assim que
+/// detectamos "o daemon não respondeu ao sync anterior" — avisamos no próximo evento de janela.
+let syncSeq = 0;
+let syncAckSeq = 0;
 
 /// Id estável de sessão da janela (QUuid → string). Coagido para servir de chave de mapa.
 function windowId(win: KWinWindow): string {
@@ -194,6 +222,13 @@ function retile(): void {
     return;
   }
 
+  // Detector de daemon-ausente (sem timer no sandbox): se havia janelas e o sync anterior nunca
+  // foi confirmado, o canal está mudo. Sempre logado — é o sinal que faltava na falha silenciosa.
+  if (workspace.windows.length > 0 && syncAckSeq < syncSeq) {
+    log('AVISO: SyncWindows anterior sem resposta (', syncAckSeq, '/', syncSeq,
+      ') — daemon provavelmente fora do barramento');
+  }
+
   const outputs = collectOutputs();
   const monitorIndexOf = (output: KWinOutput): number => outputs.indexOf(output);
 
@@ -271,6 +306,10 @@ function retile(): void {
   const aw = workspace.activeWindow;
   const focusedStable = aw ? windowId(aw) : '';
 
+  syncSeq += 1;
+  const mySeq = syncSeq;
+  debug('retile: enviando SyncWindows com', snapshots.length, 'janelas (seq', mySeq, ')');
+
   callDBus(
     BUS_NAME,
     OBJECT_PATH,
@@ -280,9 +319,11 @@ function retile(): void {
     serializeMonitors(monitorsFrom(outputs)),
     serializeState(stacks, disabled, transportOf, trees, focusedStable),
     (layoutJson: string) => {
+      syncAckSeq = mySeq;
       // Persiste as árvores reconciliadas (traduzidas de volta para internalId).
       trees = parseLayoutTrees(layoutJson, transportToStable);
       const commands = parseLayout(layoutJson);
+      debug('SyncWindows OK (seq', mySeq, ') — retângulos recebidos:', commands.length);
       const tabBars = parseTabBars(layoutJson);
       // Janelas isoladas por auto-floating (mínimo não cabe): aplicar e ELEVAR (keepAbove).
       const floating = parseFloating(layoutJson);
@@ -665,4 +706,4 @@ for (const win of workspace.windows) {
 }
 retile();
 
-print('Etherbit Tiling (KWin): ponte carregada, servindo via', BUS_NAME);
+log('ponte carregada, servindo via', BUS_NAME);

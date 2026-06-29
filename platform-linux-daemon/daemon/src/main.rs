@@ -9,6 +9,7 @@ mod autostart;
 mod config;
 #[cfg(feature = "wgpu-ui")]
 mod layer;
+mod obs;
 mod powermon;
 mod protocol;
 #[cfg(feature = "wgpu-ui")]

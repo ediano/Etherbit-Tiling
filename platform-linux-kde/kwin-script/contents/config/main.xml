@@ -43,5 +43,9 @@
       <min>0</min>
       <max>50</max>
     </entry>
+    <entry name="debug" type="Bool">
+      <label>Logs detalhados no journal (diagnóstico): nº de janelas/retângulos por evento</label>
+      <default>false</default>
+    </entry>
   </group>
 </kcfg>
