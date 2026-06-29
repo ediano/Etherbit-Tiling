@@ -33,6 +33,7 @@ import {
 const win: WindowSnapshot = {
   id: 7,
   app_id: 'konsole',
+  title: 'Konsole',
   x: 0,
   y: 0,
   width: 800,

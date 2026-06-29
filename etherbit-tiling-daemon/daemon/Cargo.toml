@@ -15,6 +15,7 @@ wgpu-ui = [
     "dep:raw-window-handle",
     "dep:bytemuck",
     "dep:wayland-client",
+    "dep:glyphon",
 ]
 
 [dependencies]
@@ -42,3 +43,6 @@ bytemuck = { version = "1", features = ["derive"], optional = true }
 # build — assim o CI/devcontainer compila SEM a `libwayland-client` de sistema, e no KDE (que sempre a
 # tem) o overlay funciona. Não é usado diretamente no código; entra só pela unificação de features.
 wayland-client = { version = "0.31", optional = true, features = ["system", "dlopen"] }
+# Renderização de texto (título das abas) sobre wgpu: glyphon 0.6 casa com o wgpu 22 (atlas de
+# glifos via cosmic-text). Só no caminho da barra (KDE/wgpu-ui).
+glyphon = { version = "0.6", optional = true }

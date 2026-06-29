@@ -57,14 +57,21 @@ binário novo **duplicaria** a fundação do 0022 e contrariaria o 0016. A decis
   **sem** dependência de build da `libwayland-client`. O `build-kde-release.sh` compila o daemon com
   `--features wgpu-ui` (o release GNOME não, pois o Mutter não tem layer-shell). Validação interativa
   real (clicar aba/X/desagrupar) é em hardware numa sessão KWin.
+- **Texto das abas (título) via `glyphon`.** A barra rotula cada guia com o título da janela. O
+  `caption` viaja da ponte no `windows_json` (`WindowDto.title`, `#[serde(default)]`); o daemon o
+  reanexa às `tab_bars` (`TabBarDto.titles`, paralelo a `members`) — o **core continua sem conhecer
+  título** (irrelevante ao layout). O `render_bar` desenha em dois passes: quads (faixa/guias/"x") e,
+  por cima (`LoadOp::Load`), o texto com `glyphon` 0.6 (atlas de glifos compatível com o wgpu 22). O
+  GNOME não usa (rotula na própria extensão a partir de `Meta.Window`), então **não** envia `title`.
 
 ## Consequências
 
 - **Core ainda puro, ponte ainda dona do estado de janelas.** A única novidade de estado é a fila
   efêmera de UI no daemon — contida e justificada aqui. Reafirma 0002/0016.
-- **Contrato espelhado em um ponto novo:** `pending_actions` no `layout_json` (daemon `protocol.rs` +
-  ponte KDE `bridge.ts`). Retrocompatível por `#[serde(default)]`/parse defensivo: daemon e ponte
-  antigos ignoram o campo.
+- **Contrato espelhado em pontos novos:** `pending_actions` no `layout_json` (daemon `protocol.rs` +
+  ponte KDE `bridge.ts`), `WindowDto.title` no `windows_json` (ponte KDE envia `win.caption`) e
+  `TabBarDto.titles` no `layout_json`. Todos retrocompatíveis por `#[serde(default)]`/parse defensivo:
+  daemon e pontes antigos ignoram os campos.
 - **Limitação de latência registrada:** a ação chega no **próximo** `SyncWindows`. Na prática quase
   sempre coincide com atividade de janela (`close` → `windowRemoved`; `activate` → `windowActivated`;
   `ungroup` muda a geometria), então o atraso é imperceptível. Se latência zero virar requisito, o

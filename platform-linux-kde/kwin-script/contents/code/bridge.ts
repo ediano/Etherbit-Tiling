@@ -9,6 +9,8 @@
 export interface WindowSnapshot {
   id: number;
   app_id: string;
+  /// Título (caption) da janela, para o texto da aba na barra wgpu do KDE. Vazio = sem rótulo.
+  title: string;
   x: number;
   y: number;
   width: number;

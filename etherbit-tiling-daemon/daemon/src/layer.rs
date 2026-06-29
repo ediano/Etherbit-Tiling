@@ -59,11 +59,16 @@ use smithay_client_toolkit::{
 use crate::protocol::TabActionDto;
 use crate::render::{QuadRenderer, RenderContext};
 use crate::service;
-use crate::tabbar::{hit_test, layout_bars, BarInput, PointerButton, TabBar, TabHit};
+use crate::tabbar::{hit_test, layout_bars, BarInput, PointerButton, TabBar, TabHit, CLOSE_W};
 
 /// Códigos `linux/input-event-codes.h` dos botões do ponteiro.
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
+
+/// Recuo horizontal (px) do texto do título dentro da guia.
+const TEXT_PAD: i32 = 6;
+/// Cor do texto das abas (Nord "snow", RGB).
+const TEXT_RGB: (u8, u8, u8) = (0xE5, 0xE9, 0xF0);
 
 /// Modelo + renderização da barra (independente de hardware). Conhece o pipeline wgpu, as barras
 /// atuais e a fila de ações; NÃO conhece a `LayerSurface` (isso vive no event loop).
@@ -78,6 +83,13 @@ pub struct TabBarOverlay {
     /// Fila compartilhada com o serviço D-Bus: cada clique enfileira uma ação que o `SyncWindows`
     /// drena e entrega à ponte KDE por PULL (a ponte não assina o sinal `TabAction`; ver ADR 0022).
     pending_actions: Arc<Mutex<VecDeque<TabActionDto>>>,
+    /// Renderização de texto (glyphon): o título de cada aba, desenhado por cima dos quads. Criados
+    /// uma vez; `prepare`/`render` são chamados em `render_bar`.
+    font_system: glyphon::FontSystem,
+    swash_cache: glyphon::SwashCache,
+    viewport: glyphon::Viewport,
+    text_atlas: glyphon::TextAtlas,
+    text_renderer: glyphon::TextRenderer,
 }
 
 impl TabBarOverlay {
@@ -91,7 +103,31 @@ impl TabBarOverlay {
     ) -> Self {
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
         let renderer = QuadRenderer::new(&ctx.device, format);
-        Self { ctx, renderer, bars: Vec::new(), format, connection, pending_actions }
+        // Pipeline de texto glyphon (atlas de glifos compartilhado).
+        let font_system = glyphon::FontSystem::new();
+        let swash_cache = glyphon::SwashCache::new();
+        let cache = glyphon::Cache::new(&ctx.device);
+        let viewport = glyphon::Viewport::new(&ctx.device, &cache);
+        let mut text_atlas = glyphon::TextAtlas::new(&ctx.device, &ctx.queue, &cache, format);
+        let text_renderer = glyphon::TextRenderer::new(
+            &mut text_atlas,
+            &ctx.device,
+            wgpu::MultisampleState::default(),
+            None,
+        );
+        Self {
+            ctx,
+            renderer,
+            bars: Vec::new(),
+            format,
+            connection,
+            pending_actions,
+            font_system,
+            swash_cache,
+            viewport,
+            text_atlas,
+            text_renderer,
+        }
     }
 
     pub fn format(&self) -> wgpu::TextureFormat {
@@ -121,16 +157,97 @@ impl TabBarOverlay {
         self.bars.iter().find(|b| b.stack_id == stack_id)
     }
 
-    /// Redesenha uma barra na sua superfície (`view` = textura da swapchain da layer-surface).
-    pub fn render_bar(&self, view: &wgpu::TextureView, bar: &TabBar) {
-        self.renderer.draw(
-            &self.ctx.device,
-            &self.ctx.queue,
-            view,
-            bar,
-            bar.bar.w.max(0) as u32,
-            bar.bar.h.max(0) as u32,
-        );
+    /// Redesenha uma barra na sua superfície (`view` = textura da swapchain da layer-surface). Dois
+    /// passes: (1) os quads (faixa/guias/"x") com `LoadOp::Clear`; (2) o TEXTO dos títulos por cima com
+    /// `LoadOp::Load` (preserva os quads). É `&mut self` porque o glyphon exige `&mut` em
+    /// font-system/atlas/text-renderer.
+    pub fn render_bar(&mut self, view: &wgpu::TextureView, bar: &TabBar) {
+        let surface_w = bar.bar.w.max(1) as u32;
+        let surface_h = bar.bar.h.max(1) as u32;
+
+        // Pass 1: faixa + guias + ícone "x".
+        self.renderer.draw(&self.ctx.device, &self.ctx.queue, view, bar, surface_w, surface_h);
+
+        // Pass 2: rótulos. Pula se nenhuma guia tem título (evita um pass vazio).
+        if bar.slots.iter().all(|s| s.title.is_empty()) {
+            return;
+        }
+        let Self { ctx, font_system, swash_cache, viewport, text_atlas, text_renderer, .. } = self;
+
+        let line_h = surface_h as f32;
+        let font_size = (surface_h as f32 * 0.52).clamp(10.0, 15.0);
+
+        // Um buffer de texto shaped por guia, limitado à largura útil (descontando o "x").
+        let mut buffers: Vec<glyphon::Buffer> = Vec::with_capacity(bar.slots.len());
+        for slot in &bar.slots {
+            let avail = (slot.tab.w - CLOSE_W - 2 * TEXT_PAD).max(1) as f32;
+            let mut tb =
+                glyphon::Buffer::new(font_system, glyphon::Metrics::new(font_size, line_h));
+            tb.set_size(font_system, Some(avail), Some(line_h));
+            tb.set_text(
+                font_system,
+                &slot.title,
+                glyphon::Attrs::new().family(glyphon::Family::SansSerif),
+                glyphon::Shaping::Advanced,
+            );
+            tb.shape_until_scroll(font_system, false);
+            buffers.push(tb);
+        }
+
+        viewport.update(&ctx.queue, glyphon::Resolution { width: surface_w, height: surface_h });
+
+        let color = glyphon::Color::rgb(TEXT_RGB.0, TEXT_RGB.1, TEXT_RGB.2);
+        let areas: Vec<glyphon::TextArea> = bar
+            .slots
+            .iter()
+            .zip(buffers.iter())
+            .map(|(slot, buf)| {
+                let left = (slot.tab.x - bar.bar.x + TEXT_PAD) as f32;
+                let right = (slot.tab.x - bar.bar.x + slot.tab.w - CLOSE_W).max(0);
+                glyphon::TextArea {
+                    buffer: buf,
+                    left,
+                    top: 0.0,
+                    scale: 1.0,
+                    bounds: glyphon::TextBounds {
+                        left: left.max(0.0) as i32,
+                        top: 0,
+                        right,
+                        bottom: surface_h as i32,
+                    },
+                    default_color: color,
+                    custom_glyphs: &[],
+                }
+            })
+            .collect();
+
+        if text_renderer
+            .prepare(&ctx.device, &ctx.queue, font_system, text_atlas, viewport, areas, swash_cache)
+            .is_err()
+        {
+            return;
+        }
+
+        let mut encoder = ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("etherbit-tabbar-text"),
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("etherbit-tabbar-text-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    // Load: preserva os quads do pass 1.
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            let _ = text_renderer.render(text_atlas, viewport, &mut pass);
+        }
+        ctx.queue.submit(std::iter::once(encoder.finish()));
+        text_atlas.trim();
     }
 
     /// Resolve um clique do ponteiro `(x, y)` (coords absolutas de tela) e ENFILEIRA a ação
@@ -311,21 +428,24 @@ impl App {
         self.draw(idx);
     }
 
-    /// Desenha a barra da superfície `idx` (estática: só redesenha em configure/recriação).
-    fn draw(&self, idx: usize) {
-        let bs = &self.surfaces[idx];
-        let bar = match self.overlay.bar_for_stack(bs.stack_id) {
-            Some(b) => b,
+    /// Desenha a barra da superfície `idx` (estática: só redesenha em configure/recriação). Clona o
+    /// `TabBar` para soltar o empréstimo imutável do overlay antes do `render_bar` (`&mut self`).
+    fn draw(&mut self, idx: usize) {
+        let stack_id = self.surfaces[idx].stack_id;
+        let frame = match self.surfaces[idx].gpu.get_current_texture() {
+            Ok(frame) => frame,
+            Err(err) => {
+                eprintln!("Etherbit daemon — get_current_texture falhou: {err}");
+                return;
+            }
+        };
+        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bar = match self.overlay.bar_for_stack(stack_id) {
+            Some(b) => b.clone(),
             None => return,
         };
-        match bs.gpu.get_current_texture() {
-            Ok(frame) => {
-                let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-                self.overlay.render_bar(&view, bar);
-                frame.present();
-            }
-            Err(err) => eprintln!("Etherbit daemon — get_current_texture falhou: {err}"),
-        }
+        self.overlay.render_bar(&view, &bar);
+        frame.present();
     }
 
     /// Índice da superfície cuja `wl_surface` é `surface`.

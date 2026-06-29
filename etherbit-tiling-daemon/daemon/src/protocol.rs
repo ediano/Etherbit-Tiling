@@ -5,6 +5,8 @@
 // chama `compute_layout` e devolve os retângulos-alvo (também JSON). Manter os DTOs serde aqui
 // preserva o core sem dependências (ver ADR 0002/0003) — o core não conhece serde nem D-Bus.
 
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +35,10 @@ pub struct WindowDto {
     pub id: u64,
     #[serde(default)]
     pub app_id: String,
+    /// Título da janela (caption), para o texto da aba na barra wgpu do KDE. Ausente = vazio
+    /// (retrocompat; o GNOME não envia — desenha o título na própria extensão).
+    #[serde(default)]
+    pub title: String,
     pub x: i32,
     pub y: i32,
     pub width: i32,
@@ -180,6 +186,10 @@ pub struct TabBarDto {
     pub content: GeomDto,
     pub members: Vec<u64>,
     pub active: u64,
+    /// Títulos das janelas, paralelos a `members` (para o texto das abas na barra wgpu do KDE).
+    /// Ausente/curto = sem rótulo (retrocompat; GNOME e daemon antigos ignoram).
+    #[serde(default)]
+    pub titles: Vec<String>,
 }
 
 /// Ação de aba pendente, entregue à ponte KDE por PULL no `layout_json` do próximo `SyncWindows`.
@@ -227,6 +237,7 @@ pub fn bars_from_tab_bars(bars: &[TabBarDto]) -> Vec<crate::tabbar::BarInput> {
             h: b.height,
             members: b.members.clone(),
             active: b.active,
+            titles: b.titles.clone(),
         })
         .collect()
 }
@@ -344,6 +355,8 @@ impl From<&TabBarRect> for TabBarDto {
             },
             members: t.member_ids.clone(),
             active: t.active_id,
+            // Preenchido por `sync_windows_dto` a partir do mapa id→título (o core não conhece títulos).
+            titles: Vec::new(),
         }
     }
 }
@@ -454,6 +467,11 @@ pub fn sync_windows_dto(
 
     let areas: Vec<WorkArea> = monitors.iter().map(WorkArea::from).collect();
 
+    // Mapa id→título (caption) ANTES de consumir `windows` no core. O core é puro e descarta o título
+    // (irrelevante ao layout); o daemon o reanexa às `tab_bars` para a barra wgpu rotular as abas.
+    let titles: HashMap<u64, String> =
+        windows.iter().filter(|w| !w.title.is_empty()).map(|w| (w.id, w.title.clone())).collect();
+
     // Filtro cirúrgico centralizado no core; a ponte é burra e pode enviar tudo.
     let n_windows = windows.len();
     let tileable: Vec<WindowInfo> =
@@ -519,7 +537,16 @@ pub fn sync_windows_dto(
                         focused_opt,
                     );
                     rects.extend(res.rects.iter().map(RectDto::from));
-                    tab_bars.extend(res.tab_bars.iter().map(TabBarDto::from));
+                    tab_bars.extend(res.tab_bars.iter().map(|t| {
+                        let mut dto = TabBarDto::from(t);
+                        // Reanexa os títulos na ordem dos membros (ausente → string vazia).
+                        dto.titles = dto
+                            .members
+                            .iter()
+                            .map(|id| titles.get(id).cloned().unwrap_or_default())
+                            .collect();
+                        dto
+                    }));
                     floating.extend(res.floating.iter().map(RectDto::from));
                 }
                 // Persiste a árvore COMPLETA (não a podada): a janela flutuante volta a tilar
@@ -734,6 +761,24 @@ mod tests {
         assert_eq!((b.x, b.y, b.w, b.h), (12, 12, 976, 28));
         assert_eq!(b.members, vec![1, 2]);
         assert_eq!(b.active, 2);
+    }
+
+    #[test]
+    fn sync_attaches_titles_to_tab_bar_and_bar_input() {
+        // O título (caption) viaja em WindowDto.title → TabBarDto.titles → BarInput.titles, paralelo
+        // aos membros. Janela sem título vira string vazia.
+        let titled = |id: u64, app: &str, title: &str| {
+            format!(
+                r#"{{"id":{id},"app_id":"{app}","title":"{title}","x":0,"y":0,"width":100,"height":100,"normal":true,"resizable":true,"maximizable":true,"monitor":0,"workspace":0}}"#
+            )
+        };
+        let windows = format!("[{},{}]", titled(1, "konsole", "Konsole"), win_json(2, "b"));
+        let state = r#"{"stacks":[{"monitor":0,"workspace":0,"members":[1,2],"active":2}]}"#;
+        let res = sync_windows_dto(&windows, AREAS, state, &[], OPTS).expect("ok");
+        assert_eq!(res.tab_bars.len(), 1);
+        assert_eq!(res.tab_bars[0].titles, vec!["Konsole".to_string(), String::new()]);
+        let bars = bars_from_tab_bars(&res.tab_bars);
+        assert_eq!(bars[0].titles, vec!["Konsole".to_string(), String::new()]);
     }
 
     #[test]

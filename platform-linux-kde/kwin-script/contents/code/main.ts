@@ -316,6 +316,7 @@ function retile(): void {
       snapshots.push({
         id,
         app_id: entry.win.resourceClass || entry.win.resourceName || '',
+        title: entry.win.caption || '',
         x: g.x,
         y: g.y,
         width: g.width,

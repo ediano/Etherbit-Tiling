@@ -321,6 +321,7 @@ mod tests {
             h: 28,
             members: vec![1, 2],
             active: 1,
+            titles: vec![],
         }]);
         let verts = build_quads(&bars[0], 200, 28);
         // Fundo (1) + por aba: guia (1) + 2 traços do "x" (2) = 3 quads × 2 abas = 6; total 7 quads.
@@ -342,6 +343,7 @@ mod tests {
             h: 28,
             members: vec![1, 2],
             active: 2,
+            titles: vec![],
         }]);
         let verts = build_quads(&bars[0], 200, 28);
         // Alguma guia deve usar a cor ativa (a aba 2).
