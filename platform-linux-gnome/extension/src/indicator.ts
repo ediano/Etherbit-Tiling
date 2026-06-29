@@ -71,16 +71,29 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
     this._menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
     this._roundedSwitch = new PopupMenu.PopupSwitchMenuItem('Cantos arredondados', true);
+    this._keepOpenOnToggle(this._roundedSwitch);
     this._roundedSwitch.connect('toggled', (_item, state) => {
       if (!this._syncing) this._handlers.onRoundedCorners(state);
     });
     this._menu.addMenuItem(this._roundedSwitch);
 
     this._autostartSwitch = new PopupMenu.PopupSwitchMenuItem('Iniciar com o sistema', false);
+    this._keepOpenOnToggle(this._autostartSwitch);
     this._autostartSwitch.connect('toggled', (_item, state) => {
       if (!this._syncing) this._handlers.onAutostart(state);
     });
     this._menu.addMenuItem(this._autostartSwitch);
+  }
+
+  /// Faz um switch ALTERNAR sem fechar o painel. O `activate` padrão de um item de menu emite o sinal
+  /// 'activate', que o PopupMenu trata FECHANDO o menu — por isso o painel sumia a cada toggle. Aqui
+  /// trocamos o `activate` por um toggle puro: o 'toggled' segue disparando o handler, mas nada fecha
+  /// o menu. O fechamento legítimo (clicar fora / clicar de novo no ícone) continua via o grab modal
+  /// do PanelMenu.Button.
+  private _keepOpenOnToggle(item: PopupMenu.PopupSwitchMenuItem): void {
+    (item as unknown as { activate: () => void }).activate = (): void => {
+      item.toggle();
+    };
   }
 
   /// Reflete a configuração vinda do daemon nos controles, sem disparar handlers.
@@ -102,6 +115,10 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
     onChange: (value: number) => void,
   ): SpinRow {
     const item = new PopupMenu.PopupBaseMenuItem({ activate: false });
+    // Mantém o painel ABERTO ao mexer no input: anula o `activate` (que o PopupMenu trataria FECHANDO
+    // o menu). O `activate: false` já evita o realce de seleção; isto blinda contra o fechamento em
+    // qualquer versão do Shell. Fechar segue por ação explícita (clicar fora / clicar no ícone).
+    (item as unknown as { activate: () => void }).activate = (): void => {};
     item.add_child(
       new St.Label({ text: label, x_expand: true, y_align: Clutter.ActorAlign.CENTER }),
     );
@@ -109,18 +126,25 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
     let value = min;
     const clamp = (v: number): number => Math.max(min, Math.min(max, Math.round(v)));
 
+    // Campo COMPACTO: ~metade da largura anterior (56→32 px), só o bastante para 3 dígitos inteiros
+    // (o máximo é 100). Padding mínimo para não inflar a altura da linha.
     const entry = new St.Entry({
       style_class: 'etherbit-spin-entry',
       can_focus: true,
       x_align: Clutter.ActorAlign.CENTER,
       y_align: Clutter.ActorAlign.CENTER,
     });
-    entry.set_style('width: 56px; text-align: center;');
+    entry.set_style('width: 32px; padding: 1px 4px; text-align: center;');
 
-    const minus = new St.Button({ label: '−', style_class: 'button', can_focus: true });
-    const plus = new St.Button({ label: '+', style_class: 'button', can_focus: true });
-    minus.set_style('min-width: 28px; margin-right: 4px;');
-    plus.set_style('min-width: 28px; margin-left: 4px;');
+    // Botões −/+ MINIMALISTAS: sem o `style_class: 'button'` (que traz borda/padding pesados do tema),
+    // pequenos e discretos ao redor do campo; fundo translúcido leve só para sinalizar que são clicáveis.
+    const SPIN_BTN_STYLE =
+      'min-width: 18px; width: 18px; height: 18px; padding: 0; margin: 0 3px; ' +
+      'border: none; border-radius: 4px; background-color: rgba(255, 255, 255, 0.08); font-weight: bold;';
+    const minus = new St.Button({ label: '−', style_class: 'etherbit-spin-btn', can_focus: true });
+    const plus = new St.Button({ label: '+', style_class: 'etherbit-spin-btn', can_focus: true });
+    minus.set_style(SPIN_BTN_STYLE);
+    plus.set_style(SPIN_BTN_STYLE);
 
     const render = (): void => entry.set_text(String(value));
     // Aplica um valor do USUÁRIO: trava, atualiza o campo e dispara o handler.
