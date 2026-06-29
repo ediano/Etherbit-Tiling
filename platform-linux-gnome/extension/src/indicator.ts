@@ -44,6 +44,10 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
   private _autostartSwitch!: PopupMenu.PopupSwitchMenuItem;
   // Evita reentrância: ao refletir a config do daemon não queremos re-disparar handlers.
   private _syncing = false;
+  // Desconexões a rodar no destroy: os handlers do `clutter_text` das entries devem ser soltos ANTES
+  // do widget ser descartado, senão um `key-focus-out` pendente dispara sobre uma St.Entry já morta
+  // ("Object St.Entry ... has been already disposed").
+  private _cleanups: Array<() => void> = [];
 
   // PanelMenu.Button sempre cria um PopupMenu real quando não passamos dontCreateMenu.
   private get _menu(): PopupMenu.PopupMenu {
@@ -53,6 +57,19 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
   constructor(handlers: IndicatorHandlers) {
     super(0.0, 'Etherbit Tiling');
     this._handlers = handlers;
+
+    // Ao destruir o indicador (disable da extensão), solta os handlers das entries antes do teardown
+    // dos filhos — evita callbacks rodando sobre widgets já descartados.
+    this.connect('destroy', () => {
+      for (const cleanup of this._cleanups) {
+        try {
+          cleanup();
+        } catch (error) {
+          // widget já parcialmente descartado — ignora
+        }
+      }
+      this._cleanups = [];
+    });
 
     this.add_child(
       new St.Icon({
@@ -146,7 +163,14 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
     minus.set_style(SPIN_BTN_STYLE);
     plus.set_style(SPIN_BTN_STYLE);
 
-    const render = (): void => entry.set_text(String(value));
+    const render = (): void => {
+      // A entry pode já ter sido descartada (disable durante um ConfigChanged em voo): não lança.
+      try {
+        entry.set_text(String(value));
+      } catch (error) {
+        // St.Entry descartada — ignora
+      }
+    };
     // Aplica um valor do USUÁRIO: trava, atualiza o campo e dispara o handler.
     const apply = (v: number): void => {
       value = clamp(v);
@@ -161,11 +185,23 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
     // Digitação: ao confirmar (Enter) ou sair do campo, parseia inteiro e trava (valor inválido →
     // restaura o atual).
     const commit = (): void => {
-      const parsed = Number.parseInt(entry.get_text(), 10);
+      // `key-focus-out` pode disparar durante o teardown, com a entry já descartada: lê em try/catch.
+      let text: string;
+      try {
+        text = entry.get_text();
+      } catch (error) {
+        return; // St.Entry descartada — nada a confirmar
+      }
+      const parsed = Number.parseInt(text, 10);
       apply(Number.isFinite(parsed) ? parsed : value);
     };
-    entry.clutter_text.connect('activate', () => commit());
-    entry.clutter_text.connect('key-focus-out', () => commit());
+    const activateId = entry.clutter_text.connect('activate', () => commit());
+    const focusOutId = entry.clutter_text.connect('key-focus-out', () => commit());
+    // Solta esses handlers no destroy, antes do widget morrer (ver `_cleanups` no construtor).
+    this._cleanups.push(() => {
+      entry.clutter_text.disconnect(activateId);
+      entry.clutter_text.disconnect(focusOutId);
+    });
 
     item.add_child(minus);
     item.add_child(entry);
