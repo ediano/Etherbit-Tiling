@@ -32,3 +32,18 @@ contrato e não por convenção implícita.
 - JSON string reduz boilerplate de `GVariant` e permite evoluir o schema sem renegociar o XML; em
   troca, abre mão de introspecção tipada por campo.
 - Nomes alinhados (`dev.ediano.etherbit.Tiling` ↔ `etherbit.tiling@ediano.dev`) facilitam rastrear o serviço.
+
+## Emenda (2026-06) — IDs de janela como string (`s`), não `uint64`
+
+Com o segundo frontend (KWin/KDE) consumindo o mesmo contrato, surgiu uma incompatibilidade: o
+`callDBus` do KWin (QJSEngine, Plasma 6) **não empacota `uint64` (`t`)** — infere o tipo do valor JS
+e um inteiro pequeno vira sempre `int32` (`i`), fazendo o daemon rejeitar a assinatura
+(`got (siis), expected (stts)` / `got (ssisi), expected (sstsi)`). O GNOME não tinha o problema
+porque o Gjs empacota pelo XML de introspecção, caminho que o KWin não oferece.
+
+**Decisão:** os args primitivos de ID de janela de `MoveWindow` (`dragged_id`, `target_id`) e
+`ResizeWindow` (`id`) passam de `t`/`u64` para **string decimal (`s`)**; o daemon faz
+`parse::<u64>()` (tolerante: IDs reais são ≥ 1, `0` vira no-op). Os **payloads JSON** (`state_json`,
+`windows_json`) seguem com IDs numéricos — só os 3 args primitivos mudam. Isso mantém os dois
+frontends num **único contrato** sem hack de tipo no KWin. O sinal `TabAction` (`tts`) não muda
+(nenhum frontend o envia).

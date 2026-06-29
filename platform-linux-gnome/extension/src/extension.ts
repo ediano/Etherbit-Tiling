@@ -748,8 +748,8 @@ export default class EtherbitTilingExtension extends Extension {
           const res = this._call((p) =>
             p.MoveWindowSync(
               serializeState(this._stacks, this._disabledGroups, this._trees, this._draggedId),
-              this._draggedId,
-              targetId,
+              String(this._draggedId),
+              String(targetId),
               this._lastPreviewZone,
             ),
           );
@@ -791,7 +791,7 @@ export default class EtherbitTilingExtension extends Extension {
         p.ResizeWindowSync(
           monitorsJson,
           serializeState(this._stacks, this._disabledGroups, this._trees, focusedId),
-          start.id,
+          String(start.id),
           d.edge,
           d.deltaPx,
         ),

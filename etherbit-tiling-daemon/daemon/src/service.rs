@@ -215,10 +215,14 @@ impl Tiling {
     async fn move_window(
         &self,
         state_json: String,
-        dragged_id: u64,
-        target_id: u64,
+        dragged_id: String,
+        target_id: String,
         zone: String,
     ) -> fdo::Result<String> {
+        // IDs trafegam como string decimal (`s`): o `callDBus` do KWin não empacota `uint64`. Parse
+        // tolerante (IDs reais são ≥ 1; `0` nunca casa → core vira no-op). Ver ADR 0009.
+        let dragged_id = dragged_id.parse::<u64>().unwrap_or(0);
+        let target_id = target_id.parse::<u64>().unwrap_or(0);
         guard("move_window", || protocol::move_window(&state_json, dragged_id, target_id, &zone))
     }
 
@@ -229,11 +233,14 @@ impl Tiling {
         &self,
         monitors_json: String,
         state_json: String,
-        id: u64,
+        id: String,
         edge: String,
         delta_px: i32,
     ) -> fdo::Result<String> {
         let opts = self.layout_options();
+        // `id` como string decimal (`s`): o `callDBus` do KWin não empacota `uint64`. Parse tolerante
+        // (IDs reais são ≥ 1; `0` nunca casa → core vira no-op). Ver ADR 0009.
+        let id = id.parse::<u64>().unwrap_or(0);
         guard("resize_window", || {
             protocol::resize_window(&monitors_json, &state_json, id, &edge, delta_px, opts)
         })
