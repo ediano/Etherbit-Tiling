@@ -68,6 +68,13 @@ interface KWinWindow {
   readonly resourceName: string;
   readonly caption: string;
 
+  /**
+   * Fecha a janela (pedido de fechamento ao app, como o "x" da decoração). Usado pelo "x" de cada
+   * aba na barra clicável do KDE; dispara `windowRemoved`, que re-tila o quadrante. API real do
+   * KWin (Plasma 6): `Window::closeWindow()`.
+   */
+  closeWindow(): void;
+
   /** Monitor onde a janela está. */
   readonly output: KWinOutput;
 

@@ -9,6 +9,8 @@
 export interface WindowSnapshot {
   id: number;
   app_id: string;
+  /// Título (caption) da janela, para o texto da aba na barra wgpu do KDE. Vazio = sem rótulo.
+  title: string;
   x: number;
   y: number;
   width: number;
@@ -64,6 +66,19 @@ export interface TabBar {
   content: { x: number; y: number; width: number; height: number };
   members: number[];
   active: number;
+}
+
+/// Ações de aba que a barra wgpu do KDE pode disparar (espelha as do `TabHit` no daemon).
+export type TabActionKind = 'activate' | 'close' | 'ungroup';
+
+/// Espelha o `TabActionDto` do daemon: um clique do usuário na barra de abas RENDERIZADA pelo daemon
+/// (wgpu/layer-shell), entregue à ponte por PULL no `layout_json` do próximo `SyncWindows` — o KWin
+/// Script é pull-only e não consome o sinal `TabAction` (ver ADR 0022). `member_id`/`stack_id` são
+/// ids de TRANSPORTE; a ponte os traduz de volta ao `internalId` e aplica.
+export interface PendingAction {
+  stack_id: number;
+  member_id: number;
+  action: TabActionKind;
 }
 
 /// Serializa as janelas para o `windows_json` do contrato D-Bus.
@@ -162,6 +177,40 @@ export function parseTabBars(json: string): TabBar[] {
     }
   }
   return bars;
+}
+
+/// Parse defensivo das ações de aba pendentes do `layout_json` (objeto `{ ..., pending_actions }`).
+/// Ausente (daemon antigo) ou formato legado (array) → vazio. Descarta entradas malformadas ou de
+/// ação desconhecida em vez de lançar. Ver ADR 0022/0025.
+export function parsePendingActions(json: string): PendingAction[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  if (Array.isArray(parsed) || typeof parsed !== 'object' || parsed === null) {
+    return [];
+  }
+  const raw = (parsed as Record<string, unknown>).pending_actions;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const actions: PendingAction[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) {
+      continue;
+    }
+    const v = entry as Record<string, unknown>;
+    if (
+      isFiniteNumber(v.stack_id) &&
+      isFiniteNumber(v.member_id) &&
+      (v.action === 'activate' || v.action === 'close' || v.action === 'ungroup')
+    ) {
+      actions.push({ stack_id: v.stack_id, member_id: v.member_id, action: v.action });
+    }
+  }
+  return actions;
 }
 
 function toTabBar(value: unknown): TabBar | null {

@@ -18,9 +18,15 @@ rm -rf "$ROOT/dist-release" "$ROOT/$STAGE_NAME.tar.gz"
 mkdir -p "$STAGE/bin" "$STAGE/kwin-script/contents/code" \
          "$STAGE/kwin-script/contents/config" "$STAGE/kwin-script/contents/ui"
 
-# --- Daemon (reuso do workspace compartilhado; o binário é o mesmo) -------------
-echo ">> Compilando daemon (cargo build --release)"
-cargo build --release --manifest-path "$ROOT/etherbit-tiling-daemon/Cargo.toml"
+# --- Daemon (reuso do workspace compartilhado) ---------------------------------
+# O release KDE liga a feature `wgpu-ui`: sob KWin (que suporta wlr-layer-shell) o daemon desenha a
+# barra de abas clicável na sua PRÓPRIA superfície de overlay (wgpu + layer-shell) — ver ADR 0022/0025.
+# Fora de uma sessão com layer-shell o overlay encerra gracioso, então o binário segue válido em
+# qualquer ambiente. A libwayland é carregada em runtime (dlopen), sem dependência de build. O release
+# GNOME (build-gnome-release.sh) NÃO liga a feature (Mutter não tem layer-shell; a barra fica na
+# extensão) — por isso os dois pacotes geram binários distintos.
+echo ">> Compilando daemon (cargo build --release --features wgpu-ui)"
+cargo build --release --features wgpu-ui --manifest-path "$ROOT/etherbit-tiling-daemon/Cargo.toml"
 install -m 755 \
   "$ROOT/etherbit-tiling-daemon/target/release/etherbit-tiling-daemon" \
   "$STAGE/bin/etherbit-tiling-daemon"

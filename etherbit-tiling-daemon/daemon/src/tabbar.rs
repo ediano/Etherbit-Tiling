@@ -49,14 +49,19 @@ pub struct BarInput {
     /// Membros na ordem das abas (esquerda→direita).
     pub members: Vec<u64>,
     pub active: u64,
+    /// Títulos das janelas, paralelos a `members` (para o texto das abas). Pode ser mais curto/vazio
+    /// (ex.: ponte antiga) — guias sem título correspondente ficam sem rótulo.
+    pub titles: Vec<String>,
 }
 
-/// Uma guia (aba) posicionada: o id da janela, o retângulo da guia inteira e o do ícone "x".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Uma guia (aba) posicionada: o id da janela, o retângulo da guia inteira, o do ícone "x" e o título.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TabSlot {
     pub member_id: u64,
     pub tab: Rect,
     pub close: Rect,
+    /// Título da janela para o rótulo da aba (vazio = sem texto).
+    pub title: String,
 }
 
 /// Uma barra de abas com a geometria de todos os seus elementos clicáveis.
@@ -102,7 +107,8 @@ pub fn layout_bars(bars: &[BarInput]) -> Vec<TabBar> {
             let tab = Rect { x: x0, y: b.y, w: x1 - x0, h: b.h };
             let close_w = CLOSE_W.min(tab.w);
             let close = Rect { x: tab.x + tab.w - close_w, y: tab.y, w: close_w, h: tab.h };
-            slots.push(TabSlot { member_id, tab, close });
+            let title = b.titles.get(i).cloned().unwrap_or_default();
+            slots.push(TabSlot { member_id, tab, close, title });
         }
         out.push(TabBar {
             stack_id: b.stack_id,
@@ -150,7 +156,16 @@ mod tests {
 
     fn bar(members: Vec<u64>, active: u64) -> BarInput {
         // Faixa de 300x28 em (100, 50), com 3 abas de 100px cada.
-        BarInput { stack_id: members[0], x: 100, y: 50, w: 300, h: 28, members, active }
+        BarInput {
+            stack_id: members[0],
+            x: 100,
+            y: 50,
+            w: 300,
+            h: 28,
+            members,
+            active,
+            titles: vec![],
+        }
     }
 
     #[test]
@@ -213,6 +228,7 @@ mod tests {
             h: 20,
             members: vec![7],
             active: 7,
+            titles: vec![],
         }]);
         let close = bars[0].slots[0].close;
         assert!(close.w <= 10);
@@ -229,6 +245,7 @@ mod tests {
             h: 0,
             members: vec![],
             active: 0,
+            titles: vec![],
         }])
         .is_empty());
     }

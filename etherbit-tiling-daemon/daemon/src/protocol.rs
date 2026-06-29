@@ -5,6 +5,8 @@
 // chama `compute_layout` e devolve os retângulos-alvo (também JSON). Manter os DTOs serde aqui
 // preserva o core sem dependências (ver ADR 0002/0003) — o core não conhece serde nem D-Bus.
 
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +35,10 @@ pub struct WindowDto {
     pub id: u64,
     #[serde(default)]
     pub app_id: String,
+    /// Título da janela (caption), para o texto da aba na barra wgpu do KDE. Ausente = vazio
+    /// (retrocompat; o GNOME não envia — desenha o título na própria extensão).
+    #[serde(default)]
+    pub title: String,
     pub x: i32,
     pub y: i32,
     pub width: i32,
@@ -180,6 +186,22 @@ pub struct TabBarDto {
     pub content: GeomDto,
     pub members: Vec<u64>,
     pub active: u64,
+    /// Títulos das janelas, paralelos a `members` (para o texto das abas na barra wgpu do KDE).
+    /// Ausente/curto = sem rótulo (retrocompat; GNOME e daemon antigos ignoram).
+    #[serde(default)]
+    pub titles: Vec<String>,
+}
+
+/// Ação de aba pendente, entregue à ponte KDE por PULL no `layout_json` do próximo `SyncWindows`.
+/// Origem: um clique do usuário na barra de abas RENDERIZADA pelo daemon (wgpu/layer-shell). Como o
+/// KWin Script só faz `callDBus` (não assina sinais nem tem timer — ver ADR 0022), o sinal `TabAction`
+/// não é consumível pela ponte; a ação viaja embutida na resposta que a ponte já drena. `action` ∈
+/// {`"activate"`, `"close"`, `"ungroup"`}; os ids são de TRANSPORTE (a ponte os traduz de volta).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TabActionDto {
+    pub stack_id: u64,
+    pub member_id: u64,
+    pub action: String,
 }
 
 /// Saída do `SyncWindows`: retângulos visíveis + barras de abas + as ÁRVORES reconciliadas (para a
@@ -194,6 +216,30 @@ pub struct LayoutResultDto {
     /// Ausente = vazio (retrocompat com ponte/daemon antigos).
     #[serde(default)]
     pub floating: Vec<RectDto>,
+    /// Ações de aba pendentes (cliques na barra wgpu do KDE) a aplicar na ponte. O `protocol` em si
+    /// nunca as preenche (é puro/sem estado); o `service` injeta a fila drenada antes de serializar.
+    /// Ausente = vazio (retrocompat com ponte/daemon antigos).
+    #[serde(default)]
+    pub pending_actions: Vec<TabActionDto>,
+}
+
+/// Converte as barras devolvidas pelo core (DTO) na entrada do overlay wgpu (`BarInput`, coords
+/// absolutas de tela). Os `members` permanecem ids de TRANSPORTE — o overlay desenha/hit-testa com
+/// eles e a ponte os traduz de volta via `byId`. Usado só pela UI wgpu (KDE).
+#[cfg(any(feature = "wgpu-ui", test))]
+pub fn bars_from_tab_bars(bars: &[TabBarDto]) -> Vec<crate::tabbar::BarInput> {
+    bars.iter()
+        .map(|b| crate::tabbar::BarInput {
+            stack_id: b.stack_id,
+            x: b.x,
+            y: b.y,
+            w: b.width,
+            h: b.height,
+            members: b.members.clone(),
+            active: b.active,
+            titles: b.titles.clone(),
+        })
+        .collect()
 }
 
 /// Inverso de `zone_label`: rótulo snake_case → zona do core (desconhecido → `None`).
@@ -309,6 +355,8 @@ impl From<&TabBarRect> for TabBarDto {
             },
             members: t.member_ids.clone(),
             active: t.active_id,
+            // Preenchido por `sync_windows_dto` a partir do mapa id→título (o core não conhece títulos).
+            titles: Vec::new(),
         }
     }
 }
@@ -385,6 +433,10 @@ fn parse_state(state_json: &str) -> Result<SyncStateDto> {
 ///
 /// `windows_json`/`monitors_json` são arrays JSON; `state_json` é um objeto (ou `""`); `layout_json`
 /// é um objeto `{ "rects": [{id,x,y,w,h}], "tab_bars": [...] }`.
+// O serviço usa `sync_windows_dto` (injeta `pending_actions`/alimenta o overlay e serializa ele
+// mesmo); este wrapper que serializa direto permanece para os TESTES e diagnóstico — `dead_code` nos
+// builds sem `cfg(test)`.
+#[allow(dead_code)]
 pub fn sync_windows(
     windows_json: &str,
     monitors_json: &str,
@@ -392,6 +444,21 @@ pub fn sync_windows(
     ignore_list: &[String],
     opts: LayoutOptions,
 ) -> Result<String> {
+    let dto = sync_windows_dto(windows_json, monitors_json, state_json, ignore_list, opts)?;
+    serde_json::to_string(&dto).context("falha ao serializar layout_json")
+}
+
+/// Núcleo do `SyncWindows` que devolve o DTO (sem serializar). O `service` usa esta variante para ler
+/// as `tab_bars` (alimentar o overlay wgpu) e INJETAR as `pending_actions` drenadas antes de
+/// serializar; o `sync_windows` acima é o wrapper que apenas serializa (usado por testes e diagnóstico).
+/// `pending_actions` sai SEMPRE vazio daqui (o `protocol` é puro/sem estado).
+pub fn sync_windows_dto(
+    windows_json: &str,
+    monitors_json: &str,
+    state_json: &str,
+    ignore_list: &[String],
+    opts: LayoutOptions,
+) -> Result<LayoutResultDto> {
     let windows: Vec<WindowDto> =
         serde_json::from_str(windows_json).context("windows_json inválido")?;
     let monitors: Vec<MonitorDto> =
@@ -399,6 +466,11 @@ pub fn sync_windows(
     let state = parse_state(state_json)?;
 
     let areas: Vec<WorkArea> = monitors.iter().map(WorkArea::from).collect();
+
+    // Mapa id→título (caption) ANTES de consumir `windows` no core. O core é puro e descarta o título
+    // (irrelevante ao layout); o daemon o reanexa às `tab_bars` para a barra wgpu rotular as abas.
+    let titles: HashMap<u64, String> =
+        windows.iter().filter(|w| !w.title.is_empty()).map(|w| (w.id, w.title.clone())).collect();
 
     // Filtro cirúrgico centralizado no core; a ponte é burra e pode enviar tudo.
     let n_windows = windows.len();
@@ -465,7 +537,16 @@ pub fn sync_windows(
                         focused_opt,
                     );
                     rects.extend(res.rects.iter().map(RectDto::from));
-                    tab_bars.extend(res.tab_bars.iter().map(TabBarDto::from));
+                    tab_bars.extend(res.tab_bars.iter().map(|t| {
+                        let mut dto = TabBarDto::from(t);
+                        // Reanexa os títulos na ordem dos membros (ausente → string vazia).
+                        dto.titles = dto
+                            .members
+                            .iter()
+                            .map(|id| titles.get(id).cloned().unwrap_or_default())
+                            .collect();
+                        dto
+                    }));
                     floating.extend(res.floating.iter().map(RectDto::from));
                 }
                 // Persiste a árvore COMPLETA (não a podada): a janela flutuante volta a tilar
@@ -485,8 +566,7 @@ pub fn sync_windows(
         out_trees.len()
     );
 
-    let dto = LayoutResultDto { rects, tab_bars, trees: out_trees, floating };
-    serde_json::to_string(&dto).context("falha ao serializar layout_json")
+    Ok(LayoutResultDto { rects, tab_bars, trees: out_trees, floating, pending_actions: Vec::new() })
 }
 
 /// Resolve o destino de um drop sob o ponto `(x, y)`. Escolhe a área útil que CONTÉM o ponto e
@@ -665,6 +745,71 @@ mod tests {
         assert_eq!(bar.stack_id, 1);
         assert_eq!((bar.x, bar.y, bar.width, bar.height), (12, 12, 976, 28));
         assert_eq!(bar.content, GeomDto { x: 12, y: 40, width: 976, height: 748 });
+    }
+
+    #[test]
+    fn bars_from_tab_bars_maps_fields_keeping_transport_ids() {
+        // Reaproveita o cenário de stack: as `tab_bars` do core viram `BarInput` do overlay 1:1
+        // (width/height → w/h), preservando os ids de transporte e a aba ativa.
+        let windows = format!("[{},{}]", win_json(1, "a"), win_json(2, "b"));
+        let state = r#"{"stacks":[{"monitor":0,"workspace":0,"members":[1,2],"active":2}]}"#;
+        let res = sync_windows_dto(&windows, AREAS, state, &[], OPTS).expect("ok");
+        let bars = bars_from_tab_bars(&res.tab_bars);
+        assert_eq!(bars.len(), 1);
+        let b = &bars[0];
+        assert_eq!(b.stack_id, 1);
+        assert_eq!((b.x, b.y, b.w, b.h), (12, 12, 976, 28));
+        assert_eq!(b.members, vec![1, 2]);
+        assert_eq!(b.active, 2);
+    }
+
+    #[test]
+    fn sync_attaches_titles_to_tab_bar_and_bar_input() {
+        // O título (caption) viaja em WindowDto.title → TabBarDto.titles → BarInput.titles, paralelo
+        // aos membros. Janela sem título vira string vazia.
+        let titled = |id: u64, app: &str, title: &str| {
+            format!(
+                r#"{{"id":{id},"app_id":"{app}","title":"{title}","x":0,"y":0,"width":100,"height":100,"normal":true,"resizable":true,"maximizable":true,"monitor":0,"workspace":0}}"#
+            )
+        };
+        let windows = format!("[{},{}]", titled(1, "konsole", "Konsole"), win_json(2, "b"));
+        let state = r#"{"stacks":[{"monitor":0,"workspace":0,"members":[1,2],"active":2}]}"#;
+        let res = sync_windows_dto(&windows, AREAS, state, &[], OPTS).expect("ok");
+        assert_eq!(res.tab_bars.len(), 1);
+        assert_eq!(res.tab_bars[0].titles, vec!["Konsole".to_string(), String::new()]);
+        let bars = bars_from_tab_bars(&res.tab_bars);
+        assert_eq!(bars[0].titles, vec!["Konsole".to_string(), String::new()]);
+    }
+
+    #[test]
+    fn pending_actions_default_empty_and_round_trips() {
+        // layout_json legado (sem o campo novo) → pending_actions vazio (retrocompat via serde default).
+        let legacy = r#"{"rects":[],"tab_bars":[],"trees":[]}"#;
+        let res = layout_of(legacy);
+        assert!(res.pending_actions.is_empty());
+
+        // Round-trip com ações preenchidas (como o service injeta antes de serializar).
+        let dto = LayoutResultDto {
+            rects: vec![],
+            tab_bars: vec![],
+            trees: vec![],
+            floating: vec![],
+            pending_actions: vec![
+                TabActionDto { stack_id: 1, member_id: 2, action: "close".to_string() },
+                TabActionDto { stack_id: 3, member_id: 3, action: "ungroup".to_string() },
+            ],
+        };
+        let json = serde_json::to_string(&dto).expect("serializa");
+        let back = layout_of(&json);
+        assert_eq!(back.pending_actions, dto.pending_actions);
+    }
+
+    #[test]
+    fn sync_dto_never_fills_pending_actions() {
+        // O protocol é puro/sem estado: o DTO sai sempre sem ações (quem injeta é o service).
+        let windows = format!("[{},{}]", win_json(1, "a"), win_json(2, "b"));
+        let res = sync_windows_dto(&windows, AREAS, "", &[], OPTS).expect("ok");
+        assert!(res.pending_actions.is_empty());
     }
 
     #[test]
