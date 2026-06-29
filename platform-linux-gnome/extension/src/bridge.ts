@@ -43,6 +43,13 @@ export interface LayoutCommand {
   height: number;
 }
 
+/// Trava de segurança de dimensão: width/height < 1 quebram o framebuffer do Cogl ao aplicar a
+/// janela (`cogl_framebuffer_set_viewport: assertion 'width > 0 && height > 0' failed`). Garante ≥ 1px,
+/// preservando id/x/y. Aplicada na ponte antes de cada `move_resize_frame`.
+export function clampGeometry(cmd: LayoutCommand): LayoutCommand {
+  return { ...cmd, width: Math.max(1, cmd.width), height: Math.max(1, cmd.height) };
+}
+
 /// Espelha o `PreviewDto` do daemon: a zona resolvida + o retângulo do overlay de preview.
 export interface DropPreview {
   zone: string;

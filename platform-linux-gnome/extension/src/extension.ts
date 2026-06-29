@@ -33,6 +33,7 @@ import {
   parseLayout,
   parseTabBars,
   parseFloating,
+  clampGeometry,
   parseLayoutTrees,
   parsePreview,
   resizeDeltaFrom,
@@ -508,7 +509,9 @@ export default class EtherbitTilingExtension extends Extension {
         // abortar o relayout inteiro e paralisar o grid — loga e segue para as demais.
         try {
           // user_op=false: reposicionamento programático, instantâneo e puramente geométrico.
-          window.move_resize_frame(false, command.x, command.y, command.width, command.height);
+          // Clamp ≥ 1px: rect inválido (width/height ≤ 0) quebraria o framebuffer do Cogl.
+          const g = clampGeometry(command);
+          window.move_resize_frame(false, g.x, g.y, g.width, g.height);
           // Cantos arredondados (efeito no ator) conforme a config — best-effort, nunca quebra.
           const actor = window.get_compositor_private() as Clutter.Actor | null;
           if (actor) {
@@ -540,8 +543,16 @@ export default class EtherbitTilingExtension extends Extension {
         if (!window) {
           continue;
         }
+        // Referência STALE: entre o snapshot e o apply (round-trip D-Bus) a janela pode ter sido
+        // destruída/entrado em unmanage — aí seu `stack_position` é -1 e `make_above()`/`raise()`
+        // disparam o assertion do Mutter. Pula janelas que não são mais manipuláveis.
+        if (!this._isWindowLive(window)) {
+          continue;
+        }
         try {
-          window.move_resize_frame(false, command.x, command.y, command.width, command.height);
+          // Clamp ≥ 1px: rect inválido quebraria o framebuffer do Cogl (ver janelas tiladas acima).
+          const g = clampGeometry(command);
+          window.move_resize_frame(false, g.x, g.y, g.width, g.height);
           window.make_above();
           window.raise();
         } catch (error) {
@@ -1036,6 +1047,20 @@ export default class EtherbitTilingExtension extends Extension {
       min_height: minHeight,
       maximized: this._isMaximized(window),
     };
+  }
+
+  /// `true` se a janela ainda é manipulável: tem ator no compositor e ele não foi destruído. O GJS
+  /// NÃO expõe `stack_position` no `Meta.Window`; usamos a presença/validade do ator
+  /// (`get_compositor_private()` + `WindowActor.is_destroyed()`) — que casa com o estado que zera o
+  /// stack do Mutter (`stack_position == -1`) e faria `make_above()`/`raise()` dispararem
+  /// `meta_window_set_stack_position_no_sync: assertion 'window->stack_position >= 0' failed`.
+  private _isWindowLive(window: Meta.Window): boolean {
+    try {
+      const actor = window.get_compositor_private() as Meta.WindowActor | null;
+      return actor !== null && !actor.is_destroyed();
+    } catch {
+      return false;
+    }
   }
 
   /// `true` se a janela está maximizada em AMBOS os eixos (estado, não a capacidade `can_maximize`).
