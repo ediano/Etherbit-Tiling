@@ -34,6 +34,7 @@ arqueologia de commits.
 | [0022](0022-stacknode-arvore-fechar-desagrupar-unmaximize.md) | `Node::Stack` na árvore, fechar/desagrupar na barra de abas e Unmaximize Recovery | ✅ Aceita |
 | [0023](0023-compat-api-mutter-feature-detection.md) | Compatibilidade da API do Mutter na ponte GNOME (feature-detection defensiva) | ✅ Aceita |
 | [0024](0024-instaladores-upgrade-idempotente-autostart.md) | Instaladores idempotentes: autostart, upgrade com checagem de versão e parada segura do daemon | ✅ Aceita |
+| [0025](0025-barra-abas-clicavel-kde-entrega-por-pull.md) | Barra de abas clicável no KDE: entrega da ação por pull e fila efêmera no daemon | ✅ Aceita |
 
 ## Como adicionar uma nova decisão
 1. Copie o formato de um ADR existente.

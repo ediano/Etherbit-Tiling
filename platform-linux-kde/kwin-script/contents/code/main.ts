@@ -26,6 +26,7 @@ import {
   parseLayout,
   parseTabBars,
   parseFloating,
+  parsePendingActions,
   parseLayoutTrees,
   parsePreview,
   resizeDeltaFrom,
@@ -474,9 +475,35 @@ function retile(): void {
       // Ids tiláveis (internalId) por grupo — base do toggle de abas (Meta+S).
       collectGroupTiled(commands, tabBars, byId, outputs);
 
-      // Janela morreu durante o apply: o snapshot ficou velho. Re-tila uma vez (o `applying` já é
-      // false) para encaixar o quadrante vazio. Converge: a próxima passada não verá janela morta.
-      if (sawDead) {
+      // Entrega por PULL: aplica as ações de aba (cliques na barra wgpu do KDE) que o daemon DRENOU
+      // nesta resposta — o KWin Script é pull-only e não consome o sinal `TabAction` (ADR 0022/0025).
+      // `activate`/`ungroup` mutam o estado leve e exigem re-tile; `close` fecha a janela e o
+      // `windowRemoved` seguinte re-tila sozinho. Ids de TRANSPORTE → internalId via
+      // `transportToStable` (e a janela via `byId`); lookup ausente (id reatribuído entre o clique e
+      // este sync) = no-op defensivo, como o resto da ponte.
+      let actionMutated = false;
+      for (const act of parsePendingActions(layoutJson)) {
+        if (act.action === 'close') {
+          const win = byId.get(act.member_id);
+          if (win && isLiveWindow(win)) {
+            win.closeWindow();
+          }
+          continue;
+        }
+        const sid = transportToStable.get(act.member_id);
+        if (sid === undefined) {
+          continue;
+        }
+        if (act.action === 'activate') {
+          actionMutated = setActiveMember(stacks, sid) || actionMutated;
+        } else if (act.action === 'ungroup') {
+          actionMutated = removeIdFromStacks(stacks, sid) || actionMutated;
+        }
+      }
+
+      // Janela morreu durante o apply (snapshot velho) OU uma ação de aba mutou o estado: re-tila uma
+      // vez (o `applying` já é false) para encaixar o quadrante. Converge na próxima passada.
+      if (sawDead || actionMutated) {
         retile();
       }
     },

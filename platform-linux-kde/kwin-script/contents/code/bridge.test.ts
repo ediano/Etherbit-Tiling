@@ -6,6 +6,7 @@ import {
   parseLayout,
   parseTabBars,
   parseFloating,
+  parsePendingActions,
   parseLayoutTrees,
   parsePreview,
   orderKey,
@@ -126,6 +127,37 @@ describe('parseTabBars', () => {
 
   it('descarta barra malformada', () => {
     expect(parseTabBars(JSON.stringify({ tab_bars: [{ ...bar, members: ['x'] }] }))).toEqual([]);
+  });
+});
+
+describe('parsePendingActions', () => {
+  const close = { stack_id: 1, member_id: 2, action: 'close' };
+  const ungroup = { stack_id: 1, member_id: 3, action: 'ungroup' };
+
+  it('parseia as ações do formato objeto, preservando a ordem', () => {
+    const json = JSON.stringify({ rects: [], tab_bars: [], pending_actions: [close, ungroup] });
+    expect(parsePendingActions(json)).toEqual([close, ungroup]);
+  });
+
+  it('campo ausente (daemon antigo) → sem ações', () => {
+    expect(parsePendingActions(JSON.stringify({ rects: [], tab_bars: [] }))).toEqual([]);
+  });
+
+  it('formato legado (array) e JSON inválido → sem ações', () => {
+    expect(parsePendingActions('[{"id":1}]')).toEqual([]);
+    expect(parsePendingActions('{bad')).toEqual([]);
+  });
+
+  it('descarta entradas malformadas ou de ação desconhecida', () => {
+    const json = JSON.stringify({
+      pending_actions: [
+        close,
+        { stack_id: 1, member_id: 4, action: 'explode' }, // ação desconhecida
+        { stack_id: 1, action: 'close' }, // sem member_id
+        { stack_id: 'x', member_id: 5, action: 'close' }, // id não-numérico
+      ],
+    });
+    expect(parsePendingActions(json)).toEqual([close]);
   });
 });
 
