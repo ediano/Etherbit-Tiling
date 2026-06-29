@@ -161,7 +161,7 @@ function isMaximized(win: KWinWindow): boolean {
 /// Saídas (monitores) presentes, na ordem de descoberta pelas janelas atuais.
 function collectOutputs(): KWinOutput[] {
   const outputs: KWinOutput[] = [];
-  for (const win of workspace.windows) {
+  for (const win of workspace.windowList()) {
     if (outputs.indexOf(win.output) === -1) {
       outputs.push(win.output);
     }
@@ -203,7 +203,7 @@ function activeGroupKey(): string {
 
 /// Janela NORMAL cujo frame contém `(x, y)`, excluindo `excludeId` (a arrastada).
 function windowUnderPointObj(x: number, y: number, excludeId: string): KWinWindow | null {
-  for (const win of workspace.windows) {
+  for (const win of workspace.windowList()) {
     if (windowId(win) === excludeId || !win.normalWindow) {
       continue;
     }
@@ -224,7 +224,7 @@ function retile(): void {
 
   // Detector de daemon-ausente (sem timer no sandbox): se havia janelas e o sync anterior nunca
   // foi confirmado, o canal está mudo. Sempre logado — é o sinal que faltava na falha silenciosa.
-  if (workspace.windows.length > 0 && syncAckSeq < syncSeq) {
+  if (workspace.windowList().length > 0 && syncAckSeq < syncSeq) {
     log('AVISO: SyncWindows anterior sem resposta (', syncAckSeq, '/', syncSeq,
       ') — daemon provavelmente fora do barramento');
   }
@@ -239,7 +239,7 @@ function retile(): void {
     desktop: number;
   }
   const groups = new Map<string, Entry[]>();
-  for (const win of workspace.windows) {
+  for (const win of workspace.windowList()) {
     const entry: Entry = {
       win,
       stableId: windowId(win),
@@ -701,7 +701,7 @@ workspace.windowActivated.connect((win) => {
 });
 
 // Rastreia as janelas já abertas e faz o layout inicial.
-for (const win of workspace.windows) {
+for (const win of workspace.windowList()) {
   trackWindow(win);
 }
 retile();

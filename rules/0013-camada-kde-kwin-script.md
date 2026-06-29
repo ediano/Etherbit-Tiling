@@ -72,3 +72,21 @@ Decisões a fixar: **o que** a camada KDE entrega, **como** é compilada e **com
   gerado sem `catch {`, sem `?.`/`??` e sem `export`/`import` vazados, ainda como IIFE puro.
 - **Nota:** o `export`/`import` no runtime clássico continua sendo um risco real (daí a IIFE), mas
   **não** era a causa deste `Syntax error` — o bundle já não continha ESM. A linha 23 era o `catch {`.
+
+## Emenda (2026-06): `workspace.windows` é QML-only → usar `workspace.windowList()`
+
+- **Sintoma real em VM limpa (Kubuntu/Plasma 6):** após corrigir o `Syntax error`, a ponte abortava na
+  carga com `kwin_scripting: .../main.js:933: error: Type error`, na linha da **captura inicial de
+  janelas** (`for (const win of workspace.windows)`). O log chegava a `ponte carregando` mas nunca a
+  `ponte carregada`.
+- **Causa:** `workspace.windows` é uma propriedade exposta **apenas na API QML** do KWin; na API
+  **JavaScript** (este script — `X-Plasma-API: "javascript"`) ela **não existe**. No QJSEngine, acessar
+  propriedade inexistente devolve `undefined`, e iterar `undefined` com `for…of` lança `Type error`. A
+  premissa de que `windows` valia em ambas as APIs estava errada.
+- **Correção:** usar o **método `workspace.windowList()`** (equivalente JS — "lists all clients … Not
+  available in QML") em todas as enumerações de janelas; `kwin-globals.d.ts` passa a declará-lo como
+  método. Os demais membros usados (`currentDesktop`, `desktops`, `activeWindow`, `cursorPos`,
+  `clientArea`, `showOutline`/`hideOutline`) **são** disponíveis em JS e ficam inalterados.
+- **Nota:** apenas null-guardar a iteração pararia o crash, mas a ponte enxergaria **zero** janelas
+  (falha silenciosa, sem tiling) — por isso a correção é trocar a API, não blindar o `undefined`.
+- Referência: doc da API do KWin (Workspace) — `windowList()` vs. propriedade QML `windows`.
