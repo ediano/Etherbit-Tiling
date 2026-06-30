@@ -51,7 +51,10 @@ jobs:
       - name: Dependências de build do daemon
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config build-essential
       - name: cargo fmt --check (daemon)
-        run: cargo fmt --manifest-path etherbit-tiling-daemon/Cargo.toml --check
+        # `--all` é obrigatório: o manifesto do daemon é um WORKSPACE virtual (sem [package] próprio),
+        # então `cargo fmt` sem `--all` falha com "Failed to find targets". Com `--all`, formata todos os
+        # membros (daemon + preview).
+        run: cargo fmt --manifest-path etherbit-tiling-daemon/Cargo.toml --all --check
       - name: cargo test (daemon)
         run: cargo test --manifest-path etherbit-tiling-daemon/Cargo.toml
 

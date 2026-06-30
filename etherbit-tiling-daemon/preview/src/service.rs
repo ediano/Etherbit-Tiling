@@ -22,11 +22,8 @@ impl Preview {
     /// Mostra (ou reposiciona) o retângulo translúcido de preview na geometria física dada. `w`/`h`
     /// ≤ 0 escondem (degenera para `HidePreview`).
     fn show_preview(&self, x: i32, y: i32, width: i32, height: i32) {
-        let next = if width > 0 && height > 0 {
-            Some(PreviewRect { x, y, width, height })
-        } else {
-            None
-        };
+        let next =
+            if width > 0 && height > 0 { Some(PreviewRect { x, y, width, height }) } else { None };
         let _ = self.tx.send_replace(next);
     }
 

@@ -947,7 +947,8 @@ fn geom_leaves_min(
             let row_mins = track_mins(rows.len(), cells, gap, min, Axis::Vertical);
             // Viés da focada (ADR 0031): sob pressão (mínimos não cabem), a(s) track(s) cobertas pela
             // célula que contém a janela focada/nova saturam no mínimo CHEIO; as vizinhas cedem.
-            let (col_pri, row_pri) = focused_priority_tracks(cols.len(), rows.len(), cells, focused);
+            let (col_pri, row_pri) =
+                focused_priority_tracks(cols.len(), rows.len(), cells, focused);
             let xb = solve_tracks(rect.x, rect.w, cols, &col_mins, gap, &col_pri);
             let yb = solve_tracks(rect.y, rect.h, rows, &row_mins, gap, &row_pri);
             for c in cells {
@@ -1147,7 +1148,6 @@ fn build_min_sizes(
     }
     map
 }
-
 
 /// Calcula a geometria RESPEITANDO os tamanhos mínimos das janelas (geometry hints). Monta os mínimos
 /// por folha e tila a árvore COMPLETA: a cascata elástica (`geom_leaves_min` → `solve_tracks`) garante
@@ -3108,14 +3108,8 @@ mod tests {
         let area = area_1000x800();
         let ids = [1u64, 2, 3, 4, 5, 6];
         let tree = reconcile(&LayoutTree::default(), &ids, &[], Some(6), &area, &opts());
-        let windows = vec![
-            win(1, 0),
-            win(2, 0),
-            win(3, 0),
-            win(4, 0),
-            win(5, 0),
-            win_min(6, 700, 500),
-        ];
+        let windows =
+            vec![win(1, 0), win(2, 0), win(3, 0), win(4, 0), win(5, 0), win_min(6, 700, 500)];
         let res = compute_constrained(&tree, &area, &opts(), &[], &ids, &windows, Some(6));
         assert!(res.floating.is_empty(), "ADR 0031: nunca flutua, nem em quadrante profundo");
         assert_eq!(res.rects.len(), 6, "as 6 seguem tiladas");
