@@ -32,8 +32,11 @@ pub struct Config {
     pub ignore_list: Vec<String>,
     /// Iniciar o Etherbit com o sistema (gerencia o `.desktop` em ~/.config/autostart).
     pub autostart: bool,
-    /// Altura (px) da barra de abas desenhada no topo de um quadrante empilhado.
-    pub tab_bar_height: u32,
+    /// Altura (px) da faixa de cabeçalho reservada (geometricamente) no topo de um slot agrupado.
+    /// O core a desconta do slot; quem desenha algo ali é a camada nativa. Aceita o nome legado
+    /// `tab_bar_height` ao carregar configs antigas.
+    #[serde(alias = "tab_bar_height")]
+    pub group_header_px: u32,
     /// Arredondar os cantos das janelas gerenciadas (e do overlay/abas). No GNOME a extensão aplica
     /// um efeito; no KDE depende do efeito nativo de cantos arredondados do KWin.
     pub rounded_corners: bool,
@@ -51,7 +54,7 @@ impl Default for Config {
             border_width: 2,
             ignore_list: Vec::new(),
             autostart: false,
-            tab_bar_height: 28,
+            group_header_px: 28,
             rounded_corners: true,
             corner_radius: 12,
         }
@@ -109,7 +112,7 @@ mod tests {
         assert_eq!(cfg.border_width, 2);
         assert!(cfg.ignore_list.is_empty());
         assert!(!cfg.autostart);
-        assert_eq!(cfg.tab_bar_height, 28);
+        assert_eq!(cfg.group_header_px, 28);
         assert!(cfg.rounded_corners);
         assert_eq!(cfg.corner_radius, 12);
     }
@@ -126,7 +129,7 @@ mod tests {
             "border_width",
             "ignore_list",
             "autostart",
-            "tab_bar_height",
+            "group_header_px",
             "rounded_corners",
             "corner_radius",
         ] {
@@ -144,7 +147,7 @@ mod tests {
             border_width: 3,
             ignore_list: vec!["obs".to_string(), "microsoft-word".to_string()],
             autostart: true,
-            tab_bar_height: 32,
+            group_header_px: 32,
             rounded_corners: false,
             corner_radius: 20,
         };
@@ -159,7 +162,14 @@ mod tests {
         assert_eq!(back.border_width, cfg.border_width);
         assert_eq!(back.ignore_list, cfg.ignore_list);
         assert_eq!(back.autostart, cfg.autostart);
-        assert_eq!(back.tab_bar_height, cfg.tab_bar_height);
+        assert_eq!(back.group_header_px, cfg.group_header_px);
+    }
+
+    #[test]
+    fn loads_legacy_tab_bar_height_alias() {
+        // Configs antigas no disco usam a chave `tab_bar_height`; o alias serde a aceita.
+        let cfg: Config = toml::from_str("tab_bar_height = 40\n").expect("desserializa TOML legado");
+        assert_eq!(cfg.group_header_px, 40);
     }
 
     #[test]

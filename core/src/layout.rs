@@ -18,7 +18,7 @@ use std::collections::HashMap;
 
 /// Tamanhos mínimos (px) por id de folha — `(min_width, min_height)`. Montado a partir dos hints
 /// geométricos das janelas (no GNOME, `Meta.Window.get_min_size()`; no KDE, `Window.minSize`). Uma
-/// folha-âncora de stack agrega o `max` dos mínimos dos membros (+ `tab_bar_height` na altura).
+/// folha-âncora de stack agrega o `max` dos mínimos dos membros (+ `group_header_px` na altura).
 /// Ausente ou `(0, 0)` = sem restrição. Aplicado SÓ na geometria (não muta os ratios da árvore).
 pub type MinSizes = HashMap<u64, (i32, i32)>;
 
@@ -68,9 +68,10 @@ pub struct LayoutOptions {
     pub inner_gap: u32,
     /// Espaço entre as janelas e as bordas da área útil (px).
     pub outer_gap: u32,
-    /// Altura (px) da faixa reservada no topo de um quadrante empilhado para a barra de abas.
-    /// A ponte desenha a barra aqui; o conteúdo da aba ativa ocupa o slot menos esta faixa.
-    pub tab_bar_height: u32,
+    /// Altura (px) da faixa de cabeçalho reservada no topo de um slot agrupado (empilhado). É um
+    /// parâmetro PURAMENTE GEOMÉTRICO: o core a desconta do slot e o conteúdo do membro ativo ocupa
+    /// o restante. Quem desenha (ou não) algo nessa faixa é a camada nativa — o core nunca renderiza.
+    pub group_header_px: u32,
 }
 
 /// Retângulo-alvo de uma janela, pronto para a ponte aplicar.
@@ -801,7 +802,7 @@ fn min_extent(node: &Node, axis: Axis, gap: f64, min: &MinSizes) -> f64 {
             }
         }
         // O mínimo do slot do stack está agregado sob a âncora (ver `build_min_sizes`: `max` dos
-        // membros + `tab_bar_height` na altura).
+        // membros + `group_header_px` na altura).
         Node::Stack { members, .. } => {
             let anchor = members.first().copied().unwrap_or(0);
             let (mw, mh) = min.get(&anchor).copied().unwrap_or((0, 0));
@@ -899,7 +900,7 @@ fn render_stack(
     if present.is_empty() {
         return;
     }
-    let bar_h = (opts.tab_bar_height as f64).min(srect.h.max(0.0));
+    let bar_h = (opts.group_header_px as f64).min(srect.h.max(0.0));
     let content = PreviewRect {
         x: round(srect.x),
         y: round(srect.y + bar_h),
@@ -940,7 +941,7 @@ fn render_stack_node(
     if members.is_empty() {
         return;
     }
-    let bar_h = (opts.tab_bar_height as f64).min(srect.h.max(0.0));
+    let bar_h = (opts.group_header_px as f64).min(srect.h.max(0.0));
     let content = PreviewRect {
         x: round(srect.x),
         y: round(srect.y + bar_h),
@@ -1040,7 +1041,7 @@ fn geometry_from_tree(
 
 /// Monta o mapa de tamanhos mínimos por FOLHA do grupo a partir das janelas e dos stacks. Uma folha
 /// solta carrega o mínimo da própria janela; uma folha-âncora de stack carrega o `max` dos mínimos
-/// dos membros presentes (+ `tab_bar_height` na altura, pois a barra come o topo do slot). Membros
+/// dos membros presentes (+ `group_header_px` na altura, pois a barra come o topo do slot). Membros
 /// não-âncora não viram folha, então saem do mapa.
 fn build_min_sizes(
     windows: &[WindowInfo],
@@ -1066,7 +1067,7 @@ fn build_min_sizes(
                 mh = mh.max(w.min_height.max(0));
             }
         }
-        map.insert(anchor, (mw, mh + opts.tab_bar_height as i32));
+        map.insert(anchor, (mw, mh + opts.group_header_px as i32));
         for m in rest {
             map.remove(m);
         }
@@ -1924,7 +1925,7 @@ mod tests {
 
     #[test]
     fn layout_empty_for_no_windows() {
-        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, tab_bar_height: 28 };
+        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, group_header_px: 28 };
         assert!(compute_layout(&[], &[area_1000x800()], &opts).is_empty());
     }
 
@@ -1933,7 +1934,7 @@ mod tests {
         // Gap degenerado (maior que a própria área): o clamp em `inner_rect`/`split_axis` garante que
         // o layout NÃO esvazie nem gere dimensão NEGATIVA (que a ponte descartaria → grid morto).
         // Defesa em profundidade — a UI trava o gap em 0..=100, mas o core não pode quebrar (ADR 0019).
-        let opts = LayoutOptions { inner_gap: 2000, outer_gap: 2000, tab_bar_height: 28 };
+        let opts = LayoutOptions { inner_gap: 2000, outer_gap: 2000, group_header_px: 28 };
         let rects = compute_layout(&[win(1, 0), win(2, 0), win(3, 0)], &[area_1000x800()], &opts);
         assert_eq!(rects.len(), 3, "todas as janelas devem receber um retângulo");
         for r in &rects {
@@ -1944,7 +1945,7 @@ mod tests {
 
     #[test]
     fn layout_single_window_fills_inner_area() {
-        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, tab_bar_height: 28 };
+        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, group_header_px: 28 };
         let rects = compute_layout(&[win(7, 0)], &[area_1000x800()], &opts);
         assert_eq!(rects, vec![WindowRect { id: 7, x: 12, y: 12, width: 976, height: 776 }]);
     }
@@ -1952,7 +1953,7 @@ mod tests {
     #[test]
     fn layout_two_windows_split_into_halves() {
         // 2 janelas numa área mais larga que alta → split vertical (lado a lado): metades iguais.
-        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, tab_bar_height: 28 };
+        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, group_header_px: 28 };
         let rects = compute_layout(&[win(1, 0), win(2, 0)], &[area_1000x800()], &opts);
         assert_eq!(
             rects,
@@ -1966,7 +1967,7 @@ mod tests {
     #[test]
     fn layout_three_windows_half_plus_two_quarters() {
         // BSP: split vertical (2 esq | 1 dir); a metade esquerda racha na horizontal em dois.
-        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, tab_bar_height: 28 };
+        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, group_header_px: 28 };
         let rects = compute_layout(&[win(1, 0), win(2, 0), win(3, 0)], &[area_1000x800()], &opts);
         assert_eq!(
             rects,
@@ -1981,7 +1982,7 @@ mod tests {
     #[test]
     fn layout_four_windows_form_2x2_grid() {
         // BSP: split vertical em duas metades; cada metade racha na horizontal → grade 2×2.
-        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, tab_bar_height: 28 };
+        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, group_header_px: 28 };
         let rects = compute_layout(
             &[win(1, 0), win(2, 0), win(3, 0), win(4, 0)],
             &[area_1000x800()],
@@ -2009,7 +2010,7 @@ mod tests {
 
     #[test]
     fn layout_never_overlaps_for_many_windows() {
-        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, tab_bar_height: 28 };
+        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, group_header_px: 28 };
         for count in 1..=12u64 {
             let windows: Vec<WindowInfo> = (1..=count).map(|id| win(id, 0)).collect();
             let rects = compute_layout(&windows, &[area_1000x800()], &opts);
@@ -2032,7 +2033,7 @@ mod tests {
 
     #[test]
     fn layout_groups_by_monitor() {
-        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, tab_bar_height: 28 };
+        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, group_header_px: 28 };
         let areas = vec![
             WorkArea { index: 0, x: 0, y: 0, width: 1000, height: 800 },
             WorkArea { index: 1, x: 1000, y: 0, width: 1000, height: 800 },
@@ -2054,7 +2055,7 @@ mod tests {
     fn layout_isolates_by_workspace() {
         // Duas janelas no MESMO monitor mas workspaces distintos: cada grupo tem 1 janela, então
         // cada uma ocupa a área inteira do seu workspace (não viram metades).
-        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, tab_bar_height: 28 };
+        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, group_header_px: 28 };
         let mut a = win(1, 0);
         a.workspace = 0;
         let mut b = win(2, 0);
@@ -2069,7 +2070,7 @@ mod tests {
 
     #[test]
     fn layout_skips_windows_without_known_area() {
-        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, tab_bar_height: 28 };
+        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, group_header_px: 28 };
         // janela no monitor 5, mas só conhecemos a área do monitor 0
         let rects = compute_layout(&[win(1, 5)], &[area_1000x800()], &opts);
         assert!(rects.is_empty());
@@ -2079,7 +2080,7 @@ mod tests {
 
     #[test]
     fn drop_zone_left_and_right_halves() {
-        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, tab_bar_height: 28 };
+        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, group_header_px: 28 };
         let area = area_1000x800();
         let left = detect_drop_zone(&area, 20, 400, &opts);
         assert_eq!(left.zone, DropZone::Left);
@@ -2091,7 +2092,7 @@ mod tests {
 
     #[test]
     fn drop_zone_top_and_bottom_halves() {
-        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, tab_bar_height: 28 };
+        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, group_header_px: 28 };
         let area = area_1000x800();
         let top = detect_drop_zone(&area, 500, 20, &opts);
         assert_eq!(top.zone, DropZone::Top);
@@ -2104,7 +2105,7 @@ mod tests {
     #[test]
     fn detect_drop_zone_sem_cantos_cai_em_metade() {
         // ADR 0028: sem cantos — pontos de canto da TELA caem na metade dominante (eixos limpos).
-        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, tab_bar_height: 28 };
+        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, group_header_px: 28 };
         let area = area_1000x800();
         assert_eq!(detect_drop_zone(&area, 20, 20, &opts).zone, DropZone::Left);
         assert_eq!(detect_drop_zone(&area, 980, 780, &opts).zone, DropZone::Right);
@@ -2126,7 +2127,7 @@ mod tests {
     #[test]
     fn drop_zone_center_maximizes() {
         // O retângulo do centro é idêntico ao single-window do compute_layout.
-        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, tab_bar_height: 28 };
+        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, group_header_px: 28 };
         let area = area_1000x800();
         let preview = detect_drop_zone(&area, 500, 400, &opts);
         assert_eq!(preview.zone, DropZone::Center);
@@ -2139,7 +2140,7 @@ mod tests {
 
     #[test]
     fn drop_zone_midfield_picks_nearest_half() {
-        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, tab_bar_height: 28 };
+        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, group_header_px: 28 };
         let area = area_1000x800();
         // Fora das bordas e fora do centro → escolhe a metade horizontal mais próxima.
         assert_eq!(detect_drop_zone(&area, 250, 400, &opts).zone, DropZone::Left);
@@ -2148,7 +2149,7 @@ mod tests {
 
     #[test]
     fn drop_zone_outside_area_is_none() {
-        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, tab_bar_height: 28 };
+        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, group_header_px: 28 };
         let area = area_1000x800();
         let out = detect_drop_zone(&area, -5, 400, &opts);
         assert_eq!(out.zone, DropZone::None);
@@ -2159,7 +2160,7 @@ mod tests {
     #[test]
     fn drop_zone_respects_monitor_offset() {
         // Monitor à direita (x=1000): ponto perto da borda esquerda DAQUELE monitor → Left local.
-        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, tab_bar_height: 28 };
+        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, group_header_px: 28 };
         let area = WorkArea { index: 1, x: 1000, y: 0, width: 1000, height: 800 };
         let left = detect_drop_zone(&area, 1020, 400, &opts);
         assert_eq!(left.zone, DropZone::Left);
@@ -2169,7 +2170,7 @@ mod tests {
     // ---- Stacks (abas) ----
 
     fn opts() -> LayoutOptions {
-        LayoutOptions { inner_gap: 8, outer_gap: 12, tab_bar_height: 28 }
+        LayoutOptions { inner_gap: 8, outer_gap: 12, group_header_px: 28 }
     }
 
     fn stack_group(members: Vec<u64>, active: u64) -> Vec<StackGroup> {

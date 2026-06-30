@@ -5,7 +5,6 @@
 // chama `compute_layout` e devolve os retângulos-alvo (também JSON). Manter os DTOs serde aqui
 // preserva o core sem dependências (ver ADR 0002/0003) — o core não conhece serde nem D-Bus.
 
-use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -35,10 +34,6 @@ pub struct WindowDto {
     pub id: u64,
     #[serde(default)]
     pub app_id: String,
-    /// Título da janela (caption), para o texto da aba na barra wgpu do KDE. Ausente = vazio
-    /// (retrocompat; o GNOME não envia — desenha o título na própria extensão).
-    #[serde(default)]
-    pub title: String,
     pub x: i32,
     pub y: i32,
     pub width: i32,
@@ -205,10 +200,6 @@ pub struct TabBarDto {
     pub content: GeomDto,
     pub members: Vec<u64>,
     pub active: u64,
-    /// Títulos das janelas, paralelos a `members` (para o texto das abas na barra wgpu do KDE).
-    /// Ausente/curto = sem rótulo (retrocompat; GNOME e daemon antigos ignoram).
-    #[serde(default)]
-    pub titles: Vec<String>,
 }
 
 /// Saída do `SyncWindows`: retângulos visíveis + barras de abas + as ÁRVORES reconciliadas (para a
@@ -349,8 +340,6 @@ impl From<&TabBarRect> for TabBarDto {
             },
             members: t.member_ids.clone(),
             active: t.active_id,
-            // Preenchido por `sync_windows_dto` a partir do mapa id→título (o core não conhece títulos).
-            titles: Vec::new(),
         }
     }
 }
@@ -490,11 +479,6 @@ pub fn sync_windows_dto(
 
     let areas: Vec<WorkArea> = monitors.iter().map(WorkArea::from).collect();
 
-    // Mapa id→título (caption) ANTES de consumir `windows` no core. O core é puro e descarta o título
-    // (irrelevante ao layout); o daemon o reanexa às `tab_bars` para o GNOME rotular as abas.
-    let titles: HashMap<u64, String> =
-        windows.iter().filter(|w| !w.title.is_empty()).map(|w| (w.id, w.title.clone())).collect();
-
     // Filtro cirúrgico centralizado no core; a ponte é burra e pode enviar tudo.
     let n_windows = windows.len();
     let tileable: Vec<WindowInfo> =
@@ -560,16 +544,7 @@ pub fn sync_windows_dto(
                         focused_opt,
                     );
                     rects.extend(res.rects.iter().map(RectDto::from));
-                    tab_bars.extend(res.tab_bars.iter().map(|t| {
-                        let mut dto = TabBarDto::from(t);
-                        // Reanexa os títulos na ordem dos membros (ausente → string vazia).
-                        dto.titles = dto
-                            .members
-                            .iter()
-                            .map(|id| titles.get(id).cloned().unwrap_or_default())
-                            .collect();
-                        dto
-                    }));
+                    tab_bars.extend(res.tab_bars.iter().map(TabBarDto::from));
                     floating.extend(res.floating.iter().map(RectDto::from));
                 }
                 // Persiste a árvore COMPLETA (não a podada): a janela flutuante volta a tilar
@@ -629,30 +604,6 @@ fn parse_target(target_json: &str) -> Result<Option<PreviewRect>> {
     }
     let g: GeomDto = serde_json::from_str(target_json).context("target_json inválido")?;
     Ok(Some(PreviewRect { x: g.x, y: g.y, width: g.width, height: g.height }))
-}
-
-/// Célula do HUD do jogo da velha desenhado pelo overlay wgpu do daemon (KDE) durante o arrasto.
-/// Geometria ABSOLUTA de tela + flag `hot` (a célula sob o cursor, realçada). A ponte envia as 9
-/// células (ou 1 bloco) a cada transição de célula via `ShowDropHud`. Sem IDs (só geometria).
-/// Só é consumido no caminho `wgpu-ui` (overlay); sem a feature, fica inerte.
-#[cfg_attr(not(feature = "wgpu-ui"), allow(dead_code))]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct HudCellDto {
-    pub x: i32,
-    pub y: i32,
-    pub width: i32,
-    pub height: i32,
-    #[serde(default)]
-    pub hot: bool,
-}
-
-/// Parseia o `cells_json` do `ShowDropHud` (`[{x,y,width,height,hot}]`). `""` → vazio (esconde o HUD).
-#[cfg_attr(not(feature = "wgpu-ui"), allow(dead_code))]
-pub fn parse_hud_cells(cells_json: &str) -> Result<Vec<HudCellDto>> {
-    if cells_json.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    serde_json::from_str(cells_json).context("cells_json inválido")
 }
 
 /// Aplica um drag-to-tile: move `dragged_id` para junto de `target_id` no lado da `zone`, rachando a
@@ -715,7 +666,7 @@ mod tests {
     use super::*;
 
     const AREAS: &str = r#"[{"index":0,"x":0,"y":0,"width":1000,"height":800}]"#;
-    const OPTS: LayoutOptions = LayoutOptions { inner_gap: 8, outer_gap: 12, tab_bar_height: 28 };
+    const OPTS: LayoutOptions = LayoutOptions { inner_gap: 8, outer_gap: 12, group_header_px: 28 };
 
     fn win_json(id: u64, app: &str) -> String {
         format!(
@@ -799,22 +750,6 @@ mod tests {
         assert_eq!(bar.stack_id, 1);
         assert_eq!((bar.x, bar.y, bar.width, bar.height), (12, 12, 976, 28));
         assert_eq!(bar.content, GeomDto { x: 12, y: 40, width: 976, height: 748 });
-    }
-
-    #[test]
-    fn sync_attaches_titles_to_tab_bar() {
-        // O título (caption) viaja em WindowDto.title → TabBarDto.titles, paralelo aos membros (o GNOME
-        // consome para rotular as abas). Janela sem título vira string vazia.
-        let titled = |id: u64, app: &str, title: &str| {
-            format!(
-                r#"{{"id":{id},"app_id":"{app}","title":"{title}","x":0,"y":0,"width":100,"height":100,"normal":true,"resizable":true,"maximizable":true,"monitor":0,"workspace":0}}"#
-            )
-        };
-        let windows = format!("[{},{}]", titled(1, "konsole", "Konsole"), win_json(2, "b"));
-        let state = r#"{"stacks":[{"monitor":0,"workspace":0,"members":[1,2],"active":2}]}"#;
-        let res = sync_windows_dto(&windows, AREAS, state, &[], OPTS).expect("ok");
-        assert_eq!(res.tab_bars.len(), 1);
-        assert_eq!(res.tab_bars[0].titles, vec!["Konsole".to_string(), String::new()]);
     }
 
     #[test]
@@ -912,23 +847,6 @@ mod tests {
     fn resolve_rejects_invalid_json() {
         assert!(resolve_drop_zone("nope", 20, 400, "", (0, 0), OPTS).is_err());
         assert!(resolve_drop_zone(AREAS, 300, 150, "{bad", (0, 0), OPTS).is_err());
-    }
-
-    #[test]
-    fn parse_hud_cells_handles_empty_valid_and_invalid() {
-        // Vazio → sem células (esconde o HUD).
-        assert!(parse_hud_cells("").expect("vazio ok").is_empty());
-        assert!(parse_hud_cells("   ").expect("branco ok").is_empty());
-        // Válido: 2 células, a segunda realçada; `hot` ausente assume `false` (serde default).
-        let cells = parse_hud_cells(
-            r#"[{"x":0,"y":0,"width":300,"height":300},{"x":300,"y":0,"width":300,"height":300,"hot":true}]"#,
-        )
-        .expect("válido ok");
-        assert_eq!(cells.len(), 2);
-        assert!(!cells[0].hot);
-        assert_eq!(cells[1], HudCellDto { x: 300, y: 0, width: 300, height: 300, hot: true });
-        // Malformado → erro (não derruba o daemon: o método D-Bus mapeia para fdo::Error via guard).
-        assert!(parse_hud_cells("{nope").is_err());
     }
 
     #[test]

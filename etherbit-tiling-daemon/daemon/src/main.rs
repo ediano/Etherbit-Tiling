@@ -7,13 +7,9 @@
 mod activation;
 mod autostart;
 mod config;
-#[cfg(feature = "wgpu-ui")]
-mod layer;
 mod obs;
 mod powermon;
 mod protocol;
-#[cfg(feature = "wgpu-ui")]
-mod render;
 mod service;
 
 use anyhow::Result;
@@ -32,31 +28,7 @@ async fn main() -> Result<()> {
         eprintln!("Etherbit daemon — ativação D-Bus indisponível: {err:#}");
     }
 
-    // UI própria do daemon (wgpu) — opcional, atrás da feature `wgpu-ui`. Inicializa o pipeline
-    // gráfico com fallback automático para software (LLVMpipe) quando não há GPU.
-    #[cfg(feature = "wgpu-ui")]
-    let render_ctx = match render::init_render().await {
-        Ok(ctx) => {
-            println!("Etherbit daemon — wgpu pronto: {}", ctx.describe());
-            if ctx.is_software_fallback() {
-                eprintln!(
-                    "Etherbit daemon — wgpu em rasterização por software (sem aceleração 3D); \
-                     operando em modo de degradação suave."
-                );
-            }
-            Some(ctx)
-        }
-        Err(err) => {
-            eprintln!("Etherbit daemon — wgpu indisponível: {err:#}");
-            None
-        }
-    };
-
-    let (connection, shared) = service::serve(config).await?;
-    // `shared` (receptor de células do HUD) só é consumido pela UI wgpu; sem a feature ele é
-    // intencionalmente ocioso.
-    #[cfg(not(feature = "wgpu-ui"))]
-    let _ = shared;
+    let connection = service::serve(config).await?;
 
     println!(
         "Etherbit daemon — core {} — servindo {} em {}",
@@ -68,21 +40,6 @@ async fn main() -> Result<()> {
     // Monitor de energia (login1): ao acordar da suspensão, re-emite ConfigChanged para os clientes
     // re-sincronizarem; se o canal de sessão tiver morrido, sai para a ativação D-Bus subir um novo.
     powermon::spawn(connection.clone());
-
-    // HUD de preview via overlay wgpu (KDE/wlr-layer-shell): monta a orquestração quando o wgpu
-    // inicializou e sobe o event loop layer-shell em background. Fora de uma sessão com layer-shell
-    // (CI/headless/GNOME) o loop encerra graciosamente — a ponte degrada para o `showOutline` nativo.
-    #[cfg(feature = "wgpu-ui")]
-    if let Some(ctx) = render_ctx {
-        let overlay = layer::HudOverlay::new(ctx);
-        println!("Etherbit daemon — overlay de HUD pronto (formato {:?}).", overlay.format());
-        let hud_rx = shared.hud_rx.clone();
-        tokio::spawn(async move {
-            if let Err(err) = layer::run_event_loop(overlay, hud_rx).await {
-                eprintln!("Etherbit daemon — overlay de HUD indisponível: {err:#}");
-            }
-        });
-    }
 
     // Mantém o daemon vivo até SIGINT/SIGTERM (encerramento limpo pelo sistema).
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;

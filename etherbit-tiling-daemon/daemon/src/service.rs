@@ -13,9 +13,6 @@ use crate::autostart;
 use crate::config::Config;
 use crate::protocol;
 
-#[cfg(feature = "wgpu-ui")]
-use tokio::sync::watch;
-
 pub const BUS_NAME: &str = "dev.ediano.etherbit.Tiling";
 pub const OBJECT_PATH: &str = "/dev/ediano/etherbit/Tiling";
 
@@ -27,20 +24,16 @@ const CORNER_RADIUS_MAX: u32 = 50;
 /// Objeto servido no barramento de sessão.
 pub struct Tiling {
     config: Config,
-    /// Publica as células do HUD do jogo da velha para o overlay wgpu (KDE) desenhar durante o
-    /// arrasto. `None` = HUD escondido. UI transitória (não estado de janelas/layout). Só com wgpu-ui.
-    #[cfg(feature = "wgpu-ui")]
-    hud_tx: watch::Sender<Option<Vec<protocol::HudCellDto>>>,
 }
 
 impl Tiling {
-    /// Opções de layout derivadas da config atual (gap único aplicado a inner e outer + altura da
-    /// barra de abas). O `gap` da config controla ambos os eixos e ambas as costuras.
+    /// Opções de layout derivadas da config atual (gap único aplicado a inner e outer + a faixa de
+    /// cabeçalho reservada no topo de slots agrupados). O `gap` controla ambos os eixos e costuras.
     fn layout_options(&self) -> LayoutOptions {
         LayoutOptions {
             inner_gap: self.config.gap,
             outer_gap: self.config.gap,
-            tab_bar_height: self.config.tab_bar_height,
+            group_header_px: self.config.group_header_px,
         }
     }
 
@@ -240,31 +233,6 @@ impl Tiling {
         })
     }
 
-    /// Mostra/atualiza o HUD do jogo da velha (overlay wgpu do daemon, KDE) durante o arrasto. A ponte
-    /// envia as 9 células (ou 1 bloco) em coords ABSOLUTAS de tela, com `hot=true` na célula sob o
-    /// cursor. Chamada por TRANSIÇÃO de célula (não por pixel): o cálculo da zona é local na ponte
-    /// (ADR 0026), o daemon só pinta. UI transitória — não toca no estado de janelas/layout. Sem a UI
-    /// wgpu é no-op (a ponte degrada para o `showOutline` nativo do KWin).
-    async fn show_drop_hud(&self, cells_json: String) -> fdo::Result<()> {
-        #[cfg(feature = "wgpu-ui")]
-        {
-            let cells = guard("show_drop_hud", || protocol::parse_hud_cells(&cells_json))?;
-            let _ = self.hud_tx.send_replace(Some(cells));
-        }
-        #[cfg(not(feature = "wgpu-ui"))]
-        let _ = cells_json;
-        Ok(())
-    }
-
-    /// Esconde o HUD do jogo da velha (fim do arrasto / drop).
-    async fn hide_drop_hud(&self) -> fdo::Result<()> {
-        #[cfg(feature = "wgpu-ui")]
-        {
-            let _ = self.hud_tx.send_replace(None);
-        }
-        Ok(())
-    }
-
     /// Aplica um drag-to-tile do jogo da velha (ADR 0026): move `dragged_id` para junto de `target_id`
     /// no lado da `zone`, com o `scope` definindo a escala (`local` = faixa de 1/3 na submatriz do alvo;
     /// `global` = bloco de 50% como nó principal do workspace). Recebe o `state_json` (com as árvores) e
@@ -312,33 +280,13 @@ impl Tiling {
     async fn config_changed(emitter: &SignalEmitter<'_>, config_json: String) -> zbus::Result<()>;
 }
 
-/// Handles compartilhados entre o serviço D-Bus e o overlay wgpu (KDE), devolvidos por `serve` para o
-/// `main` fiar o event loop layer-shell. Sem a feature `wgpu-ui` fica vazio.
-pub struct Shared {
-    /// Receptor das células do HUD do jogo da velha (`None` = escondido) para o event loop desenhar.
-    #[cfg(feature = "wgpu-ui")]
-    pub hud_rx: watch::Receiver<Option<Vec<protocol::HudCellDto>>>,
-}
-
-/// Sobe o serviço no barramento de sessão e o mantém vivo. Devolve a conexão e os `Shared` (receptor
-/// de células do HUD) para o overlay wgpu (quando habilitado).
-pub async fn serve(config: Config) -> Result<(zbus::Connection, Shared)> {
-    #[cfg(feature = "wgpu-ui")]
-    let (hud_tx, hud_rx) = watch::channel(None);
-
-    let tiling = Tiling {
-        config,
-        #[cfg(feature = "wgpu-ui")]
-        hud_tx,
-    };
+/// Sobe o serviço no barramento de sessão e o mantém vivo. Devolve a conexão para o `main` segurar.
+pub async fn serve(config: Config) -> Result<zbus::Connection> {
+    let tiling = Tiling { config };
     let connection = zbus::connection::Builder::session()?
         .name(BUS_NAME)?
         .serve_at(OBJECT_PATH, tiling)?
         .build()
         .await?;
-    let shared = Shared {
-        #[cfg(feature = "wgpu-ui")]
-        hud_rx,
-    };
-    Ok((connection, shared))
+    Ok(connection)
 }

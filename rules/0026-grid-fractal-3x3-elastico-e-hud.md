@@ -74,6 +74,10 @@ apenas move a aritmética **barata e efêmera** do preview para a ponte (ganho d
   funcional**, não visual (mesma família do 0016/0018/0025). A barra de abas clicável do KDE
   (wgpu/wlr-layer-shell, 0025) **não** é reusada para o HUD nesta decisão.
 
+> **Emenda [0029](0029-daemon-sem-framework-visual.md):** o HUD do KDE chegou a ter um overlay `wgpu`
+> próprio no daemon (`ShowDropHud`/`HideDropHud`); ele foi **removido**. O preview do KDE é agora
+> **exclusivamente** o `workspace.showOutline` nativo, e o daemon não contém mais código gráfico.
+
 ### Contrato D-Bus
 
 `Split → Grid` é espelhado em todos os pontos (núcleo, daemon `protocol.rs`/`service.rs`, e as duas

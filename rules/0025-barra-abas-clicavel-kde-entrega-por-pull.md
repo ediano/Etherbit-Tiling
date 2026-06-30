@@ -2,7 +2,8 @@
 
 **Status:** 🔄 **Barra clicável do KDE removida** por
 [0028](0028-eixos-limpos-cosmic-e-kde-sem-abas.md) (o KDE virou tiling puro, sem abas; o daemon perdeu
-`tabbar.rs`/glyphon/`pending_actions`/sinal `TabAction`, mas o **overlay de HUD** de preview permanece).
+`tabbar.rs`/glyphon/`pending_actions`/sinal `TabAction`). O **overlay de HUD wgpu** que ainda restava
+foi removido por [0029](0029-daemon-sem-framework-visual.md): o daemon não tem mais NENHUM código gráfico.
 Aceita em sua origem (estendia [0018](0018-abas-atalhos-globais-drag-to-group.md) e [0022](0022-stacknode-arvore-fechar-desagrupar-unmaximize.md)).
 
 ## Contexto

@@ -1,6 +1,8 @@
 # 0016 — Extensão "ponte burra", layout no core e renderização no daemon
 
-**Status:** ✅ Aceita
+**Status:** ✅ Aceita — **com a renderização `wgpu` no daemon removida** por
+[0029](0029-daemon-sem-framework-visual.md) (ver Emenda 2026 ao final). "Ponte burra + core puro +
+daemon sem estado" permanece.
 
 ## Contexto
 Sob **Wayland em VMs sem aceleração 3D** (GNOME Boxes / LLVMpipe) o ecossistema travava ou não
@@ -110,6 +112,17 @@ ponte continua a única que desenha (GNOME = células `St.Widget`; KDE = `showOu
 o daemon continua **sem estado** e o core continua puro; apenas a aritmética **barata e efêmera** do
 preview migra para a ponte (desempenho em VMs). Status permanece **✅ Aceita**.
 
+## Emenda (2026): wgpu removido do daemon → ver [0029](0029-daemon-sem-framework-visual.md)
+
+A renderização própria do daemon via `wgpu` — reservada por este ADR às "janelas próprias" e usada por
+[0022](0022-stacknode-arvore-fechar-desagrupar-unmaximize.md)/[0025](0025-barra-abas-clicavel-kde-entrega-por-pull.md)
+para a barra/HUD do KDE em `wlr-layer-shell` — foi **removida** por
+[0029](0029-daemon-sem-framework-visual.md). O daemon não contém mais NENHUM framework visual
+(`render.rs`/`layer.rs`/feature `wgpu-ui` apagados); o HUD do KDE passa a ser **só** o
+`workspace.showOutline` nativo. O princípio central deste ADR (ponte desenha, daemon sem estado, core
+puro) **sai reforçado**: agora o daemon não desenha nem as próprias superfícies. Status permanece
+**✅ Aceita**, com a ressalva do cabeçalho.
+
 ## Consequências
 - **Resiliência estrutural:** como a extensão não renderiza layout e aplica geometria instantânea, o
   congelamento em LLVMpipe deixa de ocorrer — sem precisar detectar render por software no compositor.
@@ -123,5 +136,5 @@ preview migra para a ponte (desempenho em VMs). Status permanece **✅ Aceita**.
   usa uma chave estável de sessão: `get_stable_sequence()` no GNOME e `internalId` no KDE.
 - **Limitação registrada:** desenhar bordas/efeitos sobre janelas de terceiros exigiria o Etherbit ser
   o compositor (modelo COSMIC), fora do escopo de extensão/KWin Script.
-- **wgpu opcional:** mantém o daemon leve e o CI sem GPU (feature desligada); habilita-se localmente com
-  `cargo run --features wgpu-ui`.
+- **wgpu opcional (HISTÓRICO):** a feature `wgpu-ui` mantinha o daemon leve e o CI sem GPU; foi
+  **removida** por [0029](0029-daemon-sem-framework-visual.md) — o daemon não tem mais código gráfico.

@@ -19,7 +19,6 @@ import {
   resizeDeltaFrom,
   resolveHotZone,
   serializeScope,
-  serializeHudCells,
   type TreeNode,
   type TransportNode,
   type WindowSnapshot,
@@ -29,7 +28,6 @@ import {
 const win: WindowSnapshot = {
   id: 7,
   app_id: 'konsole',
-  title: 'Konsole',
   x: 0,
   y: 0,
   width: 800,
@@ -319,17 +317,5 @@ describe('ordem estável das janelas (ids string/internalId)', () => {
   it('serializeScope mapeia local/global', () => {
     expect(serializeScope('global')).toBe('global');
     expect(serializeScope('local')).toBe('local');
-  });
-
-  it('serializeHudCells marca a célula realçada e usa literais (sem object spread)', () => {
-    const cells = [
-      { x: 0, y: 0, width: 300, height: 300 },
-      { x: 300, y: 0, width: 300, height: 300 },
-    ];
-    const json = serializeHudCells(cells, 1);
-    expect(JSON.parse(json)).toEqual([
-      { x: 0, y: 0, width: 300, height: 300, hot: false },
-      { x: 300, y: 0, width: 300, height: 300, hot: true },
-    ]);
   });
 });
