@@ -24,7 +24,6 @@ import {
   parseLayoutTrees,
   resolveHotZone,
   serializeScope,
-  serializeHudCells,
   resizeDeltaFrom,
   orderKey,
   appendToOrder,
@@ -123,9 +122,6 @@ let lastCursor: QPoint | null = null;
 let resolving = false;
 /// Zona quente resolvida no último passo do arrasto (define o drop: stack/split + escopo).
 let lastHot: HotZone | null = null;
-/// Assinatura da última célula realçada enviada ao overlay (HUD): evita reenviar `ShowDropHud` por
-/// passo — só quando a célula sob o cursor muda (ADR 0026 — D-Bus por transição, não por pixel).
-let lastHudKey = '';
 /// Resize manual em curso: internalId + frame inicial (para derivar borda/delta ao soltar).
 let resizeStart: { id: string; rect: { x: number; y: number; width: number; height: number } } | null =
   null;
@@ -355,7 +351,6 @@ function retile(): void {
       snapshots.push({
         id,
         app_id: entry.win.resourceClass || entry.win.resourceName || '',
-        title: entry.win.caption || '',
         x: g.x,
         y: g.y,
         width: g.width,
@@ -545,7 +540,6 @@ function onMoveStart(win: KWinWindow): void {
     lastCursor = null;
     resolving = false;
     lastHot = null;
-    lastHudKey = '';
     return;
   }
   if (win.resize) {
@@ -598,22 +592,9 @@ function onMoveStep(): void {
   // Min da janela em arrasto: estica a metade local do preview se o min-size exigir (ADR 0028).
   const hot = resolveHotZone({ x: cursor.x, y: cursor.y }, targetRect, monitor, draggedMinSize(draggedId));
   lastHot = hot;
-  // Fallback nativo: contorno do retângulo-destino (caso o overlay do daemon esteja indisponível).
+  // Preview via outline NATIVO do KWin (o daemon não desenha nada — é geometria pura). Contorno do
+  // retângulo-destino da zona quente; `none` esconde.
   updateOutline(hot.dropZone === 'none' ? null : hot.outline);
-  // HUD translúcido via overlay wgpu do daemon. Envia só quando a CÉLULA realçada muda (a chave embute
-  // escopo+zona+contorno), mantendo o D-Bus fora do caminho quente por-pixel.
-  const o = hot.outline;
-  const hudKey = `${hot.scope}|${hot.dropZone}|${o.x},${o.y},${o.width},${o.height}`;
-  if (hudKey !== lastHudKey) {
-    lastHudKey = hudKey;
-    callDBus(
-      BUS_NAME,
-      OBJECT_PATH,
-      IFACE,
-      'ShowDropHud',
-      serializeHudCells(hot.cells, hot.hot.length > 0 ? hot.hot[0]! : -1),
-    );
-  }
   resolving = false;
 }
 
@@ -622,9 +603,6 @@ function onMoveStep(): void {
 /// maximizar. Tudo via MoveWindow (move na árvore persistente, traduzindo ids via os mapas do retile).
 function onMoveFinish(win: KWinWindow): void {
   workspace.hideOutline();
-  // Esconde o HUD translúcido do overlay do daemon (fim do arrasto).
-  callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'HideDropHud');
-  lastHudKey = '';
   const dragged = draggedId;
   const hot = lastHot;
   draggedId = null;

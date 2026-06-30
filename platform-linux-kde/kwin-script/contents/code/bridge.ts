@@ -9,8 +9,6 @@
 export interface WindowSnapshot {
   id: number;
   app_id: string;
-  /// Título (caption) da janela, para o texto da aba na barra wgpu do KDE. Vazio = sem rótulo.
-  title: string;
   x: number;
   y: number;
   width: number;
@@ -172,8 +170,8 @@ export function parsePreview(json: string): DropPreview | null {
 //  - Sobre uma janela, fora do centro → split 50/50 do CORPO do alvo pelo lado mais próximo
 //    (escopo `local`): a zona local divide o slot do alvo, não o monitor.
 //  - Gap vazio → bloco de 50% pela borda mais próxima, ou monitor inteiro no miolo (escopo `global`).
-// O HUD translúcido é desenhado pelo OVERLAY wgpu do daemon (ShowDropHud), com o `workspace.showOutline`
-// nativo como fallback. O core só é acionado no DROP (MoveWindow). Puro/testável.
+// O preview é desenhado pelo `workspace.showOutline` NATIVO do KWin (o daemon é geometria pura e não
+// renderiza nada). O core só é acionado no DROP (MoveWindow). Puro/testável.
 
 /// Retângulo simples em px absolutos de tela.
 export interface Rect {
@@ -183,12 +181,11 @@ export interface Rect {
   height: number;
 }
 
-/// Resultado do HUD: a zona quente sob o cursor, as células e o destino do drop.
+/// Resultado do cálculo de drop: a zona quente sob o cursor, seu escopo e o retângulo-destino
+/// (`outline`) para o preview nativo.
 export interface HotZone {
   scope: 'local' | 'global';
   dropZone: string;
-  cells: Rect[];
-  hot: number[];
   outline: Rect;
 }
 
@@ -210,7 +207,7 @@ export function resolveHotZone(
     if (tfx > 1 / 3 && tfx < 2 / 3 && tfy > 1 / 3 && tfy < 2 / 3) {
       // Literal explícito (NÃO object spread): o QJSEngine do KWin rejeita `{ ...x }`. Ver ADR 0013.
       const whole = { x: target.x, y: target.y, width: target.width, height: target.height };
-      return { scope: 'local', dropZone: 'center', cells: [whole], hot: [0], outline: whole };
+      return { scope: 'local', dropZone: 'center', outline: whole };
     }
     return localHotZone(pointer, target, draggedMin);
   }
@@ -253,7 +250,7 @@ function localHotZone(
     dropZone = 'bottom';
     block = { x: target.x, y: target.y + target.height - extentY, width: target.width, height: extentY };
   }
-  return { scope: 'local', dropZone, cells: [block], hot: [0], outline: block };
+  return { scope: 'local', dropZone, outline: block };
 }
 
 /// `clamp(value, 5%*disp, 95%*disp)`: limita a metade esticada por min-size aos extremos do alvo no eixo.
@@ -267,7 +264,7 @@ function globalHotZone(mfx: number, mfy: number, monitor: Rect): HotZone {
   // Miolo central da tela vazia → maximizar (bloco = monitor inteiro). Antes de escolher a borda.
   if (mfx > 1 / 3 && mfx < 2 / 3 && mfy > 1 / 3 && mfy < 2 / 3) {
     const whole = { x: monitor.x, y: monitor.y, width: monitor.width, height: monitor.height };
-    return { scope: 'global', dropZone: 'center', cells: [whole], hot: [0], outline: whole };
+    return { scope: 'global', dropZone: 'center', outline: whole };
   }
   const dl = mfx;
   const dr = 1 - mfx;
@@ -291,7 +288,7 @@ function globalHotZone(mfx: number, mfy: number, monitor: Rect): HotZone {
     dropZone = 'bottom';
     block = { x: monitor.x, y: monitor.y + hh, width: monitor.width, height: hh };
   }
-  return { scope: 'global', dropZone, cells: [block], hot: [0], outline: block };
+  return { scope: 'global', dropZone, outline: block };
 }
 
 /// Serializa o escopo do drop para o `MoveWindow` (ADR 0028): `"global"` (50%/maximizar) ou `"local"`
@@ -301,18 +298,6 @@ export function serializeScope(scope: 'local' | 'global'): string {
     return 'global';
   }
   return 'local';
-}
-
-/// Serializa as células do HUD do jogo da velha para o `ShowDropHud` do daemon (overlay wgpu). Marca
-/// `hot` na célula realçada (`hotIdx`). Literal EXPLÍCITO por célula (NÃO object spread — o QJSEngine
-/// do KWin rejeita `{ ...x }`; ver ADR 0013). Sem IDs (só geometria), então sem risco de `uint64`.
-export function serializeHudCells(cells: Rect[], hotIdx: number): string {
-  const out: { x: number; y: number; width: number; height: number; hot: boolean }[] = [];
-  for (let i = 0; i < cells.length; i += 1) {
-    const c = cells[i] as Rect;
-    out.push({ x: c.x, y: c.y, width: c.width, height: c.height, hot: i === hotIdx });
-  }
-  return JSON.stringify(out);
 }
 
 // ---- Ordem estável das janelas (estado leve da ponte) ----
