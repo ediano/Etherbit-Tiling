@@ -510,8 +510,11 @@ impl App {
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         if self.surfaces[idx].is_hud {
             // Célula do HUD do jogo da velha: preenchimento translúcido (hot = mais opaca).
-            let color =
-                if self.surfaces[idx].hot { crate::render::HUD_HOT } else { crate::render::HUD_FILL };
+            let color = if self.surfaces[idx].hot {
+                crate::render::HUD_HOT
+            } else {
+                crate::render::HUD_FILL
+            };
             self.overlay.render_fill(&view, color);
             frame.present();
             return;
