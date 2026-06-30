@@ -41,6 +41,14 @@ const BUS_NAME = 'dev.ediano.etherbit.Tiling';
 const OBJECT_PATH = '/dev/ediano/etherbit/Tiling';
 const IFACE = 'dev.ediano.etherbit.Tiling';
 
+// Helper de preview TRANSLÚCIDO (processo separado, wlr-layer-shell + SHM). Um KWin Script só desenha
+// `showOutline` (contorno opaco); a máscara translúcida (alpha 0.3–0.4) vem deste helper, acionado por
+// D-Bus durante o drag. Se o helper não estiver no barramento, a chamada é no-op e o outline nativo
+// (fallback) segue valendo. Ver ADR 0029 (emenda) e 0013.
+const PREVIEW_BUS = 'dev.ediano.etherbit.Preview';
+const PREVIEW_PATH = '/dev/ediano/etherbit/Preview';
+const PREVIEW_IFACE = 'dev.ediano.etherbit.Preview';
+
 /// Prefixo estável de log. A ÚNICA saída do QJSEngine é `print` (sem `console`/`setTimeout`); o prefixo
 /// permite `journalctl --user -f QT_CATEGORY=kwin_scripting | grep etherbit`. O handshake `Ping` e o
 /// aviso de "sem resposta" são SEMPRE logados (são o diagnóstico essencial da falha silenciosa).
@@ -107,6 +115,10 @@ const order = new Map<string, string[]>();
 const disabled = new Set<string>();
 /// internalIds que NÓS elevamos (keepAbove) por auto-floating — para baixar ao voltarem ao grid.
 const floatingAbove = new Set<string>();
+/// internalIds que o core JÁ tilou ao menos uma vez. Uma janela maximizada que NUNCA foi tilada
+/// "nasceu maximizada" → spawn-unmaximize (entra na Distribuição Cíclica). Já uma janela tilada que o
+/// usuário maximiza é PRESERVADA (volta ao slot ao desmaximizar — Unmaximize Recovery).
+const everTiled = new Set<string>();
 /// Árvores BSP persistentes por `(monitor, desktop)`, com folhas em internalId (forma canônica).
 /// O core reconcilia e devolve a versão atualizada a cada SyncWindows/MoveWindow.
 let trees = new Map<string, TreeNode | null>();
@@ -172,6 +184,24 @@ function isMaximized(win: KWinWindow): boolean {
     );
   } catch (e) {
     return false;
+  }
+}
+
+/// Spawn-unmaximize: com o Tiling ATIVO, uma janela maximizada que o core ainda NÃO tilou "nasceu
+/// maximizada" — desmaximiza para entrar na Distribuição Cíclica. Uma janela já tilada (em `everTiled`)
+/// que o usuário maximiza é PRESERVADA (não é tocada aqui). Defensivo: `setMaximize` é opcional e a
+/// referência pode estar morta — nunca derruba o retile.
+function spawnUnmaximizeIfBorn(win: KWinWindow): void {
+  if (!tilingEnabled) {
+    return;
+  }
+  try {
+    if (!isLiveWindow(win) || everTiled.has(windowId(win)) || !isMaximized(win)) {
+      return;
+    }
+    win.setMaximize?.(false, false);
+  } catch (e) {
+    // referência morta / API ausente — ignora (a janela segue como está; o retile cuida do resto)
   }
 }
 
@@ -413,6 +443,9 @@ function retile(): void {
             sawDead = true;
             continue;
           }
+          // O core deu um slot a esta janela → ela já foi tilada. A partir daqui, maximizá-la é ação
+          // MANUAL do usuário (preservada); só "nasceu maximizada" quem nunca apareceu aqui (spawn).
+          everTiled.add(windowId(win));
           if (!isMaximized(win)) {
             win.frameGeometry = {
               x: command.x,
@@ -503,20 +536,35 @@ registerShortcut(
 
 // ---- Arrasto + indicador de drop zone (outline nativo) ----
 
-/// Mostra/posiciona o outline NATIVO para o retângulo resultante; esconde se `null`/zerado. O KWin
-/// Script só desenha 1 outline (não as 9 células — limitação do KWin Script, ver ADR 0026). Para a
-/// zona `center` (merge), o retângulo é a própria janela-alvo.
+/// Assinatura do último retângulo enviado ao preview translúcido — evita reemitir D-Bus por pixel
+/// (o helper só precisa do estado quando a ZONA muda).
+let lastPreviewKey = '';
+
+/// Mostra/posiciona o preview para o retângulo resultante; esconde se `null`/zerado. Duas camadas:
+///  1) outline NATIVO (`workspace.showOutline`) — sempre disponível, mas contorno OPACO (fallback);
+///  2) máscara TRANSLÚCIDA (alpha 0.3–0.4) via o helper `etherbit-tiling-preview` por D-Bus — o KWin
+///     Script não pinta superfícies próprias (só `showOutline`); a translucidez vem do helper.
+/// Se o helper não estiver no barramento, a chamada é no-op e o outline cobre o caso. Para a zona
+/// `center` (merge/swap), o retângulo é a própria janela-alvo.
 function updateOutline(rect: Rect | null): void {
   if (!rect || rect.width <= 0 || rect.height <= 0) {
     workspace.hideOutline();
+    if (lastPreviewKey !== '') {
+      lastPreviewKey = '';
+      callDBus(PREVIEW_BUS, PREVIEW_PATH, PREVIEW_IFACE, 'HidePreview');
+    }
     return;
   }
-  workspace.showOutline({
-    x: Math.round(rect.x),
-    y: Math.round(rect.y),
-    width: Math.round(rect.width),
-    height: Math.round(rect.height),
-  });
+  const x = Math.round(rect.x);
+  const y = Math.round(rect.y);
+  const width = Math.round(rect.width);
+  const height = Math.round(rect.height);
+  workspace.showOutline({ x, y, width, height });
+  const key = `${x},${y},${width},${height}`;
+  if (key !== lastPreviewKey) {
+    lastPreviewKey = key;
+    callDBus(PREVIEW_BUS, PREVIEW_PATH, PREVIEW_IFACE, 'ShowPreview', x, y, width, height);
+  }
 }
 
 /// Área útil do monitor que contém `(x, y)` (fallback: o primeiro monitor, ou um retângulo zerado).
@@ -602,7 +650,7 @@ function onMoveStep(): void {
 /// troca as duas); borda sobre uma janela → split do slot do alvo; gap vazio → inserção global de 50% /
 /// maximizar. Tudo via MoveWindow (move na árvore persistente, traduzindo ids via os mapas do retile).
 function onMoveFinish(win: KWinWindow): void {
-  workspace.hideOutline();
+  updateOutline(null); // esconde outline nativo + preview translúcido (helper)
   const dragged = draggedId;
   const hot = lastHot;
   draggedId = null;
@@ -724,10 +772,13 @@ function trackWindow(win: KWinWindow): void {
   win.interactiveMoveResizeFinished.connect(() => onMoveFinish(win));
   // (Des)maximizar muda quais janelas entram no grid (Unmaximize Recovery). O sinal de maximização
   // não existe em toda versão do KWin script — conecta defensivamente (degrada sem quebrar; nesse
-  // caso a re-tilagem ocorre no próximo evento de foco/janela).
+  // caso a re-tilagem ocorre no próximo evento de foco/janela). Spawn-unmaximize: se a janela é
+  // maximizada e NUNCA foi tilada (nasceu maximizada), desmaximiza para ela entrar na Distribuição
+  // Cíclica; uma janela já tilada que o usuário maximiza é preservada (só re-tila).
   if (win.maximizedChanged) {
     win.maximizedChanged.connect(() => {
       if (!applying) {
+        spawnUnmaximizeIfBorn(win);
         retile();
       }
     });
@@ -736,6 +787,8 @@ function trackWindow(win: KWinWindow): void {
 
 workspace.windowAdded.connect((win) => {
   trackWindow(win);
+  // Nascimento: com o Tiling ativo, nenhuma janela inicia maximizada (mesmo que o app peça).
+  spawnUnmaximizeIfBorn(win);
   retile();
 });
 workspace.windowRemoved.connect((win) => {
@@ -745,6 +798,7 @@ workspace.windowRemoved.connect((win) => {
   try {
     const id = windowId(win);
     removeFromOrder(order, id);
+    everTiled.delete(id);
   } catch (e) {
     // referência morta — segue direto para o retile
   }

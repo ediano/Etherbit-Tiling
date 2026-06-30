@@ -35,9 +35,12 @@ if command -v systemctl >/dev/null; then
 fi
 
 # --- Remoção de arquivos -------------------------------------------------------
-echo ">> Removendo daemon e unit"
+echo ">> Removendo daemon, helper de preview e unit"
 rm -f "$BIN_DIR/etherbit-tiling-daemon"
 rm -f "$SYSTEMD_DIR/$SERVICE"
+# Helper de preview translúcido (KDE-only) + sua ativação D-Bus.
+rm -f "$BIN_DIR/etherbit-tiling-preview"
+rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/dbus-1/services/dev.ediano.etherbit.Preview.service"
 
 # Marcador de versão (estado da instalação; agnóstico de DE — daemon compartilhado).
 rm -f "${XDG_STATE_HOME:-$HOME/.local/state}/etherbit-tiling/version"

@@ -972,15 +972,14 @@ mod tests {
     }
 
     #[test]
-    fn sync_emits_floating_for_oversized_min() {
-        // Janela com min_width maior que a área é isolada (floating) e some do grid tilado.
+    fn sync_oversized_min_comprime_sem_floatar() {
+        // ADR 0031 (cascata sempre, nunca flutua): janela com min_width maior que a área NÃO é mais
+        // isolada — a cascata comprime e ela segue tilada. `floating` vazio; as duas no grid.
         let windows = format!("[{},{}]", win_json_min(1, "store", 2000, 0), win_json(2, "b"));
         let out = sync_windows(&windows, AREAS, "", &[], OPTS).expect("ok");
         let res = layout_of(&out);
-        assert_eq!(res.floating.len(), 1);
-        assert_eq!(res.floating[0].id, 1);
-        // a flutuante NÃO aparece entre as tiladas; sobra só a 2 ocupando a área.
-        assert!(res.rects.iter().all(|r| r.id != 1));
+        assert!(res.floating.is_empty(), "ADR 0031: nunca flutua");
+        assert_eq!(res.rects.iter().filter(|r| r.id == 1).count(), 1, "a restrita segue tilada");
         assert_eq!(res.rects.iter().filter(|r| r.id == 2).count(), 1);
     }
 
@@ -997,15 +996,15 @@ mod tests {
     // REGRESSÃO genuína (árvore reconciliada vazia apesar de haver janelas tileáveis). ---
 
     #[test]
-    fn sync_all_oversized_min_floats_all_zero_rects() {
-        // TODAS as janelas com min maior que a área: o core isola todas via auto-floating.
-        // Esperado: 0 rects, mas `floating == N` (NÃO é o bug — as janelas continuam visíveis flutuando).
+    fn sync_all_oversized_min_comprime_sem_floatar() {
+        // ADR 0031: TODAS as janelas com min maior que a área. NÃO há mais auto-floating — a cascata
+        // comprime as duas proporcionalmente e elas seguem tiladas. `floating` vazio; 2 rects.
         let windows =
             format!("[{},{}]", win_json_min(1, "a", 2000, 0), win_json_min(2, "b", 2000, 0));
         let out = sync_windows(&windows, AREAS, "", &[], OPTS).expect("ok");
         let res = layout_of(&out);
-        assert!(res.rects.is_empty(), "min gigante remove do grid tilado");
-        assert_eq!(res.floating.len(), 2, "auto-floating preserva as 2 janelas");
+        assert_eq!(res.rects.len(), 2, "min gigante comprime, não some do grid");
+        assert!(res.floating.is_empty(), "ADR 0031: nunca flutua");
     }
 
     #[test]

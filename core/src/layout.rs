@@ -712,39 +712,77 @@ fn track_bounds(start: f64, total: f64, fracs: &[f64], gap: f64) -> Vec<(f64, f6
 
 /// Resolve os tamanhos das tracks RESPEITANDO os mínimos por track (cascata elástica): parte das
 /// frações desejadas e SATURA as tracks que ficariam abaixo do mínimo, redistribuindo o restante às
-/// demais proporcionalmente à fração. Se nem os mínimos cabem, satura todas no mínimo (overflow tratado
-/// a montante por auto-float). Com `mins` todos 0, é idêntico a `track_bounds`.
-fn solve_tracks(start: f64, total: f64, fracs: &[f64], mins: &[f64], gap: f64) -> Vec<(f64, f64)> {
+/// demais proporcionalmente à fração. Quando NEM os mínimos cabem (`Σ mins > avail`), comprime **sem
+/// sobrepor** (ADR 0031, cascata sempre, nunca flutua): a(s) track(s) `priority` — as que contêm a
+/// janela focada/nova — recebem o mínimo CHEIO (clampado ao espaço) e as demais dividem o resto
+/// proporcionalmente ao próprio mínimo, de modo que `Σ tracks == avail` SEMPRE (ladrilho perfeito,
+/// nunca overflow). Sem `priority` (todas falsas), todas comprimem proporcionalmente. O clamp final por
+/// janela (abaixo do mínimo real) fica a cargo do compositor. Com `mins` todos 0, é idêntico a
+/// `track_bounds`. `priority` deve ter o mesmo comprimento de `fracs`.
+fn solve_tracks(
+    start: f64,
+    total: f64,
+    fracs: &[f64],
+    mins: &[f64],
+    gap: f64,
+    priority: &[bool],
+) -> Vec<(f64, f64)> {
     let n = fracs.len();
     if n == 0 {
         return Vec::new();
     }
-    let sum: f64 = fracs.iter().sum::<f64>().max(1e-9);
     let avail = (total - gap * (n.saturating_sub(1)) as f64).max(0.0);
-    let mut size: Vec<f64> = fracs.iter().map(|f| avail * (f / sum)).collect();
-    let mut fixed = vec![false; n];
-    // Itera saturando as tracks abaixo do mínimo; converge em no máximo `n` passos.
-    for _ in 0..n {
-        let fixed_sum: f64 = (0..n).filter(|&i| fixed[i]).map(|i| size[i]).sum();
-        let free_frac: f64 = (0..n).filter(|&i| !fixed[i]).map(|i| fracs[i]).sum::<f64>().max(1e-9);
-        let free_avail = (avail - fixed_sum).max(0.0);
-        for i in 0..n {
-            if !fixed[i] {
-                size[i] = free_avail * (fracs[i] / free_frac);
+    let needed: f64 = mins.iter().map(|m| m.max(0.0)).sum();
+    let size: Vec<f64> = if needed <= avail + 1e-6 {
+        // CABE: saturação elástica clássica — satura as tracks abaixo do mínimo e redistribui o resto
+        // às demais proporcionalmente à fração. Converge em no máximo `n` passos.
+        let sum: f64 = fracs.iter().sum::<f64>().max(1e-9);
+        let mut size: Vec<f64> = fracs.iter().map(|f| avail * (f / sum)).collect();
+        let mut fixed = vec![false; n];
+        for _ in 0..n {
+            let fixed_sum: f64 = (0..n).filter(|&i| fixed[i]).map(|i| size[i]).sum();
+            let free_frac: f64 =
+                (0..n).filter(|&i| !fixed[i]).map(|i| fracs[i]).sum::<f64>().max(1e-9);
+            let free_avail = (avail - fixed_sum).max(0.0);
+            for i in 0..n {
+                if !fixed[i] {
+                    size[i] = free_avail * (fracs[i] / free_frac);
+                }
+            }
+            let mut changed = false;
+            for i in 0..n {
+                if !fixed[i] && size[i] < mins[i] {
+                    size[i] = mins[i];
+                    fixed[i] = true;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
             }
         }
-        let mut changed = false;
-        for i in 0..n {
-            if !fixed[i] && size[i] < mins[i] {
-                size[i] = mins[i];
-                fixed[i] = true;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
+        size
+    } else {
+        // NÃO CABE: comprime sem sobrepor. As tracks `priority` (focada/nova) recebem o mínimo cheio
+        // (clampado a `avail`); as demais dividem o que sobra proporcional ao próprio mínimo. Se nem o
+        // mínimo das prioritárias cabe, elas mesmas comprimem (limite físico — o clamp real é do
+        // compositor). `Σ tracks == avail`, nunca overflow.
+        let pri_sum: f64 = (0..n).filter(|&i| priority[i]).map(|i| mins[i].max(0.0)).sum();
+        let pri_clamped = pri_sum.min(avail);
+        let pri_scale = if pri_sum > 1e-9 { pri_clamped / pri_sum } else { 0.0 };
+        let rest_avail = (avail - pri_clamped).max(0.0);
+        let rest_sum: f64 =
+            (0..n).filter(|&i| !priority[i]).map(|i| mins[i].max(0.0)).sum::<f64>().max(1e-9);
+        (0..n)
+            .map(|i| {
+                if priority[i] {
+                    mins[i].max(0.0) * pri_scale
+                } else {
+                    rest_avail * (mins[i].max(0.0) / rest_sum)
+                }
+            })
+            .collect()
+    };
     let mut out = Vec::with_capacity(n);
     let mut cursor = start;
     for s in size {
@@ -752,6 +790,38 @@ fn solve_tracks(start: f64, total: f64, fracs: &[f64], mins: &[f64], gap: f64) -
         cursor += s + gap;
     }
     out
+}
+
+/// Tracks (colunas, linhas) cobertas pela célula que CONTÉM a janela focada/nova (`focused`) num grid —
+/// marcadas como prioritárias para o viés de saturação do `solve_tracks` (ADR 0031). Vetores de `false`
+/// se não há focada ou ela não está neste grid. Comprimentos `ncols`/`nrows` (≥ 1) casam com as tracks.
+fn focused_priority_tracks(
+    ncols: usize,
+    nrows: usize,
+    cells: &[GridChild],
+    focused: Option<u64>,
+) -> (Vec<bool>, Vec<bool>) {
+    let mut col_pri = vec![false; ncols.max(1)];
+    let mut row_pri = vec![false; nrows.max(1)];
+    let Some(f) = focused else {
+        return (col_pri, row_pri);
+    };
+    for c in cells {
+        if node_contains(&c.node, f) {
+            let c0 = c.col as usize;
+            let c1 = (c.col + c.col_span.max(1)) as usize;
+            for t in c0..c1.min(col_pri.len()) {
+                col_pri[t] = true;
+            }
+            let r0 = c.row as usize;
+            let r1 = (c.row + c.row_span.max(1)) as usize;
+            for t in r0..r1.min(row_pri.len()) {
+                row_pri[t] = true;
+            }
+            break; // só uma célula contém a focada
+        }
+    }
+    (col_pri, row_pri)
 }
 
 /// Retângulo de uma célula que cobre `[col..col+col_span) × [row..row+row_span)`, dados os limites de
@@ -875,8 +945,11 @@ fn geom_leaves_min(
             // as vizinhas maleáveis encolhem; quando o espaço cresce, tudo volta às frações.
             let col_mins = track_mins(cols.len(), cells, gap, min, Axis::Horizontal);
             let row_mins = track_mins(rows.len(), cells, gap, min, Axis::Vertical);
-            let xb = solve_tracks(rect.x, rect.w, cols, &col_mins, gap);
-            let yb = solve_tracks(rect.y, rect.h, rows, &row_mins, gap);
+            // Viés da focada (ADR 0031): sob pressão (mínimos não cabem), a(s) track(s) cobertas pela
+            // célula que contém a janela focada/nova saturam no mínimo CHEIO; as vizinhas cedem.
+            let (col_pri, row_pri) = focused_priority_tracks(cols.len(), rows.len(), cells, focused);
+            let xb = solve_tracks(rect.x, rect.w, cols, &col_mins, gap, &col_pri);
+            let yb = solve_tracks(rect.y, rect.h, rows, &row_mins, gap, &row_pri);
             for c in cells {
                 geom_leaves_min(&c.node, cell_rect(&xb, &yb, c), gap, min, focused, out);
             }
@@ -1075,103 +1148,14 @@ fn build_min_sizes(
     map
 }
 
-/// Id da folha que REPRESENTA a janela focada/nova na árvore: ela mesma, se for folha solta; ou a
-/// âncora do `Node::Stack` que a contém. `None` se a focada não está na árvore. Base da proteção
-/// contra auto-floating — a janela nova "dita o espaço" e nunca é isolada do grid.
-fn focused_leaf_id(tree: &LayoutTree, focused: Option<u64>) -> Option<u64> {
-    let f = focused?;
-    fn walk(node: &Node, f: u64) -> Option<u64> {
-        match node {
-            Node::Leaf(id) => (*id == f).then_some(*id),
-            Node::Stack { members, .. } => {
-                if members.contains(&f) {
-                    members.first().copied()
-                } else {
-                    None
-                }
-            }
-            Node::Grid { cells, .. } => cells.iter().find_map(|c| walk(&c.node, f)),
-        }
-    }
-    walk(tree.root.as_ref()?, f)
-}
-
-/// Remove da árvore (para fins de GEOMETRIA) as folhas cujos mínimos tornam o layout inviável,
-/// devolvendo a árvore podada + os ids isolados (AUTO-FLOATING). Inviável = em algum eixo o mínimo
-/// total da raiz excede a área interna (num BSP os eixos são independentes, então basta checar largura
-/// e altura da raiz). A cada passo isola a folha que mais pesa no(s) eixo(s) violado(s) — desempate por
-/// MENOR id (determinístico) — e repete até caber. PURA e idempotente: NÃO persiste estado; a árvore
-/// COMPLETA continua sendo guardada pela ponte, então a janela volta a tilar quando o espaço cresce.
-///
-/// A janela `focused` (nova/em foco) é PROTEGIDA: nunca vira vítima do auto-float. Ela mantém o seu
-/// mínimo no grid e os vizinhos é que comprimem em cascata (regra "a janela nova dita o espaço", ver
-/// ADR 0021). O auto-float só sobra como rede de segurança degenerada: quando, mesmo após espremer
-/// todos os vizinhos, o mínimo TOTAL ainda estoura a tela, isola os NÃO-focados (a focada permanece).
-fn enforce_min_sizes(
-    tree: &LayoutTree,
-    area: &WorkArea,
-    opts: &LayoutOptions,
-    min: &MinSizes,
-    focused: Option<u64>,
-) -> (LayoutTree, Vec<u64>) {
-    let inner = inner_rect(area, opts.outer_gap as f64);
-    let gap = opts.inner_gap as f64;
-    // Folha intocável (a focada/nova). Estável: nunca é colapsada, então basta computar uma vez.
-    let protected = focused_leaf_id(tree, focused);
-    let mut tree = tree.clone();
-    let mut floated: Vec<u64> = Vec::new();
-    loop {
-        let Some(root) = &tree.root else { break };
-        let over_w = min_extent(root, Axis::Horizontal, gap, min) > inner.w + 0.5;
-        let over_h = min_extent(root, Axis::Vertical, gap, min) > inner.h + 0.5;
-        if !over_w && !over_h {
-            break;
-        }
-        let victim = collect_leaf_ids(&tree)
-            .into_iter()
-            .filter(|id| Some(*id) != protected)
-            .max_by_key(|id| {
-                let (mw, mh) = min.get(id).copied().unwrap_or((0, 0));
-                let axis_weight = if over_w { mw.max(0) as i64 } else { 0 }
-                    + if over_h { mh.max(0) as i64 } else { 0 };
-                // peso no eixo violado, depois área mínima; desempate por MENOR id (Reverse).
-                (axis_weight, (mw.max(0) as i64) * (mh.max(0) as i64), std::cmp::Reverse(*id))
-            });
-        // Sem vítima elegível (só a focada protegida sobrou e ainda não cabe): para. A focada
-        // permanece tilada na melhor geometria possível (split forçado prioriza o mínimo dela).
-        let Some(victim) = victim else { break };
-        tree = collapse_leaf(tree, victim);
-        floated.push(victim);
-    }
-    (tree, floated)
-}
-
-/// Retângulo de uma janela em modo flutuante: tamanho atual clampado a `[mínimo, área interna]` (nunca
-/// abaixo do mínimo, mesmo que estoure a área), centralizado na área interna do monitor.
-fn floating_rect(
-    area: &WorkArea,
-    opts: &LayoutOptions,
-    win: &WindowInfo,
-    min: &MinSizes,
-) -> WindowRect {
-    let inner = inner_rect(area, opts.outer_gap as f64);
-    let (mw, mh) =
-        min.get(&win.id).copied().unwrap_or((win.min_width.max(0), win.min_height.max(0)));
-    let w = (win.width as f64).clamp(mw as f64, inner.w.max(mw as f64));
-    let h = (win.height as f64).clamp(mh as f64, inner.h.max(mh as f64));
-    WindowRect {
-        id: win.id,
-        x: round(inner.x + (inner.w - w) / 2.0),
-        y: round(inner.y + (inner.h - h) / 2.0),
-        width: round(w),
-        height: round(h),
-    }
-}
 
 /// Calcula a geometria RESPEITANDO os tamanhos mínimos das janelas (geometry hints). Monta os mínimos
-/// por folha, isola as janelas que estrangulam o grid (auto-floating) e tila o restante com splits
-/// assimétricos. É o ponto de entrada usado pelo daemon; `compute_geometry` é o caso sem restrições.
-/// A árvore de ENTRADA (completa) deve ser persistida pela ponte — a poda aqui é só para a geometria.
+/// por folha e tila a árvore COMPLETA: a cascata elástica (`geom_leaves_min` → `solve_tracks`) garante
+/// que a janela focada/nova receba seu mínimo real e que os vizinhos se desloquem em cascata pelo
+/// workspace. **Nunca flutua** (ADR 0031, "cascata sempre"): mesmo quando o mínimo total estoura a tela,
+/// `solve_tracks` comprime proporcionalmente sem sobrepor (o clamp final por janela é do compositor).
+/// `LayoutResult.floating` sai SEMPRE vazio — o campo é mantido no contrato só por retrocompatibilidade.
+/// É o ponto de entrada usado pelo daemon; `compute_geometry` é o caso sem restrições de mínimo.
 pub fn compute_constrained(
     tree: &LayoutTree,
     area: &WorkArea,
@@ -1182,14 +1166,7 @@ pub fn compute_constrained(
     focused: Option<u64>,
 ) -> LayoutResult {
     let min = build_min_sizes(windows, stacks, group_ids, opts);
-    let (geom_tree, floated) = enforce_min_sizes(tree, area, opts, &min, focused);
-    let mut res = geometry_from_tree(&geom_tree, area, opts, &min, focused);
-    for id in floated {
-        if let Some(w) = windows.iter().find(|w| w.id == id) {
-            res.floating.push(floating_rect(area, opts, w, &min));
-        }
-    }
-    res
+    geometry_from_tree(tree, area, opts, &min, focused)
 }
 
 /// `true` se a árvore contém a folha `id`.
@@ -1444,7 +1421,7 @@ fn leaf_split_axis(root: &Node, target: u64, area: &WorkArea, opts: &LayoutOptio
 /// Insere `new_id` por DISTRIBUIÇÃO CÍCLICA EM QUADRANTES (ADR 0030, substitui o antigo `insert_one`).
 /// O slot que ENTRA (`count_before + 1`) define a posição, resolvida GEOMETRICAMENTE (centro da folha
 /// vs. centro da área interna) para sobreviver a rearranjos persistentes. O `focused` NÃO governa mais
-/// a inserção (segue só protegendo do auto-float em `enforce_min_sizes`). Sequência:
+/// a inserção (segue só enviesando a cascata de mínimos em `geom_leaves_min`/`solve_tracks`). Sequência:
 ///  - W1 (`count_before == 0`): folha única (100%).
 ///  - W2 (`== 1`): split horizontal (lado a lado), nova à DIREITA.
 ///  - W3 (`== 2`): divide a metade DIREITA na vertical (nova embaixo).
@@ -1950,6 +1927,21 @@ mod tests {
 
     fn area_1000x800() -> WorkArea {
         WorkArea { index: 0, x: 0, y: 0, width: 1000, height: 800 }
+    }
+
+    /// Garante que nenhum par de retângulos tilados se sobrepõe (invariante do ladrilho — ADR 0031: a
+    /// cascata comprime sem nunca sobrepor, mesmo no caso impossível).
+    fn assert_no_overlap(rects: &[WindowRect]) {
+        for i in 0..rects.len() {
+            for j in (i + 1)..rects.len() {
+                let (a, b) = (&rects[i], &rects[j]);
+                let disjoint = a.x + a.width <= b.x
+                    || b.x + b.width <= a.x
+                    || a.y + a.height <= b.y
+                    || b.y + b.height <= a.y;
+                assert!(disjoint, "rects {} e {} se sobrepõem", a.id, b.id);
+            }
+        }
     }
 
     #[test]
@@ -2928,22 +2920,23 @@ mod tests {
     }
 
     #[test]
-    fn auto_floata_janela_cujo_minimo_nao_cabe() {
-        // min_width 2000 > área: a janela sai do grid (floating) e a vizinha ocupa tudo.
+    fn min_inviavel_comprime_e_nao_floata() {
+        // ADR 0031 (cascata sempre, nunca flutua): min_width 2000 > área. SEM foco, a cascata comprime
+        // proporcionalmente — a restrita satura na maior largura possível e a vizinha cede. NINGUÉM
+        // flutua (`floating` vazio); as duas seguem tiladas; nada se sobrepõe.
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
         let windows = vec![win_min(1, 2000, 0), win(2, 0)];
         let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows, None);
-        assert_eq!(res.rects.len(), 1);
-        assert_eq!(res.rects[0].id, 2);
-        assert_eq!(res.rects[0].width, 976, "a vizinha ocupa a área interna inteira");
-        assert_eq!(res.floating.len(), 1);
-        assert_eq!(res.floating[0].id, 1);
-        assert_eq!(res.floating[0].width, 2000, "a flutuante mantém ao menos seu mínimo");
+        assert!(res.floating.is_empty(), "ADR 0031: nunca flutua");
+        assert_eq!(res.rects.len(), 2, "as 2 seguem no grid");
+        let r1 = res.rects.iter().find(|r| r.id == 1).unwrap();
+        assert!(r1.width >= 900, "a restrita satura na maior largura possível (got {})", r1.width);
+        assert_no_overlap(&res.rects);
     }
 
     #[test]
-    fn auto_floating_e_idempotente() {
+    fn constrained_e_idempotente() {
         // Rodar duas vezes com as mesmas entradas dá exatamente o mesmo resultado (sem thrash).
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], None, &area, &opts());
@@ -2954,17 +2947,20 @@ mod tests {
     }
 
     #[test]
-    fn auto_floata_todas_quando_nenhuma_cabe_e_nunca_some() {
-        // Caso do log "N janelas → 0 rects": se NENHUMA janela cabe (todas com min gigante), o grid
-        // tilado fica vazio — mas o motor NUNCA some com as janelas: todas viram floating (visíveis,
-        // acima do grid). 0 rects + 0 floating com janelas tileáveis seria a regressão; aqui provamos
-        // que não acontece.
+    fn nunca_floata_mesmo_no_impossivel() {
+        // Caso impossível: as duas com min gigante (> tela). Pela regra "cascata sempre" (ADR 0031),
+        // o motor NÃO flutua nem some com ninguém — comprime as duas proporcionalmente, preenchendo a
+        // área sem sobreposição geométrica (o clamp final por janela fica a cargo do compositor).
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
         let windows = vec![win_min(1, 2000, 0), win_min(2, 2000, 0)];
         let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows, None);
-        assert!(res.rects.is_empty(), "ninguém cabe → grid tilado vazio");
-        assert_eq!(res.floating.len(), 2, "as 2 continuam visíveis via auto-floating");
+        assert!(res.floating.is_empty(), "ADR 0031: nunca flutua");
+        assert_eq!(res.rects.len(), 2, "as 2 seguem tiladas");
+        // Preenchem a área interna sem estourar (Σ larguras + gap ≈ inner), sem sobreposição.
+        let total: i32 = res.rects.iter().map(|r| r.width).sum();
+        assert!(total <= 976, "Σ larguras não estoura a área interna (got {})", total);
+        assert_no_overlap(&res.rects);
     }
 
     #[test]
@@ -3045,51 +3041,85 @@ mod tests {
     }
 
     #[test]
-    fn focada_protegida_do_autofloat_o_vizinho_e_que_cede() {
-        // Mesma entrada de `auto_floata_janela_cujo_minimo_nao_cabe`, mas AGORA a janela restrita (1)
-        // está FOCADA: ela é protegida e NÃO flutua — quem sai do grid é a vizinha. Contraste direto:
-        // sem foco, a 1 flutuava; com foco, a 1 permanece tilada (a nova janela nunca é jogada fora).
+    fn focada_satura_no_min_vizinho_comprime() {
+        // A janela restrita (1) com min 2000 > área, e FOCADA: pela cascata com viés (ADR 0031), a
+        // focada satura na maior largura possível do nó e o vizinho comprime — NINGUÉM flutua, nada
+        // se sobrepõe. A focada é a mais larga (recebe a prioridade na saturação).
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], Some(1), &area, &opts());
         let windows = vec![win_min(1, 2000, 0), win(2, 0)];
         let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows, Some(1));
-        assert_eq!(res.rects.len(), 1);
-        assert_eq!(res.rects[0].id, 1, "a focada permanece no grid");
-        assert_eq!(res.rects[0].width, 976, "ocupa a área interna inteira (melhor esforço)");
-        assert_eq!(res.floating.len(), 1);
-        assert_eq!(res.floating[0].id, 2, "o vizinho não-focado é que flutua");
+        assert!(res.floating.is_empty(), "ADR 0031: nunca flutua");
+        assert_eq!(res.rects.len(), 2, "as 2 seguem no grid");
+        let w = |id: u64| res.rects.iter().find(|r| r.id == id).unwrap().width;
+        assert!(w(1) >= w(2), "a focada satura (mais larga); o vizinho cede");
+        assert_no_overlap(&res.rects);
     }
 
     #[test]
-    fn focada_nunca_e_vitima_so_os_nao_focados_floatam() {
-        // Três janelas, a focada (1) com min inviável: o auto-float isola APENAS os não-focados
-        // (2 e 3), nunca a focada. Garante que a proteção vale mesmo com múltiplos candidatos.
+    fn focada_mantem_min_demais_comprimem() {
+        // Três janelas, a focada (1) com min inviável: a cascata com viés mantém a focada larga e
+        // comprime os não-focados (2 e 3). Ninguém flutua; a focada é sempre a maior; sem sobreposição.
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], Some(1), &area, &opts());
         let windows = vec![win_min(1, 4000, 0), win(2, 0), win(3, 0)];
         let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2, 3], &windows, Some(1));
-        assert_eq!(res.rects.len(), 1);
-        assert_eq!(res.rects[0].id, 1, "a focada nunca é a vítima");
-        let floated: Vec<u64> = res.floating.iter().map(|r| r.id).collect();
-        assert!(floated.contains(&2) && floated.contains(&3));
-        assert!(!floated.contains(&1));
+        assert!(res.floating.is_empty(), "ADR 0031: nunca flutua");
+        assert_eq!(res.rects.len(), 3, "as 3 seguem no grid");
+        let w = |id: u64| res.rects.iter().find(|r| r.id == id).unwrap().width;
+        assert!(w(1) >= w(2) && w(1) >= w(3), "a focada nunca cede a prioridade");
+        assert_no_overlap(&res.rects);
     }
 
     #[test]
     fn solve_tracks_respeita_minimos_e_espreme_em_cascata() {
+        let no_pri = [false, false];
         // 2 tracks 50/50 com mínimo só na 1ª (600): a 1ª recebe 600 e a 2ª encolhe (cascata elástica).
         // avail = 1000 - gap(8) = 992 → 2ª fica com 992 - 600 = 392.
-        let t = solve_tracks(0.0, 1000.0, &[0.5, 0.5], &[600.0, 0.0], 8.0);
+        let t = solve_tracks(0.0, 1000.0, &[0.5, 0.5], &[600.0, 0.0], 8.0, &no_pri);
         assert_eq!(t.len(), 2);
         assert!((t[0].1 - 600.0).abs() < 1e-6, "1ª track recebe o mínimo");
         assert!((t[1].1 - 392.0).abs() < 1e-6, "2ª track absorve o resto (cascata)");
         // Sem mínimos, é idêntico à distribuição pura (track_bounds): 50/50 de 992.
-        let p = solve_tracks(0.0, 1000.0, &[0.5, 0.5], &[0.0, 0.0], 8.0);
+        let p = solve_tracks(0.0, 1000.0, &[0.5, 0.5], &[0.0, 0.0], 8.0, &no_pri);
         assert!((p[0].1 - 496.0).abs() < 1e-6 && (p[1].1 - 496.0).abs() < 1e-6);
-        // Caso degenerado (os dois mínimos > avail): ambas SATURAM no mínimo (overflow tratado a
-        // montante por auto-float); nunca há track negativa.
-        let d = solve_tracks(0.0, 1000.0, &[0.5, 0.5], &[600.0, 600.0], 8.0);
-        assert!((d[0].1 - 600.0).abs() < 1e-6 && (d[1].1 - 600.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn solve_tracks_satura_proporcional_no_impossivel() {
+        // ADR 0031: os dois mínimos (600+600=1200) > avail (992). SEM prioridade, comprime
+        // PROPORCIONALMENTE (scale = 992/1200): ambas ≈ 496, Σ == avail (nunca overflow/sobreposição).
+        let d = solve_tracks(0.0, 1000.0, &[0.5, 0.5], &[600.0, 600.0], 8.0, &[false, false]);
+        let scale = 992.0 / 1200.0;
+        assert!((d[0].1 - 600.0 * scale).abs() < 1e-6 && (d[1].1 - 600.0 * scale).abs() < 1e-6);
+        assert!((d[0].1 + d[1].1 - 992.0).abs() < 1e-6, "Σ tracks == avail (sem overflow)");
+        // COM prioridade na 1ª track: ela recebe o mínimo CHEIO (600) e a 2ª fica com o resto (392).
+        let b = solve_tracks(0.0, 1000.0, &[0.5, 0.5], &[600.0, 600.0], 8.0, &[true, false]);
+        assert!((b[0].1 - 600.0).abs() < 1e-6, "a track prioritária satura no mínimo cheio");
+        assert!((b[1].1 - 392.0).abs() < 1e-6, "a vizinha cede o resto");
+        assert!((b[0].1 + b[1].1 - 992.0).abs() < 1e-6, "Σ tracks == avail");
+    }
+
+    #[test]
+    fn cascata_global_em_quadrante_profundo() {
+        // ADR 0031: app de mínimo rígido nascendo como W6 num sub-quadrante profundo do ciclo deve
+        // empurrar os ramos vizinhos do WORKSPACE em cascata, sem flutuar nem sobrepor. Abrimos 6
+        // janelas (a 6ª focada, com min rígido) e provamos que ninguém flutua e nada se sobrepõe.
+        let area = area_1000x800();
+        let ids = [1u64, 2, 3, 4, 5, 6];
+        let tree = reconcile(&LayoutTree::default(), &ids, &[], Some(6), &area, &opts());
+        let windows = vec![
+            win(1, 0),
+            win(2, 0),
+            win(3, 0),
+            win(4, 0),
+            win(5, 0),
+            win_min(6, 700, 500),
+        ];
+        let res = compute_constrained(&tree, &area, &opts(), &[], &ids, &windows, Some(6));
+        assert!(res.floating.is_empty(), "ADR 0031: nunca flutua, nem em quadrante profundo");
+        assert_eq!(res.rects.len(), 6, "as 6 seguem tiladas");
+        assert_no_overlap(&res.rects);
     }
 
     // ---- Unmaximize Recovery ----
@@ -3131,6 +3161,25 @@ mod tests {
         let depois = compute_geometry(&tree, &area, &opts(), &[], &[1, 2]);
         let r2_depois = depois.rects.iter().find(|r| r.id == 2).unwrap();
         assert_eq!(&r2_antes, r2_depois);
+    }
+
+    #[test]
+    fn maximizar_manual_round_trip_preserva_vizinhos() {
+        // Ciclo de vida de maximização (instrução complementar): 3 janelas no grid. O usuário maximiza
+        // a 2 (do meio) e depois desmaximiza — a árvore persistida É a "memória" (slot + proporções):
+        // ao voltar, TODAS as 3 retornam aos retângulos EXATOS de antes (vizinhos empurrados de volta
+        // sem quebrar a árvore). Como a 2 JÁ era folha, `retain` a preserva enquanto maximizada.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], None, &area, &opts());
+        let antes = compute_geometry(&tree, &area, &opts(), &[], &[1, 2, 3]);
+
+        // Maximiza a 2: segue sendo alvo (slot preservado), pois já é folha.
+        let alvos = retain_tileable_when_maximized(&tree, &[1, 2, 3], &[2]);
+        assert_eq!(alvos, vec![1, 2, 3], "a maximizada que já era folha é preservada");
+
+        // Desmaximiza: árvore intacta → geometria idêntica para as 3 (vizinhos voltam ao lugar).
+        let depois = compute_geometry(&tree, &area, &opts(), &[], &[1, 2, 3]);
+        assert_eq!(antes.rects, depois.rects, "round-trip devolve todas as janelas ao slot exato");
     }
 
     #[test]

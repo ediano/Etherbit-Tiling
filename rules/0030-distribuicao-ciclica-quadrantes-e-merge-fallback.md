@@ -57,6 +57,12 @@ legado para o layout "real").
 
 ### Merge Fallback sob colapso de pixels
 
+> **Emenda [0031](0031-cascata-sempre-spawn-unmaximize-e-preview-translucido.md):** o auto-float foi
+> **removido** (cascata sempre, nunca flutua). Como o core deixou de emitir `floating`, o Merge Fallback
+> abaixo **nunca dispara** — fica **dormente** na ponte GNOME, como rede defensiva para um daemon antigo
+> que ainda emita flutuantes. O agrupamento em aba por **gesto do usuário** (centro, ADR 0028) continua
+> valendo normalmente.
+
 Quando os tamanhos mínimos impedem novos fracionamentos, a contingência é **dependente de plataforma**,
 então o **core só sinaliza** (a lista `LayoutResult.floating`/`LayoutResultDto.floating` já existente é a
 verdade: "quem o grid não comporta"). **Sem mudança de protocolo.**

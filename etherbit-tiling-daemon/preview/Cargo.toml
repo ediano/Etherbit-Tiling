@@ -1,0 +1,21 @@
+# etherbit-tiling-preview — helper de PREVIEW translúcido do KDE (processo separado).
+#
+# Por que um crate SEPARADO (não o daemon de geometria): o ADR 0029 blindou o
+# `etherbit-tiling-daemon` como motor puramente geométrico, SEM framework visual. A camada de
+# apresentação volta para um helper nativo dedicado — aqui — que desenha UM retângulo translúcido
+# via wlr-layer-shell (SHM, sem GPU). O KWin Script (ponte burra) o aciona por D-Bus durante o drag.
+# Translucidez de verdade (alpha 0.3–0.4) só é possível por um cliente Wayland próprio: nem o KWin
+# Script nem um KWin Effect scriptado conseguem pintar um retângulo livre (só `showOutline`, opaco).
+[package]
+name = "etherbit-tiling-preview"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+zbus = { version = "5", features = ["tokio"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+anyhow = "1"
+# Cliente Wayland (wlr-layer-shell + SHM). `dlopen` evita link com a `libwayland-client` de sistema —
+# o devcontainer/CI compila sem ela; sob o KDE (que sempre a tem) o overlay funciona em runtime.
+smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop"] }
+wayland-client = { version = "0.31", features = ["dlopen"] }
