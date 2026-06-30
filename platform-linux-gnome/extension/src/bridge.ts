@@ -248,12 +248,13 @@ export function parsePreview(json: string): DropPreview | null {
   return { zone: v.zone, x: v.x, y: v.y, width: v.width, height: v.height };
 }
 
-// ---- HUD de preview do jogo da velha (cálculo LOCAL na ponte — ADR 0026) ----
+// ---- HUD de preview de "eixos limpos" (cálculo LOCAL na ponte — ADR 0028) ----
 //
-// Durante o arrasto, a ponte NÃO chama o Rust por tick: lê o retângulo da janela-alvo sob o cursor,
-// divide por 3 (escopo LOCAL) ou usa as bordas do monitor (escopo GLOBAL) e devolve as 9 zonas quentes
-// + o destaque + o retângulo resultante. O core só é acionado no DROP (MoveWindow). Helpers PUROS
-// (testáveis sem GJS), espelhados na ponte KDE.
+// Durante o arrasto, a ponte NÃO chama o Rust por tick: lê o retângulo da janela-alvo sob o cursor e
+// resolve o destino LOCALMENTE — centro de uma janela → fusão em abas; fora do centro → split 50/50 do
+// slot do alvo; gap vazio → 50% pela borda (ou monitor inteiro no miolo central). Devolve a(s) célula(s)
+// a desenhar + o realce + o retângulo resultante. O core só é acionado no DROP (MoveWindow). Helpers
+// PUROS (testáveis sem GJS), espelhados na ponte KDE.
 
 /// Retângulo simples em px absolutos de tela.
 export interface Rect {
@@ -265,46 +266,34 @@ export interface Rect {
 
 /// Resultado do HUD: a zona quente sob o cursor, as células a desenhar e o destino do drop.
 export interface HotZone {
-  /// `grid` = célula unitária da matriz 3×3 do monitor (o caso comum sobre uma janela); `local` =
-  /// fusão em abas (centro de uma janela-alvo); `global` = bloco de 50% do workspace (gap vazio).
-  scope: 'local' | 'global' | 'grid';
-  /// Comando a enviar no drop: `left|right|top|bottom|top_left|top_right|bottom_left|bottom_right|
-  /// center|none`. `center` com escopo `local` = fusão em abas (a ponte chama `addToStack`); com
-  /// escopo `grid` = a célula central (1,1) da matriz.
+  /// `local` = sobre uma janela-alvo: centro → fusão em abas (a ponte chama `addToStack`); fora do
+  /// centro → split 50/50 do slot do alvo. `global` = gap vazio: 50% pela borda, ou monitor inteiro
+  /// (maximizar) no miolo central.
+  scope: 'local' | 'global';
+  /// Comando a enviar no drop: `left|right|top|bottom|center|none`. `center` com escopo `local` =
+  /// fusão em abas (a ponte intercepta e chama `addToStack`, NÃO manda MoveWindow); `center` com
+  /// escopo `global` = maximizar (monitor inteiro).
   dropZone: string;
-  /// Células do jogo da velha a DESENHAR (9 no local; 1 bloco no global). GNOME usa todas; KDE ignora.
+  /// Células do HUD a DESENHAR (2 metades no split local; 1 bloco no global/maximizar; 1 realce no
+  /// merge). GNOME desenha as presentes e esconde o resto; KDE ignora.
   cells: Rect[];
   /// Índices de `cells` a ACENDER (a zona ativa).
   hot: number[];
-  /// Retângulo único do destino (KDE: `workspace.showOutline`). `center` = a janela-alvo inteira.
+  /// Retângulo único do destino. `center` local = a janela-alvo inteira (realce de merge).
   outline: Rect;
 }
 
-/// Zonas das 9 células da matriz 3×3 do monitor, em ordem row-major (índice = row*3 + col). Espelha
-/// `zone_to_cell` do core (top_left = (0,0) … bottom_right = (2,2)).
-const GRID_ZONES: readonly string[] = [
-  'top_left',
-  'top',
-  'top_right',
-  'left',
-  'center',
-  'right',
-  'bottom_left',
-  'bottom',
-  'bottom_right',
-];
-
-/// Calcula a zona quente do HUD sob o cursor, sem D-Bus. `target` é o retângulo da janela sob o cursor
-/// (ou `null` se o cursor está num gap vazio). `monitor` é a área útil do monitor sob o cursor.
-///  - Terço CENTRAL de uma janela-alvo → `center` local (fusão em abas).
-///  - Qualquer outra parte SOBRE uma janela → CÉLULA da matriz 3×3 do monitor (escopo `grid`): o app se
-///    fixa naquela célula 1/9 sem esticar para 50% (ADR 0026 — quadrantes estritos). Decoupla "estou
-///    sobre uma janela" de "estou perto da borda da tela": densidade não dispara mais 50% acidental.
-///  - Gap vazio (sem janela sob o cursor) → bloco de 50% pela borda mais próxima (escopo `global`).
+/// Calcula a zona quente do HUD sob o cursor, sem D-Bus. `target` = retângulo da janela sob o cursor
+/// (`null` num gap vazio); `monitor` = área útil do monitor sob o cursor; `draggedMin` = tamanho mínimo
+/// da janela em arrasto (estica a metade local do preview se necessário — ADR 0028; `(0,0)` = 50/50 puro).
+///  - Miolo CENTRAL de uma janela-alvo → `center` local (a ponte funde em abas via `addToStack`).
+///  - Qualquer outra parte SOBRE uma janela → split 50/50 do CORPO do alvo pelo lado mais próximo (local).
+///  - Gap vazio → 50% pela borda mais próxima, ou monitor inteiro no miolo central (escopo `global`).
 export function resolveHotZone(
   pointer: { x: number; y: number },
   target: Rect | null,
   monitor: Rect,
+  draggedMin: { width: number; height: number },
 ): HotZone {
   if (target && target.width > 0 && target.height > 0) {
     const tfx = (pointer.x - target.x) / target.width;
@@ -313,38 +302,65 @@ export function resolveHotZone(
       const whole = { x: target.x, y: target.y, width: target.width, height: target.height };
       return { scope: 'local', dropZone: 'center', cells: [whole], hot: [0], outline: whole };
     }
-    return gridHotZone(pointer, monitor);
+    return localHotZone(pointer, target, draggedMin);
   }
   const mfx = monitor.width > 0 ? (pointer.x - monitor.x) / monitor.width : 0.5;
   const mfy = monitor.height > 0 ? (pointer.y - monitor.y) / monitor.height : 0.5;
   return globalHotZone(mfx, mfy, monitor);
 }
 
-/// Escopo GRID: a célula 1/9 da matriz 3×3 do monitor sob o cursor. Desenha as 9 células e acende a do
-/// cursor; o drop fixa o app naquela célula (span 1×1, sem auto-expansão).
-function gridHotZone(pointer: { x: number; y: number }, monitor: Rect): HotZone {
-  const cw = monitor.width / 3;
-  const ch = monitor.height / 3;
-  const cells: Rect[] = [];
-  for (let row = 0; row < 3; row += 1) {
-    for (let col = 0; col < 3; col += 1) {
-      cells.push({ x: monitor.x + col * cw, y: monitor.y + row * ch, width: cw, height: ch });
-    }
+/// Escopo LOCAL fora do centro: split 50/50 do CORPO do `target` pelo lado mais próximo do cursor.
+/// Espelha o `globalHotZone`, mas sobre o retângulo do alvo (a zona local divide o slot do alvo). A
+/// metade ENCOSTADA ao cursor é o destino; ela ESTICA no eixo do split se o min-size da janela arrastada
+/// exigir: `extent = clamp(max(metade, min), 5%, 95%)` da dimensão do alvo naquele eixo (ADR 0028).
+function localHotZone(
+  pointer: { x: number; y: number },
+  target: Rect,
+  draggedMin: { width: number; height: number },
+): HotZone {
+  const fx = (pointer.x - target.x) / target.width;
+  const fy = (pointer.y - target.y) / target.height;
+  const dl = fx;
+  const dr = 1 - fx;
+  const dt = fy;
+  const db = 1 - fy;
+  const nearest = Math.min(dl, dr, dt, db);
+  // Esticão do preview: largura/altura da metade respeitando o min da arrastada, em px, no eixo do split.
+  const extentX = clampExtent(Math.max(target.width / 2, draggedMin.width), target.width);
+  const extentY = clampExtent(Math.max(target.height / 2, draggedMin.height), target.height);
+  let dropZone: string;
+  let block: Rect;
+  if (nearest === dl) {
+    dropZone = 'left';
+    block = { x: target.x, y: target.y, width: extentX, height: target.height };
+  } else if (nearest === dr) {
+    dropZone = 'right';
+    block = { x: target.x + target.width - extentX, y: target.y, width: extentX, height: target.height };
+  } else if (nearest === dt) {
+    dropZone = 'top';
+    block = { x: target.x, y: target.y, width: target.width, height: extentY };
+  } else {
+    dropZone = 'bottom';
+    block = { x: target.x, y: target.y + target.height - extentY, width: target.width, height: extentY };
   }
-  const col = Math.min(2, Math.max(0, Math.floor((pointer.x - monitor.x) / cw)));
-  const row = Math.min(2, Math.max(0, Math.floor((pointer.y - monitor.y) / ch)));
-  const i = row * 3 + col;
-  return {
-    scope: 'grid',
-    dropZone: GRID_ZONES[i] as string,
-    cells,
-    hot: [i],
-    outline: cells[i] as Rect,
-  };
+  return { scope: 'local', dropZone, cells: [block], hot: [0], outline: block };
 }
 
-/// Escopo GLOBAL: a borda da tela mais próxima vira um bloco de 50% do monitor.
+/// `clamp(value, 5%*disp, 95%*disp)`: limita a metade esticada por min-size aos extremos do alvo no eixo.
+function clampExtent(value: number, disp: number): number {
+  const lo = 0.05 * disp;
+  const hi = 0.95 * disp;
+  return Math.min(hi, Math.max(lo, value));
+}
+
+/// Escopo GLOBAL (gap vazio): miolo central da tela → maximizar (monitor inteiro); senão a borda mais
+/// próxima vira um bloco de 50% do monitor.
 function globalHotZone(mfx: number, mfy: number, monitor: Rect): HotZone {
+  // Miolo central da tela vazia → maximizar (bloco = monitor inteiro). Antes de escolher a borda.
+  if (mfx > 1 / 3 && mfx < 2 / 3 && mfy > 1 / 3 && mfy < 2 / 3) {
+    const whole = { x: monitor.x, y: monitor.y, width: monitor.width, height: monitor.height };
+    return { scope: 'global', dropZone: 'center', cells: [whole], hot: [0], outline: whole };
+  }
   const dl = mfx;
   const dr = 1 - mfx;
   const dt = mfy;
@@ -370,14 +386,11 @@ function globalHotZone(mfx: number, mfy: number, monitor: Rect): HotZone {
   return { scope: 'global', dropZone, cells: [block], hot: [0], outline: block };
 }
 
-/// Serializa o escopo do drop para o `MoveWindow` (ADR 0026): `"global"` (50%), `"grid"` (célula 3×3)
-/// ou `"local"` (fusão/centro).
-export function serializeScope(scope: 'local' | 'global' | 'grid'): string {
+/// Serializa o escopo do drop para o `MoveWindow` (ADR 0028): `"global"` (50%/maximizar) ou `"local"`
+/// (split do slot do alvo). O centro local NÃO chega aqui no GNOME — a ponte funde em abas (`addToStack`).
+export function serializeScope(scope: 'local' | 'global'): string {
   if (scope === 'global') {
     return 'global';
-  }
-  if (scope === 'grid') {
-    return 'grid';
   }
   return 'local';
 }

@@ -211,20 +211,9 @@ pub struct TabBarDto {
     pub titles: Vec<String>,
 }
 
-/// Ação de aba pendente, entregue à ponte KDE por PULL no `layout_json` do próximo `SyncWindows`.
-/// Origem: um clique do usuário na barra de abas RENDERIZADA pelo daemon (wgpu/layer-shell). Como o
-/// KWin Script só faz `callDBus` (não assina sinais nem tem timer — ver ADR 0022), o sinal `TabAction`
-/// não é consumível pela ponte; a ação viaja embutida na resposta que a ponte já drena. `action` ∈
-/// {`"activate"`, `"close"`, `"ungroup"`}; os ids são de TRANSPORTE (a ponte os traduz de volta).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TabActionDto {
-    pub stack_id: u64,
-    pub member_id: u64,
-    pub action: String,
-}
-
 /// Saída do `SyncWindows`: retângulos visíveis + barras de abas + as ÁRVORES reconciliadas (para a
-/// ponte persistir e reenviar no próximo `state_json`). Espelha `layout_json` (objeto).
+/// ponte persistir e reenviar no próximo `state_json`). Espelha `layout_json` (objeto). As `tab_bars`
+/// seguem viajando para o GNOME (a extensão as consome e desenha a barra ela mesma).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LayoutResultDto {
     pub rects: Vec<RectDto>,
@@ -235,30 +224,6 @@ pub struct LayoutResultDto {
     /// Ausente = vazio (retrocompat com ponte/daemon antigos).
     #[serde(default)]
     pub floating: Vec<RectDto>,
-    /// Ações de aba pendentes (cliques na barra wgpu do KDE) a aplicar na ponte. O `protocol` em si
-    /// nunca as preenche (é puro/sem estado); o `service` injeta a fila drenada antes de serializar.
-    /// Ausente = vazio (retrocompat com ponte/daemon antigos).
-    #[serde(default)]
-    pub pending_actions: Vec<TabActionDto>,
-}
-
-/// Converte as barras devolvidas pelo core (DTO) na entrada do overlay wgpu (`BarInput`, coords
-/// absolutas de tela). Os `members` permanecem ids de TRANSPORTE — o overlay desenha/hit-testa com
-/// eles e a ponte os traduz de volta via `byId`. Usado só pela UI wgpu (KDE).
-#[cfg(any(feature = "wgpu-ui", test))]
-pub fn bars_from_tab_bars(bars: &[TabBarDto]) -> Vec<crate::tabbar::BarInput> {
-    bars.iter()
-        .map(|b| crate::tabbar::BarInput {
-            stack_id: b.stack_id,
-            x: b.x,
-            y: b.y,
-            w: b.width,
-            h: b.height,
-            members: b.members.clone(),
-            active: b.active,
-            titles: b.titles.clone(),
-        })
-        .collect()
 }
 
 /// Inverso de `zone_label`: rótulo snake_case → zona do core (desconhecido → `None`).
@@ -288,13 +253,12 @@ fn parse_edge(s: &str) -> Edge {
     }
 }
 
-/// Rótulo do escopo do drop → `DropScope` (ADR 0026). `"global"` = nó principal do workspace (50%);
-/// `"grid"` = célula unitária da matriz 3×3 do workspace; qualquer outro (incl. `"local"`/ausente) =
-/// subdivisão local da janela-alvo.
+/// Rótulo do escopo do drop → `DropScope` (ADR 0028). `"global"` = nó principal do workspace (50%);
+/// qualquer outro (incl. `"local"`/ausente e o LEGADO `"grid"`) = subdivisão local 50/50 da
+/// janela-alvo. Uma ponte antiga mandando `"grid"` degrada para `Local` (retrocompat, sem panic).
 fn parse_scope(s: &str) -> DropScope {
     match s {
         "global" => DropScope::Global,
-        "grid" => DropScope::Grid,
         _ => DropScope::Local,
     }
 }
@@ -494,9 +458,8 @@ fn parse_state(state_json: &str) -> Result<SyncStateDto> {
 ///
 /// `windows_json`/`monitors_json` são arrays JSON; `state_json` é um objeto (ou `""`); `layout_json`
 /// é um objeto `{ "rects": [{id,x,y,w,h}], "tab_bars": [...] }`.
-// O serviço usa `sync_windows_dto` (injeta `pending_actions`/alimenta o overlay e serializa ele
-// mesmo); este wrapper que serializa direto permanece para os TESTES e diagnóstico — `dead_code` nos
-// builds sem `cfg(test)`.
+// O serviço usa `sync_windows_dto` (devolve o DTO e serializa ele mesmo); este wrapper que serializa
+// direto permanece para os TESTES e diagnóstico — `dead_code` nos builds sem `cfg(test)`.
 #[allow(dead_code)]
 pub fn sync_windows(
     windows_json: &str,
@@ -509,10 +472,9 @@ pub fn sync_windows(
     serde_json::to_string(&dto).context("falha ao serializar layout_json")
 }
 
-/// Núcleo do `SyncWindows` que devolve o DTO (sem serializar). O `service` usa esta variante para ler
-/// as `tab_bars` (alimentar o overlay wgpu) e INJETAR as `pending_actions` drenadas antes de
-/// serializar; o `sync_windows` acima é o wrapper que apenas serializa (usado por testes e diagnóstico).
-/// `pending_actions` sai SEMPRE vazio daqui (o `protocol` é puro/sem estado).
+/// Núcleo do `SyncWindows` que devolve o DTO (sem serializar). O `service` usa esta variante e
+/// serializa ela mesmo; o `sync_windows` acima é o wrapper que serializa direto (usado por testes e
+/// diagnóstico). É puro/sem estado.
 pub fn sync_windows_dto(
     windows_json: &str,
     monitors_json: &str,
@@ -529,7 +491,7 @@ pub fn sync_windows_dto(
     let areas: Vec<WorkArea> = monitors.iter().map(WorkArea::from).collect();
 
     // Mapa id→título (caption) ANTES de consumir `windows` no core. O core é puro e descarta o título
-    // (irrelevante ao layout); o daemon o reanexa às `tab_bars` para a barra wgpu rotular as abas.
+    // (irrelevante ao layout); o daemon o reanexa às `tab_bars` para o GNOME rotular as abas.
     let titles: HashMap<u64, String> =
         windows.iter().filter(|w| !w.title.is_empty()).map(|w| (w.id, w.title.clone())).collect();
 
@@ -628,18 +590,20 @@ pub fn sync_windows_dto(
         out_trees.len()
     );
 
-    Ok(LayoutResultDto { rects, tab_bars, trees: out_trees, floating, pending_actions: Vec::new() })
+    Ok(LayoutResultDto { rects, tab_bars, trees: out_trees, floating })
 }
 
 /// Resolve o destino de um drop sob o ponto `(x, y)`. Escolhe a área útil que CONTÉM o ponto e
 /// delega ao core (`detect_drop_target`), passando o retângulo da janela sob o cursor (`target_json`,
-/// ou `""` se não há janela-alvo) para detectar empilhamento. Sem área contendo o ponto → zona
-/// `"none"`. O daemon permanece sem estado: a ponte envia monitores e alvo a cada chamada.
+/// ou `""` se não há janela-alvo) para detectar empilhamento. `dragged_min` é o `(min_w, min_h)` da
+/// janela ARRASTADA: o preview da metade local é esticado se o mínimo exigir (ADR 0028); `(0, 0)` =
+/// metade pura. Sem área contendo o ponto → zona `"none"`. O daemon permanece sem estado.
 pub fn resolve_drop_zone(
     monitors_json: &str,
     x: i32,
     y: i32,
     target_json: &str,
+    dragged_min: (i32, i32),
     opts: LayoutOptions,
 ) -> Result<String> {
     let monitors: Vec<MonitorDto> =
@@ -651,7 +615,7 @@ pub fn resolve_drop_zone(
         .find(|m| x >= m.x && x < m.x + m.width && y >= m.y && y < m.y + m.height)
         .map(|m| {
             let area = WorkArea::from(m);
-            PreviewDto::from(detect_drop_target(&area, target, x, y, &opts))
+            PreviewDto::from(detect_drop_target(&area, target, x, y, &opts, dragged_min))
         })
         .unwrap_or(PreviewDto { zone: "none".to_string(), x: 0, y: 0, width: 0, height: 0 });
 
@@ -838,25 +802,9 @@ mod tests {
     }
 
     #[test]
-    fn bars_from_tab_bars_maps_fields_keeping_transport_ids() {
-        // Reaproveita o cenário de stack: as `tab_bars` do core viram `BarInput` do overlay 1:1
-        // (width/height → w/h), preservando os ids de transporte e a aba ativa.
-        let windows = format!("[{},{}]", win_json(1, "a"), win_json(2, "b"));
-        let state = r#"{"stacks":[{"monitor":0,"workspace":0,"members":[1,2],"active":2}]}"#;
-        let res = sync_windows_dto(&windows, AREAS, state, &[], OPTS).expect("ok");
-        let bars = bars_from_tab_bars(&res.tab_bars);
-        assert_eq!(bars.len(), 1);
-        let b = &bars[0];
-        assert_eq!(b.stack_id, 1);
-        assert_eq!((b.x, b.y, b.w, b.h), (12, 12, 976, 28));
-        assert_eq!(b.members, vec![1, 2]);
-        assert_eq!(b.active, 2);
-    }
-
-    #[test]
-    fn sync_attaches_titles_to_tab_bar_and_bar_input() {
-        // O título (caption) viaja em WindowDto.title → TabBarDto.titles → BarInput.titles, paralelo
-        // aos membros. Janela sem título vira string vazia.
+    fn sync_attaches_titles_to_tab_bar() {
+        // O título (caption) viaja em WindowDto.title → TabBarDto.titles, paralelo aos membros (o GNOME
+        // consome para rotular as abas). Janela sem título vira string vazia.
         let titled = |id: u64, app: &str, title: &str| {
             format!(
                 r#"{{"id":{id},"app_id":"{app}","title":"{title}","x":0,"y":0,"width":100,"height":100,"normal":true,"resizable":true,"maximizable":true,"monitor":0,"workspace":0}}"#
@@ -867,39 +815,6 @@ mod tests {
         let res = sync_windows_dto(&windows, AREAS, state, &[], OPTS).expect("ok");
         assert_eq!(res.tab_bars.len(), 1);
         assert_eq!(res.tab_bars[0].titles, vec!["Konsole".to_string(), String::new()]);
-        let bars = bars_from_tab_bars(&res.tab_bars);
-        assert_eq!(bars[0].titles, vec!["Konsole".to_string(), String::new()]);
-    }
-
-    #[test]
-    fn pending_actions_default_empty_and_round_trips() {
-        // layout_json legado (sem o campo novo) → pending_actions vazio (retrocompat via serde default).
-        let legacy = r#"{"rects":[],"tab_bars":[],"trees":[]}"#;
-        let res = layout_of(legacy);
-        assert!(res.pending_actions.is_empty());
-
-        // Round-trip com ações preenchidas (como o service injeta antes de serializar).
-        let dto = LayoutResultDto {
-            rects: vec![],
-            tab_bars: vec![],
-            trees: vec![],
-            floating: vec![],
-            pending_actions: vec![
-                TabActionDto { stack_id: 1, member_id: 2, action: "close".to_string() },
-                TabActionDto { stack_id: 3, member_id: 3, action: "ungroup".to_string() },
-            ],
-        };
-        let json = serde_json::to_string(&dto).expect("serializa");
-        let back = layout_of(&json);
-        assert_eq!(back.pending_actions, dto.pending_actions);
-    }
-
-    #[test]
-    fn sync_dto_never_fills_pending_actions() {
-        // O protocol é puro/sem estado: o DTO sai sempre sem ações (quem injeta é o service).
-        let windows = format!("[{},{}]", win_json(1, "a"), win_json(2, "b"));
-        let res = sync_windows_dto(&windows, AREAS, "", &[], OPTS).expect("ok");
-        assert!(res.pending_actions.is_empty());
     }
 
     #[test]
@@ -927,14 +842,14 @@ mod tests {
 
     #[test]
     fn resolve_left_zone_in_single_monitor() {
-        let out = resolve_drop_zone(AREAS, 20, 400, "", OPTS).expect("ok");
+        let out = resolve_drop_zone(AREAS, 20, 400, "", (0, 0), OPTS).expect("ok");
         let p: PreviewDto = serde_json::from_str(&out).unwrap();
         assert_eq!(p, PreviewDto { zone: "left".into(), x: 12, y: 12, width: 484, height: 776 });
     }
 
     #[test]
     fn resolve_center_zone_matches_single_window() {
-        let out = resolve_drop_zone(AREAS, 500, 400, "", OPTS).expect("ok");
+        let out = resolve_drop_zone(AREAS, 500, 400, "", (0, 0), OPTS).expect("ok");
         let p: PreviewDto = serde_json::from_str(&out).unwrap();
         assert_eq!(p.zone, "center");
         // Idêntico ao single-window do layout (consistência preview ↔ destino real).
@@ -949,7 +864,7 @@ mod tests {
 
     #[test]
     fn resolve_point_outside_any_monitor_is_none() {
-        let out = resolve_drop_zone(AREAS, 5000, 400, "", OPTS).expect("ok");
+        let out = resolve_drop_zone(AREAS, 5000, 400, "", (0, 0), OPTS).expect("ok");
         let p: PreviewDto = serde_json::from_str(&out).unwrap();
         assert_eq!(p, PreviewDto { zone: "none".into(), x: 0, y: 0, width: 0, height: 0 });
     }
@@ -958,7 +873,7 @@ mod tests {
     fn resolve_picks_correct_monitor() {
         // Dois monitores lado a lado; ponto perto da borda esquerda do SEGUNDO → Left local dele.
         let areas = r#"[{"index":0,"x":0,"y":0,"width":1000,"height":800},{"index":1,"x":1000,"y":0,"width":1000,"height":800}]"#;
-        let out = resolve_drop_zone(areas, 1020, 400, "", OPTS).expect("ok");
+        let out = resolve_drop_zone(areas, 1020, 400, "", (0, 0), OPTS).expect("ok");
         let p: PreviewDto = serde_json::from_str(&out).unwrap();
         assert_eq!(p, PreviewDto { zone: "left".into(), x: 1012, y: 12, width: 484, height: 776 });
     }
@@ -967,7 +882,7 @@ mod tests {
     fn resolve_drop_target_stack_label() {
         // Janela-alvo (100,100,400,400); cursor na faixa superior (y=150) → zona "stack" = alvo.
         let target = r#"{"x":100,"y":100,"width":400,"height":400}"#;
-        let out = resolve_drop_zone(AREAS, 300, 150, target, OPTS).expect("ok");
+        let out = resolve_drop_zone(AREAS, 300, 150, target, (0, 0), OPTS).expect("ok");
         let p: PreviewDto = serde_json::from_str(&out).unwrap();
         assert_eq!(p, PreviewDto { zone: "stack".into(), x: 100, y: 100, width: 400, height: 400 });
     }
@@ -975,15 +890,28 @@ mod tests {
     #[test]
     fn resolve_empty_target_is_split() {
         // Mesmo ponto, sem alvo → comportamento de split (não "stack").
-        let out = resolve_drop_zone(AREAS, 300, 150, "", OPTS).expect("ok");
+        let out = resolve_drop_zone(AREAS, 300, 150, "", (0, 0), OPTS).expect("ok");
         let p: PreviewDto = serde_json::from_str(&out).unwrap();
         assert_ne!(p.zone, "stack");
     }
 
     #[test]
+    fn resolve_estica_metade_local_pelo_min_da_arrastada() {
+        // ADR 0028: alvo (100,100,400,400); cursor à esquerda (x=120) → metade esquerda. Sem min → 196;
+        // min_w 300 > metade → preview esticado para 300, ainda ancorado à esquerda.
+        let target = r#"{"x":100,"y":100,"width":400,"height":400}"#;
+        let pure = resolve_drop_zone(AREAS, 120, 300, target, (0, 0), OPTS).expect("ok");
+        let pp: PreviewDto = serde_json::from_str(&pure).unwrap();
+        assert_eq!((pp.zone.as_str(), pp.width), ("left", 196));
+        let clamped = resolve_drop_zone(AREAS, 120, 300, target, (300, 0), OPTS).expect("ok");
+        let pc: PreviewDto = serde_json::from_str(&clamped).unwrap();
+        assert_eq!((pc.zone.as_str(), pc.x, pc.width), ("left", 100, 300));
+    }
+
+    #[test]
     fn resolve_rejects_invalid_json() {
-        assert!(resolve_drop_zone("nope", 20, 400, "", OPTS).is_err());
-        assert!(resolve_drop_zone(AREAS, 300, 150, "{bad", OPTS).is_err());
+        assert!(resolve_drop_zone("nope", 20, 400, "", (0, 0), OPTS).is_err());
+        assert!(resolve_drop_zone(AREAS, 300, 150, "{bad", (0, 0), OPTS).is_err());
     }
 
     #[test]

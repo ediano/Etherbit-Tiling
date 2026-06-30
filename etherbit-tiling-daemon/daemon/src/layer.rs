@@ -1,26 +1,19 @@
-// layer.rs — superfície de overlay (wlr-layer-shell) + input do ponteiro para a barra de abas.
+// layer.rs — superfícies de overlay (wlr-layer-shell) do HUD de preview.
 //
-// Esta é a "cola" entre o pipeline wgpu (`render.rs`), o modelo/hit-testing (`tabbar.rs`) e o contrato
-// D-Bus. Sob KWin (que suporta `wlr-layer-shell`) o daemon cria UMA superfície de overlay por barra de
-// abas, posicionada sobre o quadrante empilhado, e:
-//   - desenha a faixa + guias + "x" com `QuadRenderer`;
-//   - lê o ponteiro (`wl_pointer`) e resolve o clique com `tabbar::hit_test`;
-//   - ENFILEIRA a ação (activate/close/ungroup) na fila compartilhada que o `SyncWindows` drena e
-//     entrega à ponte KDE por PULL (o KWin Script é pull-only e não assina o sinal `TabAction`; ver
-//     ADR 0022/0025) — e ainda emite o sinal `TabAction` (diagnóstico/GNOME/futuro).
-// Isso NÃO viola o ADR 0016 (é superfície PRÓPRIA do daemon, não overlay sobre janelas alheias).
+// Esta é a "cola" entre o pipeline wgpu (`render.rs`) e o contrato D-Bus. Sob KWin (que suporta
+// `wlr-layer-shell`) o daemon cria UMA superfície de overlay por célula do HUD do jogo da velha
+// (durante o arrasto), com preenchimento translúcido, e a pinta com `QuadRenderer::draw_fill`. Isso
+// NÃO viola o ADR 0016 (é superfície PRÓPRIA do daemon, não overlay sobre janelas alheias).
 //
 // O `run_event_loop` é o ÚNICO ponto dependente de uma sessão Wayland real com layer-shell (KWin):
-// fora dela (CI/headless/GNOME-Mutter) o `LayerShell::bind` falha e ele encerra GRACIOSO. As barras
-// vêm por um canal `tokio::watch` (último estado) alimentado a cada `SyncWindows`.
+// fora dela (CI/headless/GNOME-Mutter) o `LayerShell::bind` falha e ele encerra GRACIOSO. As células
+// do HUD vêm por um canal `tokio::watch` (último estado) alimentado a cada `ShowDropHud`/`HideDropHud`.
 
 // Parte da API aparece como "não usada" em análises estáticas (é fundação de hardware): silenciado.
 #![allow(dead_code)]
 
-use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::ptr::NonNull;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
@@ -43,10 +36,7 @@ use smithay_client_toolkit::{
     reexports::calloop_wayland_source::WaylandSource,
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
-    seat::{
-        pointer::{PointerEvent, PointerEventKind, PointerHandler},
-        Capability, SeatHandler, SeatState,
-    },
+    seat::{pointer::PointerHandler, Capability, SeatHandler, SeatState},
     shell::{
         wlr_layer::{
             Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
@@ -56,78 +46,24 @@ use smithay_client_toolkit::{
     },
 };
 
-use crate::protocol::TabActionDto;
 use crate::render::{QuadRenderer, RenderContext};
-use crate::service;
-use crate::tabbar::{hit_test, layout_bars, BarInput, PointerButton, TabBar, TabHit, CLOSE_W};
 
-/// Códigos `linux/input-event-codes.h` dos botões do ponteiro.
-const BTN_LEFT: u32 = 0x110;
-const BTN_RIGHT: u32 = 0x111;
-
-/// Recuo horizontal (px) do texto do título dentro da guia.
-const TEXT_PAD: i32 = 6;
-/// Cor do texto das abas (Nord "snow", RGB).
-const TEXT_RGB: (u8, u8, u8) = (0xE5, 0xE9, 0xF0);
-
-/// Modelo + renderização da barra (independente de hardware). Conhece o pipeline wgpu, as barras
-/// atuais e a fila de ações; NÃO conhece a `LayerSurface` (isso vive no event loop).
-pub struct TabBarOverlay {
+/// Pipeline wgpu do HUD (independente de hardware). Conhece o `QuadRenderer` e o contexto wgpu; NÃO
+/// conhece a `LayerSurface` (isso vive no event loop).
+pub struct HudOverlay {
     ctx: RenderContext,
     renderer: QuadRenderer,
-    /// Barras atuais (geometria dos elementos clicáveis), atualizadas a cada `SyncWindows`.
-    bars: Vec<TabBar>,
     /// Formato da superfície (escolhido ao configurar a layer-surface).
     format: wgpu::TextureFormat,
-    connection: zbus::Connection,
-    /// Fila compartilhada com o serviço D-Bus: cada clique enfileira uma ação que o `SyncWindows`
-    /// drena e entrega à ponte KDE por PULL (a ponte não assina o sinal `TabAction`; ver ADR 0022).
-    pending_actions: Arc<Mutex<VecDeque<TabActionDto>>>,
-    /// Renderização de texto (glyphon): o título de cada aba, desenhado por cima dos quads. Criados
-    /// uma vez; `prepare`/`render` são chamados em `render_bar`.
-    font_system: glyphon::FontSystem,
-    swash_cache: glyphon::SwashCache,
-    viewport: glyphon::Viewport,
-    text_atlas: glyphon::TextAtlas,
-    text_renderer: glyphon::TextRenderer,
 }
 
-impl TabBarOverlay {
-    /// Cria o overlay a partir do contexto wgpu (device/queue/instance), da connection de sessão (para
-    /// emitir `TabAction`) e da fila de ações pendentes (entrega por PULL). O `format` casa com o da
+impl HudOverlay {
+    /// Cria o overlay a partir do contexto wgpu (device/queue/instance). O `format` casa com o da
     /// superfície de overlay (BGRA é o comum).
-    pub fn new(
-        ctx: RenderContext,
-        connection: zbus::Connection,
-        pending_actions: Arc<Mutex<VecDeque<TabActionDto>>>,
-    ) -> Self {
+    pub fn new(ctx: RenderContext) -> Self {
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
         let renderer = QuadRenderer::new(&ctx.device, format);
-        // Pipeline de texto glyphon (atlas de glifos compartilhado).
-        let font_system = glyphon::FontSystem::new();
-        let swash_cache = glyphon::SwashCache::new();
-        let cache = glyphon::Cache::new(&ctx.device);
-        let viewport = glyphon::Viewport::new(&ctx.device, &cache);
-        let mut text_atlas = glyphon::TextAtlas::new(&ctx.device, &ctx.queue, &cache, format);
-        let text_renderer = glyphon::TextRenderer::new(
-            &mut text_atlas,
-            &ctx.device,
-            wgpu::MultisampleState::default(),
-            None,
-        );
-        Self {
-            ctx,
-            renderer,
-            bars: Vec::new(),
-            format,
-            connection,
-            pending_actions,
-            font_system,
-            swash_cache,
-            viewport,
-            text_atlas,
-            text_renderer,
-        }
+        Self { ctx, renderer, format }
     }
 
     pub fn format(&self) -> wgpu::TextureFormat {
@@ -138,154 +74,10 @@ impl TabBarOverlay {
         &self.ctx
     }
 
-    pub fn connection(&self) -> &zbus::Connection {
-        &self.connection
-    }
-
-    /// Atualiza as barras a partir das faixas devolvidas pelo core (após `SyncWindows`). Cada `BarInput`
-    /// já vem em coordenadas absolutas de tela.
-    pub fn update_bars(&mut self, inputs: &[BarInput]) {
-        self.bars = layout_bars(inputs);
-    }
-
-    pub fn bars(&self) -> &[TabBar] {
-        &self.bars
-    }
-
-    /// A barra do stack `stack_id` (para casar uma superfície com a sua faixa).
-    pub fn bar_for_stack(&self, stack_id: u64) -> Option<&TabBar> {
-        self.bars.iter().find(|b| b.stack_id == stack_id)
-    }
-
     /// Pinta o preenchimento translúcido de UMA célula do HUD do jogo da velha (cobre a superfície
     /// inteira): `HUD_HOT` para a célula sob o cursor, `HUD_FILL` para as demais.
     pub fn render_fill(&self, view: &wgpu::TextureView, color: crate::render::Color) {
         self.renderer.draw_fill(&self.ctx.device, &self.ctx.queue, view, color);
-    }
-
-    /// Redesenha uma barra na sua superfície (`view` = textura da swapchain da layer-surface). Dois
-    /// passes: (1) os quads (faixa/guias/"x") com `LoadOp::Clear`; (2) o TEXTO dos títulos por cima com
-    /// `LoadOp::Load` (preserva os quads). É `&mut self` porque o glyphon exige `&mut` em
-    /// font-system/atlas/text-renderer.
-    pub fn render_bar(&mut self, view: &wgpu::TextureView, bar: &TabBar) {
-        let surface_w = bar.bar.w.max(1) as u32;
-        let surface_h = bar.bar.h.max(1) as u32;
-
-        // Pass 1: faixa + guias + ícone "x".
-        self.renderer.draw(&self.ctx.device, &self.ctx.queue, view, bar, surface_w, surface_h);
-
-        // Pass 2: rótulos. Pula se nenhuma guia tem título (evita um pass vazio).
-        if bar.slots.iter().all(|s| s.title.is_empty()) {
-            return;
-        }
-        let Self { ctx, font_system, swash_cache, viewport, text_atlas, text_renderer, .. } = self;
-
-        let line_h = surface_h as f32;
-        let font_size = (surface_h as f32 * 0.52).clamp(10.0, 15.0);
-
-        // Um buffer de texto shaped por guia, limitado à largura útil (descontando o "x").
-        let mut buffers: Vec<glyphon::Buffer> = Vec::with_capacity(bar.slots.len());
-        for slot in &bar.slots {
-            let avail = (slot.tab.w - CLOSE_W - 2 * TEXT_PAD).max(1) as f32;
-            let mut tb =
-                glyphon::Buffer::new(font_system, glyphon::Metrics::new(font_size, line_h));
-            tb.set_size(font_system, Some(avail), Some(line_h));
-            tb.set_text(
-                font_system,
-                &slot.title,
-                glyphon::Attrs::new().family(glyphon::Family::SansSerif),
-                glyphon::Shaping::Advanced,
-            );
-            tb.shape_until_scroll(font_system, false);
-            buffers.push(tb);
-        }
-
-        viewport.update(&ctx.queue, glyphon::Resolution { width: surface_w, height: surface_h });
-
-        let color = glyphon::Color::rgb(TEXT_RGB.0, TEXT_RGB.1, TEXT_RGB.2);
-        let areas: Vec<glyphon::TextArea> = bar
-            .slots
-            .iter()
-            .zip(buffers.iter())
-            .map(|(slot, buf)| {
-                let left = (slot.tab.x - bar.bar.x + TEXT_PAD) as f32;
-                let right = (slot.tab.x - bar.bar.x + slot.tab.w - CLOSE_W).max(0);
-                glyphon::TextArea {
-                    buffer: buf,
-                    left,
-                    top: 0.0,
-                    scale: 1.0,
-                    bounds: glyphon::TextBounds {
-                        left: left.max(0.0) as i32,
-                        top: 0,
-                        right,
-                        bottom: surface_h as i32,
-                    },
-                    default_color: color,
-                    custom_glyphs: &[],
-                }
-            })
-            .collect();
-
-        if text_renderer
-            .prepare(&ctx.device, &ctx.queue, font_system, text_atlas, viewport, areas, swash_cache)
-            .is_err()
-        {
-            return;
-        }
-
-        let mut encoder = ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("etherbit-tabbar-text"),
-        });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("etherbit-tabbar-text-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    resolve_target: None,
-                    // Load: preserva os quads do pass 1.
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            let _ = text_renderer.render(text_atlas, viewport, &mut pass);
-        }
-        ctx.queue.submit(std::iter::once(encoder.finish()));
-        text_atlas.trim();
-    }
-
-    /// Resolve um clique do ponteiro `(x, y)` (coords absolutas de tela) e ENFILEIRA a ação
-    /// correspondente para entrega por PULL. Esquerdo na guia → `activate`; esquerdo no "x" → `close`;
-    /// direito → `ungroup`. Devolve `(stack_id, member_id, action)` para o chamador emitir o sinal
-    /// `TabAction` (diagnóstico/GNOME/futuro), ou `None` se o clique não atingiu nada.
-    pub fn enqueue_click(
-        &self,
-        x: i32,
-        y: i32,
-        button: PointerButton,
-    ) -> Option<(u64, u64, &'static str)> {
-        let (stack_id, member_id, action) = match hit_test(&self.bars, x, y, button) {
-            TabHit::Activate(m) => (self.stack_of(m), m, "activate"),
-            TabHit::Close(m) => (self.stack_of(m), m, "close"),
-            TabHit::Context(m) => (self.stack_of(m), m, "ungroup"),
-            TabHit::None => return None,
-        };
-        if let Ok(mut queue) = self.pending_actions.lock() {
-            queue.push_back(TabActionDto { stack_id, member_id, action: action.to_string() });
-        }
-        Some((stack_id, member_id, action))
-    }
-
-    /// Id do stack (primeiro membro da barra) que contém `member`.
-    fn stack_of(&self, member: u64) -> u64 {
-        for bar in &self.bars {
-            if bar.slots.iter().any(|s| s.member_id == member) {
-                return bar.stack_id;
-            }
-        }
-        member
     }
 }
 
@@ -309,25 +101,20 @@ pub unsafe fn wgpu_surface_target(
     }
 }
 
-/// Uma barra materializada numa superfície de overlay própria. A ordem dos campos importa: a
+/// Uma célula do HUD materializada numa superfície de overlay própria. A ordem dos campos importa: a
 /// `wgpu::Surface` empresta o ponteiro da `wl_surface` (dentro da `LayerSurface`) e DEVE ser destruída
 /// ANTES dela — por isso `gpu` vem antes de `wl` (Rust dropa os campos na ordem de declaração).
-struct BarSurface {
-    stack_id: u64,
+struct HudSurface {
     gpu: wgpu::Surface<'static>,
     wl: LayerSurface,
     width: u32,
     height: u32,
-    /// `true` se esta superfície é uma CÉLULA do HUD do jogo da velha (preenchimento translúcido), e
-    /// não uma barra de abas. Distingue o caminho de desenho em `draw` e evita que `apply_bars`/
-    /// `apply_hud` se sobrescrevam (cada um só recria as suas).
-    is_hud: bool,
-    /// Só para HUD: `true` se é a célula sob o cursor (cor mais opaca).
+    /// `true` se é a célula sob o cursor (cor mais opaca).
     hot: bool,
 }
 
-/// Estado do event loop Wayland: globais, seat/pointer/output, o overlay (render) e as superfícies por
-/// barra. `last_bars` evita recriar superfícies quando o `watch` repete o mesmo estado.
+/// Estado do event loop Wayland: globais, seat/output, o overlay (render) e as superfícies por célula.
+/// `last_hud` evita recriar superfícies quando o `watch` repete o mesmo estado.
 struct App {
     registry_state: RegistryState,
     seat_state: SeatState,
@@ -337,12 +124,10 @@ struct App {
     conn: Connection,
     qh: QueueHandle<App>,
     format: wgpu::TextureFormat,
-    overlay: TabBarOverlay,
-    surfaces: Vec<BarSurface>,
+    overlay: HudOverlay,
+    surfaces: Vec<HudSurface>,
     pointer: Option<wl_pointer::WlPointer>,
-    rt: tokio::runtime::Handle,
     exit: bool,
-    last_bars: Vec<BarInput>,
     /// Último estado do HUD aplicado (`None` = escondido), para não recriar superfícies à toa.
     last_hud: Option<Vec<crate::protocol::HudCellDto>>,
 }
@@ -364,67 +149,15 @@ impl App {
         (None, (0, 0))
     }
 
-    /// Recria as superfícies de overlay para casar com as barras atuais. Estratégia simples (recriar do
-    /// zero): as barras mudam raramente (criar/desfazer/redimensionar stack, trocar aba), então o custo
-    /// é desprezível e evita um diff frágil de superfícies.
-    fn apply_bars(&mut self, inputs: &[BarInput]) {
-        self.overlay.update_bars(inputs);
-        // Solta só as superfícies de BARRA (preserva as do HUD, que têm ciclo próprio durante o
-        // arrasto). `gpu` é dropado antes de `wl` pela ordem de campos do `BarSurface`.
-        self.surfaces.retain(|s| s.is_hud);
-        // Coleta a geometria ANTES do laço para não emprestar `self.overlay` enquanto muta `surfaces`.
-        let geoms: Vec<(u64, i32, i32, u32, u32)> = self
-            .overlay
-            .bars()
-            .iter()
-            .map(|b| (b.stack_id, b.bar.x, b.bar.y, b.bar.w.max(1) as u32, b.bar.h.max(1) as u32))
-            .collect();
-        crate::dlog!("overlay: materializando {} superfície(s) de barra de abas", geoms.len());
-        for (stack_id, bx, by, bw, bh) in geoms {
-            let (output, (ox, oy)) = self.output_for(bx, by);
-            let surface = self.compositor.create_surface(&self.qh);
-            let layer = self.layer_shell.create_layer_surface(
-                &self.qh,
-                surface,
-                Layer::Overlay,
-                Some("etherbit-tabbar"),
-                output.as_ref(),
-            );
-            layer.set_anchor(Anchor::TOP | Anchor::LEFT);
-            layer.set_size(bw, bh);
-            // Margem = posição absoluta menos a origem do output ancorado (multi-monitor).
-            layer.set_margin((by - oy).max(0), 0, 0, (bx - ox).max(0));
-            // O core já descontou a altura da barra do conteúdo: NÃO reservar zona exclusiva.
-            layer.set_exclusive_zone(0);
-            layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-            // Commit inicial sem buffer → dispara o `configure`, quando configuramos o wgpu e desenhamos.
-            layer.commit();
-
-            let gpu = match self.create_gpu_surface(&layer) {
-                Some(s) => s,
-                None => continue,
-            };
-            self.surfaces.push(BarSurface {
-                stack_id,
-                gpu,
-                wl: layer,
-                width: bw,
-                height: bh,
-                is_hud: false,
-                hot: false,
-            });
-        }
-    }
-
     /// Recria as superfícies do HUD do jogo da velha (overlay translúcido durante o arrasto, KDE). Uma
     /// superfície layer-shell `Overlay` por célula, com preenchimento translúcido (a célula `hot` é
-    /// mais opaca). `cells` vazio = esconde o HUD. Preserva as barras de abas (recria só as do HUD).
-    /// Estratégia "recriar do zero" como `apply_bars`: o HUD muda por TRANSIÇÃO de célula (não por
-    /// pixel — a ponte só chama `ShowDropHud` quando a célula realçada muda), então o custo é tolerável
-    /// (otimização possível: criar as 9 uma vez e só redesenhar a flag `hot`).
+    /// mais opaca). `cells` vazio = esconde o HUD. Estratégia "recriar do zero": o HUD muda por
+    /// TRANSIÇÃO de célula (não por pixel — a ponte só chama `ShowDropHud` quando a célula realçada
+    /// muda), então o custo é tolerável (otimização possível: criar as 9 uma vez e só redesenhar a
+    /// flag `hot`).
     fn apply_hud(&mut self, cells: &[crate::protocol::HudCellDto]) {
-        // Solta só as superfícies do HUD (preserva as barras de abas).
-        self.surfaces.retain(|s| !s.is_hud);
+        // Solta as superfícies antigas (`gpu` é dropado antes de `wl` pela ordem de campos).
+        self.surfaces.clear();
         for c in cells {
             let (bw, bh) = (c.width.max(1) as u32, c.height.max(1) as u32);
             let (output, (ox, oy)) = self.output_for(c.x, c.y);
@@ -449,15 +182,7 @@ impl App {
                 Some(s) => s,
                 None => continue,
             };
-            self.surfaces.push(BarSurface {
-                stack_id: 0,
-                gpu,
-                wl: layer,
-                width: bw,
-                height: bh,
-                is_hud: true,
-                hot: c.hot,
-            });
+            self.surfaces.push(HudSurface { gpu, wl: layer, width: bw, height: bh, hot: c.hot });
         }
     }
 
@@ -466,18 +191,18 @@ impl App {
         let surface_ptr = NonNull::new(layer.wl_surface().id().as_ptr() as *mut c_void)?;
         let display_ptr = NonNull::new(self.conn.backend().display_ptr() as *mut c_void)?;
         // SAFETY: a `LayerSurface` (que mantém a `wl_surface` viva) é guardada junto da `wgpu::Surface`
-        // em `BarSurface` e dropada DEPOIS dela; a `Connection` vive enquanto o loop roda.
+        // em `HudSurface` e dropada DEPOIS dela; a `Connection` vive enquanto o loop roda.
         let target = unsafe { wgpu_surface_target(surface_ptr, display_ptr) };
         match unsafe { self.overlay.render_ctx().instance.create_surface_unsafe(target) } {
             Ok(s) => Some(s),
             Err(err) => {
-                eprintln!("Etherbit daemon — falha ao criar wgpu::Surface da barra: {err}");
+                eprintln!("Etherbit daemon — falha ao criar wgpu::Surface do HUD: {err}");
                 None
             }
         }
     }
 
-    /// Configura a swapchain da superfície `idx` para `(w, h)` e desenha sua barra.
+    /// Configura a swapchain da superfície `idx` para `(w, h)` e desenha sua célula.
     fn configure_and_draw(&mut self, idx: usize, w: u32, h: u32) {
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -497,8 +222,8 @@ impl App {
         self.draw(idx);
     }
 
-    /// Desenha a barra da superfície `idx` (estática: só redesenha em configure/recriação). Clona o
-    /// `TabBar` para soltar o empréstimo imutável do overlay antes do `render_bar` (`&mut self`).
+    /// Desenha a célula da superfície `idx` (estática: só redesenha em configure/recriação): preenchimento
+    /// translúcido (hot = mais opaca).
     fn draw(&mut self, idx: usize) {
         let frame = match self.surfaces[idx].gpu.get_current_texture() {
             Ok(frame) => frame,
@@ -508,23 +233,9 @@ impl App {
             }
         };
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        if self.surfaces[idx].is_hud {
-            // Célula do HUD do jogo da velha: preenchimento translúcido (hot = mais opaca).
-            let color = if self.surfaces[idx].hot {
-                crate::render::HUD_HOT
-            } else {
-                crate::render::HUD_FILL
-            };
-            self.overlay.render_fill(&view, color);
-            frame.present();
-            return;
-        }
-        let stack_id = self.surfaces[idx].stack_id;
-        let bar = match self.overlay.bar_for_stack(stack_id) {
-            Some(b) => b.clone(),
-            None => return,
-        };
-        self.overlay.render_bar(&view, &bar);
+        let color =
+            if self.surfaces[idx].hot { crate::render::HUD_HOT } else { crate::render::HUD_FILL };
+        self.overlay.render_fill(&view, color);
         frame.present();
     }
 
@@ -560,7 +271,7 @@ impl CompositorHandler for App {
         _surface: &wl_surface::WlSurface,
         _time: u32,
     ) {
-        // Barra estática: não solicitamos frame callbacks; nada a redesenhar por frame.
+        // HUD estático: não solicitamos frame callbacks; nada a redesenhar por frame.
     }
 
     fn surface_enter(
@@ -615,7 +326,7 @@ impl OutputHandler for App {
 impl LayerShellHandler for App {
     fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, layer: &LayerSurface) {
         // O compositor destruiu UMA superfície (ex.: output removido): remove só ela, não encerra o
-        // loop. As nossas recriações em `apply_bars` substituem o conjunto normalmente.
+        // loop. As nossas recriações em `apply_hud` substituem o conjunto normalmente.
         if let Some(idx) = self.surface_index(layer.wl_surface()) {
             self.surfaces.remove(idx);
         }
@@ -687,40 +398,10 @@ impl PointerHandler for App {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _pointer: &wl_pointer::WlPointer,
-        events: &[PointerEvent],
+        _events: &[smithay_client_toolkit::seat::pointer::PointerEvent],
     ) {
-        for event in events {
-            let button = match &event.kind {
-                PointerEventKind::Press { button, .. } => *button,
-                _ => continue,
-            };
-            let Some(idx) = self.surface_index(&event.surface) else {
-                continue;
-            };
-            let stack_id = self.surfaces[idx].stack_id;
-            // Posição local da surface → absoluta de tela (origem da faixa). `bar` empresta o overlay
-            // só até calcular `ax`/`ay`.
-            let (ax, ay) = match self.overlay.bar_for_stack(stack_id) {
-                Some(bar) => {
-                    (bar.bar.x + event.position.0 as i32, bar.bar.y + event.position.1 as i32)
-                }
-                None => continue,
-            };
-            let button = match button {
-                BTN_LEFT => PointerButton::Left,
-                BTN_RIGHT => PointerButton::Right,
-                _ => PointerButton::Other,
-            };
-            if let Some((stack, member, action)) = self.overlay.enqueue_click(ax, ay, button) {
-                // Emite o sinal `TabAction` fora do loop síncrono (zbus é async): spawna na runtime.
-                let conn = self.overlay.connection().clone();
-                self.rt.spawn(async move {
-                    if let Err(err) = service::emit_tab_action(&conn, stack, member, action).await {
-                        eprintln!("Etherbit daemon — falha ao emitir TabAction: {err:#}");
-                    }
-                });
-            }
-        }
+        // O HUD é puramente visual: não reagimos a cliques (o arrasto interativo está em curso no
+        // compositor; a ponte calcula a zona localmente — ADR 0026).
     }
 }
 
@@ -738,29 +419,25 @@ impl ProvidesRegistryState for App {
     registry_handlers![OutputState, SeatState];
 }
 
-/// Sobe o event loop Wayland do overlay (layer-shell + ponteiro) numa sessão KWin. É o ÚNICO ponto
-/// dependente de uma sessão Wayland real com `wlr-layer-shell` — por isso é validado em hardware (KWin),
-/// não no CI. Fora dela, encerra GRACIOSO (sem erro). O corpo bloqueante roda em `block_in_place` para
-/// não travar o executor tokio.
+/// Sobe o event loop Wayland do overlay (layer-shell) numa sessão KWin. É o ÚNICO ponto dependente de
+/// uma sessão Wayland real com `wlr-layer-shell` — por isso é validado em hardware (KWin), não no CI.
+/// Fora dela, encerra GRACIOSO (sem erro). O corpo bloqueante roda em `block_in_place` para não travar
+/// o executor tokio.
 pub async fn run_event_loop(
-    overlay: TabBarOverlay,
-    bars_rx: watch::Receiver<Vec<BarInput>>,
+    overlay: HudOverlay,
     hud_rx: watch::Receiver<Option<Vec<crate::protocol::HudCellDto>>>,
 ) -> Result<()> {
-    let rt = tokio::runtime::Handle::current();
-    tokio::task::block_in_place(move || run_blocking(overlay, bars_rx, hud_rx, rt))
+    tokio::task::block_in_place(move || run_blocking(overlay, hud_rx))
 }
 
 fn run_blocking(
-    overlay: TabBarOverlay,
-    mut bars_rx: watch::Receiver<Vec<BarInput>>,
+    overlay: HudOverlay,
     mut hud_rx: watch::Receiver<Option<Vec<crate::protocol::HudCellDto>>>,
-    rt: tokio::runtime::Handle,
 ) -> Result<()> {
     let conn = match Connection::connect_to_env() {
         Ok(conn) => conn,
         Err(err) => {
-            eprintln!("Etherbit daemon — sem sessão Wayland para a barra wgpu: {err}");
+            eprintln!("Etherbit daemon — sem sessão Wayland para o overlay wgpu: {err}");
             return Ok(());
         }
     };
@@ -785,7 +462,7 @@ fn run_blocking(
         Err(_) => {
             eprintln!(
                 "Etherbit daemon — wlr-layer-shell indisponível (compositor sem suporte, ex.: \
-                 Mutter/headless); barra wgpu desativada."
+                 Mutter/headless); overlay wgpu desativado."
             );
             return Ok(());
         }
@@ -805,9 +482,7 @@ fn run_blocking(
         overlay,
         surfaces: Vec::new(),
         pointer: None,
-        rt,
         exit: false,
-        last_bars: Vec::new(),
         last_hud: None,
     };
 
@@ -816,11 +491,6 @@ fn run_blocking(
         eprintln!("Etherbit daemon — roundtrip Wayland inicial falhou: {err}");
         return Ok(());
     }
-
-    // Barras iniciais (em geral vazias até o primeiro SyncWindows com um stack).
-    let initial = bars_rx.borrow_and_update().clone();
-    app.last_bars = initial.clone();
-    app.apply_bars(&initial);
 
     let mut event_loop: EventLoop<App> =
         EventLoop::try_new().map_err(|e| anyhow!("calloop EventLoop::try_new: {e}"))?;
@@ -835,17 +505,8 @@ fn run_blocking(
         if app.exit {
             break;
         }
-        // Poll do `watch`: aplica novas barras só quando o estado MUDA (evita churn de superfícies, já
-        // que o `SyncWindows` republica a cada evento de janela).
-        if bars_rx.has_changed().unwrap_or(false) {
-            let inputs = bars_rx.borrow_and_update().clone();
-            if inputs != app.last_bars {
-                app.last_bars = inputs.clone();
-                app.apply_bars(&inputs);
-            }
-        }
-        // Poll do HUD do jogo da velha (mesma estratégia): recria as células só quando o estado MUDA
-        // (a ponte só republica por transição de célula durante o arrasto).
+        // Poll do HUD do jogo da velha: recria as células só quando o estado MUDA (a ponte só republica
+        // por transição de célula durante o arrasto, evitando churn de superfícies).
         if hud_rx.has_changed().unwrap_or(false) {
             let cells = hud_rx.borrow_and_update().clone();
             if cells != app.last_hud {

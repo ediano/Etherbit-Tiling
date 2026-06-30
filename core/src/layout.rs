@@ -92,7 +92,9 @@ pub enum DropZone {
     Right,
     Top,
     Bottom,
-    /// Quadrantes (proximidade de dois bordos ao mesmo tempo).
+    /// LEGADO (ADR 0028): os cantos não são mais GERADOS pela detecção em eixos limpos. Mantidos só
+    /// para retrocompat de `parse_zone` — uma ponte antiga ainda pode mandá-los, e eles degradam
+    /// para a metade vertical correspondente (ver `zone_rect`/`move_window`).
     TopLeft,
     TopRight,
     BottomLeft,
@@ -271,16 +273,14 @@ pub enum Edge {
     Bottom,
 }
 
-/// Escopo de um drop (ADR 0026): `Local` subdivide DENTRO da submatriz da janela-alvo (faixa de 1/3 no
-/// eixo); `Global` insere a arrastada como NÓ PRINCIPAL do workspace (bloco de 50%); `Grid` fixa a
-/// arrastada numa CÉLULA UNITÁRIA da matriz 3×3 do workspace (a `zone` dá a célula — ver `zone_to_cell`),
-/// sem esticar o span para 50% das vizinhas. A ponte decide o escopo (cursor sobre o corpo de uma janela
-/// = local; canto/quadrante com densidade = grid; perto das bordas da tela em gap = global).
+/// Escopo de um drop (ADR 0028): `Local` racha o slot da janela-alvo ao meio (split **50/50**);
+/// `Global` insere a arrastada como NÓ PRINCIPAL do workspace (bloco de **50%**). A ponte decide o
+/// escopo: cursor sobre o corpo de uma janela = `Local`; nas faixas de borda da TELA (em gap, ou
+/// sobre janela colada à borda) = `Global`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropScope {
     Local,
     Global,
-    Grid,
 }
 
 /// Proporção mínima de um nó (evita folhas degeneradas); o resize faz clamp a isto.
@@ -482,14 +482,14 @@ fn split_axis(rect: Rectf, gap: f64, vertical: bool) -> (Rectf, Rectf) {
     }
 }
 
-/// Detecta a zona de drop sob o ponto `(x, y)` dentro de `area` e devolve o retângulo de preview
-/// (já com gaps aplicados, casando visualmente com o destino real do layout). Os limiares são
-/// FRAÇÕES da área, então escalam com a resolução. Ordem de prioridade: fora da área → cantos →
-/// centro → bordas → metade mais próxima (garante que qualquer ponto do miolo proponha um split).
+/// Detecta a zona de drop GLOBAL sob o ponto `(x, y)` dentro de `area` (chamada quando NÃO há janela
+/// sob o cursor) e devolve o retângulo de preview já com gaps aplicados. Eixos limpos (ADR 0028): só
+/// as 4 bordas extremas da TELA viram metade (50%); o miolo central maximiza (relevante na tela
+/// vazia); o restante cai na metade mais próxima. SEM cantos. Os limiares são FRAÇÕES da área.
 pub fn detect_drop_zone(area: &WorkArea, x: i32, y: i32, opts: &LayoutOptions) -> DropPreview {
-    /// Largura das faixas de borda/canto (fração da dimensão).
+    /// Largura das faixas de borda extrema da TELA (fração da dimensão) → metade (50%).
     const EDGE: f64 = 0.10;
-    /// Limites da caixa central (fração da dimensão) → maximizar.
+    /// Limites da caixa central (fração da dimensão) → maximizar (tela vazia).
     const CENTER_LO: f64 = 0.33;
     const CENTER_HI: f64 = 0.67;
 
@@ -516,15 +516,9 @@ pub fn detect_drop_zone(area: &WorkArea, x: i32, y: i32, opts: &LayoutOptions) -
     let near_top = fy < EDGE;
     let near_bottom = fy > 1.0 - EDGE;
 
-    let zone = if near_left && near_top {
-        DropZone::TopLeft
-    } else if near_right && near_top {
-        DropZone::TopRight
-    } else if near_left && near_bottom {
-        DropZone::BottomLeft
-    } else if near_right && near_bottom {
-        DropZone::BottomRight
-    } else if (CENTER_LO..=CENTER_HI).contains(&fx) && (CENTER_LO..=CENTER_HI).contains(&fy) {
+    // Eixos limpos (ADR 0028): miolo central → maximizar (tela vazia); bordas extremas → metade;
+    // restante → metade mais próxima. SEM cantos.
+    let zone = if (CENTER_LO..=CENTER_HI).contains(&fx) && (CENTER_LO..=CENTER_HI).contains(&fy) {
         DropZone::Center
     } else if near_left {
         DropZone::Left
@@ -563,19 +557,17 @@ fn zone_rect(area: &WorkArea, zone: DropZone, opts: &LayoutOptions) -> PreviewRe
     let bottom_y = iy + half_h + inner;
 
     let (x, y, w, h) = match zone {
-        DropZone::Left => (ix, iy, half_w, ih),
-        DropZone::Right => (right_x, iy, half_w, ih),
+        // Bordas extremas → metades (50%). Os cantos legados (não mais gerados, ADR 0028) degradam
+        // para a metade vertical correspondente — preview são caso uma ponte antiga ainda os mande.
+        DropZone::Left | DropZone::TopLeft | DropZone::BottomLeft => (ix, iy, half_w, ih),
+        DropZone::Right | DropZone::TopRight | DropZone::BottomRight => (right_x, iy, half_w, ih),
         DropZone::Top => (ix, iy, iw, half_h),
         DropZone::Bottom => (ix, bottom_y, iw, half_h),
-        DropZone::TopLeft => (ix, iy, half_w, half_h),
-        DropZone::TopRight => (right_x, iy, half_w, half_h),
-        DropZone::BottomLeft => (ix, bottom_y, half_w, half_h),
-        DropZone::BottomRight => (right_x, bottom_y, half_w, half_h),
+        // Centro → maximizar (área útil inteira).
         DropZone::Center => (ix, iy, iw, ih),
         // `Stack` é resolvida por `detect_drop_target` (preview = a própria janela-alvo), nunca por
-        // `zone_rect`; o braço existe só para a exaustividade do match.
-        DropZone::Stack => (0.0, 0.0, 0.0, 0.0),
-        DropZone::None => (0.0, 0.0, 0.0, 0.0),
+        // `zone_rect`; `None` = sem preview. Braços só para a exaustividade do match.
+        DropZone::Stack | DropZone::None => (0.0, 0.0, 0.0, 0.0),
     };
 
     PreviewRect { x: round(x), y: round(y), width: round(w), height: round(h) }
@@ -590,13 +582,16 @@ fn zone_rect(area: &WorkArea, zone: DropZone, opts: &LayoutOptions) -> PreviewRe
 ///    produzirá (ratio 0.5 + `inner_gap` na costura). Isto corrige o preview que antes mostrava 50% do
 ///    MONITOR em grids povoados.
 /// Só quando NÃO há janela sob o cursor (ponto solto na área) delega a `detect_drop_zone` (split do
-/// monitor). A ponte resolve QUAL é a janela sob o cursor; o core resolve a fração.
+/// monitor). A ponte resolve QUAL é a janela sob o cursor; o core resolve a fração. `dragged_min` é o
+/// `(min_width, min_height)` da janela ARRASTADA: o preview da metade local é ESTICADO se o mínimo
+/// exigir (ADR 0028), antecipando a salvaguarda de tamanho mínimo antes do drop. `(0, 0)` = metade pura.
 pub fn detect_drop_target(
     area: &WorkArea,
     target: Option<PreviewRect>,
     x: i32,
     y: i32,
     opts: &LayoutOptions,
+    dragged_min: (i32, i32),
 ) -> DropPreview {
     /// Fração superior da janela-alvo que dispara o empilhamento.
     const STACK_BAND: f64 = 0.25;
@@ -609,7 +604,7 @@ pub fn detect_drop_target(
                 if fy < STACK_BAND {
                     return DropPreview { zone: DropZone::Stack, rect: t };
                 }
-                let (zone, rect) = sub_rect_of_target(t, fx, fy, opts);
+                let (zone, rect) = sub_rect_of_target(t, fx, fy, opts, dragged_min);
                 return DropPreview { zone, rect };
             }
         }
@@ -618,52 +613,65 @@ pub fn detect_drop_target(
 }
 
 /// Metade da janela-alvo `t` que o drop vai ocupar, escolhida pelo lado mais próximo do cursor
-/// (fração `(fx, fy)` dentro de `t`). Usa `inner_gap` na costura, espelhando `split_axis` — assim o
-/// preview casa pixel a pixel com o split real produzido por `move_window` (ratio 0.5). Empates de
-/// distância resolvem na ordem esquerda → direita → topo → base (determinístico).
+/// (fração `(fx, fy)` dentro de `t`). Usa `inner_gap` na costura, espelhando o split de `move_window`.
+/// A metade da ARRASTADA é 50% do slot, ESTICADA quando `dragged_min` (px) exigir mais — sem espremer
+/// o alvo abaixo de `MIN_RATIO` (ADR 0028: salvaguarda de tamanho mínimo antecipada no preview). Com
+/// `dragged_min == (0, 0)` recai na metade exata. Empates de distância resolvem na ordem
+/// esquerda → direita → topo → base (determinístico).
 fn sub_rect_of_target(
     t: PreviewRect,
     fx: f64,
     fy: f64,
     opts: &LayoutOptions,
+    dragged_min: (i32, i32),
 ) -> (DropZone, PreviewRect) {
     let gap = opts.inner_gap as f64;
     let (tx, ty, tw, th) = (t.x as f64, t.y as f64, t.width as f64, t.height as f64);
-    let half_w = (tw - gap) / 2.0;
-    let half_h = (th - gap) / 2.0;
+
+    // Extensão da ARRASTADA num eixo: metade do slot (as duas metades somam `total - gap`), esticada
+    // até `min_px` se preciso, limitada a `[MIN_RATIO, 1-MIN_RATIO]` do disponível (folga ao alvo).
+    let dragged_extent = |total: f64, min_px: f64| -> f64 {
+        let avail = (total - gap).max(0.0);
+        (avail / 2.0).max(min_px).clamp(MIN_RATIO * avail, (1.0 - MIN_RATIO) * avail)
+    };
+    let (min_dw, min_dh) = (dragged_min.0.max(0) as f64, dragged_min.1.max(0) as f64);
 
     // Distância do cursor a cada borda da janela-alvo; a menor define o lado.
     let (left, right, top, bottom) = (fx, 1.0 - fx, fy, 1.0 - fy);
     let nearest = left.min(right).min(top).min(bottom);
 
     if nearest == left {
+        let dw = dragged_extent(tw, min_dw);
         (
             DropZone::Left,
-            PreviewRect { x: round(tx), y: round(ty), width: round(half_w), height: round(th) },
+            PreviewRect { x: round(tx), y: round(ty), width: round(dw), height: round(th) },
         )
     } else if nearest == right {
+        let dw = dragged_extent(tw, min_dw);
         (
             DropZone::Right,
             PreviewRect {
-                x: round(tx + half_w + gap),
+                x: round(tx + tw - dw),
                 y: round(ty),
-                width: round(half_w),
+                width: round(dw),
                 height: round(th),
             },
         )
     } else if nearest == top {
+        let dh = dragged_extent(th, min_dh);
         (
             DropZone::Top,
-            PreviewRect { x: round(tx), y: round(ty), width: round(tw), height: round(half_h) },
+            PreviewRect { x: round(tx), y: round(ty), width: round(tw), height: round(dh) },
         )
     } else {
+        let dh = dragged_extent(th, min_dh);
         (
             DropZone::Bottom,
             PreviewRect {
                 x: round(tx),
-                y: round(ty + half_h + gap),
+                y: round(ty + th - dh),
                 width: round(tw),
-                height: round(half_h),
+                height: round(dh),
             },
         )
     }
@@ -1399,14 +1407,17 @@ fn insert_one(
     LayoutTree { root: Some(split_leaf_into(root, target, new_id, axis, false, 0.5)) }
 }
 
-/// Aplica um drop do jogo da velha (ADR 0026). A `zone` dá o eixo e o lado; o `scope` decide a escala:
-///  - `Local` — a arrastada toma uma faixa de **1/3** do lado da zona DENTRO do slot do alvo, que é
-///    empurrado para os 2/3 restantes (subdivisão fractal da submatriz da janela-alvo);
-///  - `Global` — a arrastada vira **nó principal** do workspace, ocupando um bloco de **50%**; todo o
-///    resto cascateia no outro 50%.
-/// O irmão sempre sobe ao remover a arrastada (nunca perde janela). Zonas de fusão (`Center`/`Stack`)
-/// são tratadas pela PONTE (`addToStack`), não aqui → no-op. Cantos caem no eixo horizontal mais
-/// próximo (a ponte já resolve a borda dominante; ver ADR 0026 — 2 retângulos exigem um corte único).
+/// Aplica um drop em EIXOS LIMPOS (ADR 0028, substitui o jogo da velha 3×3 do 0026). A `zone` dá o
+/// eixo e o lado; o `scope` decide a escala — ambos os splits são **50/50**:
+///  - `Local` — racha o slot do alvo ao meio: a arrastada toma **metade** do lado da zona e o alvo
+///    fica com a outra metade (split lado-a-lado ou empilhado);
+///  - `Global` — a arrastada vira **nó principal** do workspace, ocupando **50%**; todo o resto
+///    cascateia no outro 50%.
+/// `Center` sobre uma janela (`Local`) PERMUTA arrastada↔alvo (swap) — é o gesto do KDE puro (sem
+/// abas); o GNOME intercepta o centro na ponte (merge em abas) e nunca chama isto com `Center`.
+/// `Center` global (tela vazia) = maximizar, no-op topológico (a janela já é a raiz). `Stack`/`None`
+/// = sem ação. O irmão sempre sobe ao remover a arrastada (nunca perde janela). O min-size e a
+/// cascata cooperativa são aplicados na geometria seguinte (`compute_constrained`), não aqui.
 pub fn move_window(
     tree: &LayoutTree,
     dragged: u64,
@@ -1414,12 +1425,13 @@ pub fn move_window(
     zone: DropZone,
     scope: DropScope,
 ) -> LayoutTree {
-    // Escopo `Grid`: fixa a arrastada na CÉLULA UNITÁRIA da matriz 3×3 do workspace (a `zone` dá a
-    // célula). Tratado antes do eixo binário — `Center` aqui é uma célula válida (1,1), não fusão.
-    if scope == DropScope::Grid {
-        return match zone_to_cell(zone) {
-            Some((col, row)) => place_in_grid_cell(tree, dragged, col, row),
-            None => tree.clone(),
+    // Centro: no KDE puro (sem abas), soltar no miolo de uma janela PERMUTA as duas (swap). O GNOME
+    // nunca chega aqui com `Center` (a ponte faz o merge em abas antes). Centro global (tela vazia,
+    // sem alvo real) = maximizar, que é no-op na topologia (a janela já ocupa a raiz).
+    if zone == DropZone::Center {
+        return match scope {
+            DropScope::Local => swap_leaves(tree, dragged, target),
+            DropScope::Global => tree.clone(),
         };
     }
     let (axis, dragged_first) = match zone {
@@ -1427,11 +1439,10 @@ pub fn move_window(
         DropZone::Right | DropZone::TopRight | DropZone::BottomRight => (Axis::Horizontal, false),
         DropZone::Top => (Axis::Vertical, true),
         DropZone::Bottom => (Axis::Vertical, false),
-        // Fusão em abas (Center/Stack) é da ponte; None = sem ação.
+        // `Stack`/`None` = sem ação (`Center` já foi tratado acima).
         _ => return tree.clone(),
     };
     match scope {
-        DropScope::Grid => tree.clone(), // já tratado acima (early-return); braço p/ exaustividade.
         DropScope::Global => {
             // Só o grupo que CONTÉM a arrastada é afetado (o daemon aplica a todas as árvores; as
             // demais são no-op). Sem isto, a arrastada seria inserida em grupos a que não pertence.
@@ -1457,66 +1468,56 @@ pub fn move_window(
                 Some(r) if node_contains(&r, target) => r,
                 _ => return tree.clone(),
             };
+            // Split 50/50 do slot do alvo (ADR 0028); o min-size clampa na geometria seguinte.
             LayoutTree {
-                root: Some(split_leaf_into(root, target, dragged, axis, dragged_first, 1.0 / 3.0)),
+                root: Some(split_leaf_into(root, target, dragged, axis, dragged_first, 0.5)),
             }
         }
     }
 }
 
-/// Mapeia uma `zone` do jogo da velha para a célula `(col, row)` (0-based) da matriz 3×3 do workspace.
-/// `Stack`/`None` não têm célula. Espelha a numeração do HUD (top_left = (0,0) … bottom_right = (2,2)).
-fn zone_to_cell(zone: DropZone) -> Option<(u8, u8)> {
-    Some(match zone {
-        DropZone::TopLeft => (0, 0),
-        DropZone::Top => (1, 0),
-        DropZone::TopRight => (2, 0),
-        DropZone::Left => (0, 1),
-        DropZone::Center => (1, 1),
-        DropZone::Right => (2, 1),
-        DropZone::BottomLeft => (0, 2),
-        DropZone::Bottom => (1, 2),
-        DropZone::BottomRight => (2, 2),
-        DropZone::Stack | DropZone::None => return None,
-    })
-}
-
-/// Fixa `dragged` na célula `(col, row)` de uma matriz 3×3 do workspace (span **1×1** — NÃO expande para
-/// metades vizinhas), reflowando as demais folhas nas células livres em ordem row-major. As células
-/// vazias ficam sem janela (sem auto-expansão, ADR 0026). Excedentes (>8 outras folhas) aninham-se
-/// balanceadas na última célula livre. Só o grupo que CONTÉM `dragged` muda (os demais são no-op no
-/// daemon). Stacks são preservados pela âncora: o `reconcile` do `SyncWindows` seguinte os re-materializa
-/// a partir do estado da ponte (este resultado é só topologia; a geometria vem do próximo sync).
-fn place_in_grid_cell(tree: &LayoutTree, dragged: u64, col: u8, row: u8) -> LayoutTree {
-    if !tree.root.as_ref().map(|r| node_contains(r, dragged)).unwrap_or(false) {
-        return tree.clone();
-    }
-    let removed = collapse_leaf(tree.clone(), dragged);
-    let others: Vec<u64> = collect_leaf_ids(&removed);
-
-    let (col, row) = (col.min(2), row.min(2));
-    let target_idx = (row as usize) * 3 + (col as usize);
-    let free: Vec<usize> = (0..9usize).filter(|i| *i != target_idx).collect();
-
-    let mut cells: Vec<GridChild> = vec![Node::cell(Node::Leaf(dragged), col, row)];
-    let n = others.len();
-    for (k, &idx) in free.iter().enumerate() {
-        if k >= n {
-            break; // sem mais janelas → células livres ficam vazias (sem auto-expandir).
-        }
-        let (c, r) = ((idx % 3) as u8, (idx / 3) as u8);
-        if k + 1 == free.len() && n > free.len() {
-            // Última célula livre com excedente → aninha o restante balanceado num sub-nó.
-            let rest = &others[k..];
-            let node = balanced_node(rest, Rectf { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }, 0.0)
-                .unwrap_or_else(|| Node::Leaf(rest[0]));
-            cells.push(Node::cell(node, c, r));
+/// Permuta as posições de duas folhas `a` e `b` na árvore, preservando topologia e proporções (só
+/// reescreve os ids onde aparecem como folha ou membro/ativo de stack). É o gesto "soltar no centro"
+/// do KDE puro (sem abas): arrastar uma janela sobre o miolo de outra troca as duas de lugar. No-op
+/// se `a == b` ou se alguma das duas não estiver na árvore (uma renomeação cega perderia uma janela).
+fn swap_leaves(tree: &LayoutTree, a: u64, b: u64) -> LayoutTree {
+    fn relabel(id: u64, a: u64, b: u64) -> u64 {
+        if id == a {
+            b
+        } else if id == b {
+            a
         } else {
-            cells.push(Node::cell(Node::Leaf(others[k]), c, r));
+            id
         }
     }
-    LayoutTree {
-        root: Some(Node::Grid { cols: vec![1.0 / 3.0; 3], rows: vec![1.0 / 3.0; 3], cells }),
+    fn walk(node: Node, a: u64, b: u64) -> Node {
+        match node {
+            Node::Leaf(id) => Node::Leaf(relabel(id, a, b)),
+            Node::Stack { members, active } => Node::Stack {
+                members: members.into_iter().map(|m| relabel(m, a, b)).collect(),
+                active: relabel(active, a, b),
+            },
+            Node::Grid { cols, rows, cells } => Node::Grid {
+                cols,
+                rows,
+                cells: cells
+                    .into_iter()
+                    .map(|c| GridChild {
+                        node: Box::new(walk(*c.node, a, b)),
+                        col: c.col,
+                        row: c.row,
+                        col_span: c.col_span,
+                        row_span: c.row_span,
+                    })
+                    .collect(),
+            },
+        }
+    }
+    match &tree.root {
+        Some(r) if a != b && node_contains(r, a) && node_contains(r, b) => {
+            LayoutTree { root: Some(walk(r.clone(), a, b)) }
+        }
+        _ => tree.clone(),
     }
 }
 
@@ -2101,21 +2102,25 @@ mod tests {
     }
 
     #[test]
-    fn drop_zone_four_corners() {
+    fn detect_drop_zone_sem_cantos_cai_em_metade() {
+        // ADR 0028: sem cantos — pontos de canto da TELA caem na metade dominante (eixos limpos).
         let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, tab_bar_height: 28 };
         let area = area_1000x800();
-        assert_eq!(detect_drop_zone(&area, 20, 20, &opts).zone, DropZone::TopLeft);
-        assert_eq!(
-            detect_drop_zone(&area, 20, 20, &opts).rect,
-            PreviewRect { x: 12, y: 12, width: 484, height: 384 }
-        );
-        assert_eq!(detect_drop_zone(&area, 980, 20, &opts).zone, DropZone::TopRight);
-        assert_eq!(detect_drop_zone(&area, 20, 780, &opts).zone, DropZone::BottomLeft);
-        assert_eq!(detect_drop_zone(&area, 980, 780, &opts).zone, DropZone::BottomRight);
-        assert_eq!(
-            detect_drop_zone(&area, 980, 780, &opts).rect,
-            PreviewRect { x: 504, y: 404, width: 484, height: 384 }
-        );
+        assert_eq!(detect_drop_zone(&area, 20, 20, &opts).zone, DropZone::Left);
+        assert_eq!(detect_drop_zone(&area, 980, 780, &opts).zone, DropZone::Right);
+        for &(x, y) in &[(20, 20), (980, 20), (20, 780), (980, 780)] {
+            let z = detect_drop_zone(&area, x, y, &opts).zone;
+            assert!(
+                !matches!(
+                    z,
+                    DropZone::TopLeft
+                        | DropZone::TopRight
+                        | DropZone::BottomLeft
+                        | DropZone::BottomRight
+                ),
+                "ponto ({x},{y}) não deve gerar canto, gerou {z:?}"
+            );
+        }
     }
 
     #[test]
@@ -2314,7 +2319,7 @@ mod tests {
         let area = area_1000x800();
         let target = PreviewRect { x: 100, y: 100, width: 400, height: 400 };
         // y dentro dos 25% superiores (100..200) e x dentro → Stack; preview = a própria janela-alvo.
-        let p = detect_drop_target(&area, Some(target), 300, 150, &opts());
+        let p = detect_drop_target(&area, Some(target), 300, 150, &opts(), (0, 0));
         assert_eq!(p.zone, DropZone::Stack);
         assert_eq!(p.rect, target);
     }
@@ -2325,7 +2330,7 @@ mod tests {
         let area = area_1000x800();
         let target = PreviewRect { x: 100, y: 100, width: 400, height: 400 };
         // cursor centro-baixo → metade INFERIOR do alvo (half_h = (400-8)/2 = 196; y = 100+196+8).
-        let p = detect_drop_target(&area, Some(target), 300, 350, &opts());
+        let p = detect_drop_target(&area, Some(target), 300, 350, &opts(), (0, 0));
         assert_eq!(p.zone, DropZone::Bottom);
         assert_eq!(p.rect, PreviewRect { x: 100, y: 304, width: 400, height: 196 });
         assert_ne!(p.zone, DropZone::Stack);
@@ -2336,11 +2341,11 @@ mod tests {
         let area = area_1000x800();
         let target = PreviewRect { x: 100, y: 100, width: 400, height: 400 };
         // Perto da borda esquerda do alvo → metade ESQUERDA dele (half_w = (400-8)/2 = 196).
-        let left = detect_drop_target(&area, Some(target), 120, 300, &opts());
+        let left = detect_drop_target(&area, Some(target), 120, 300, &opts(), (0, 0));
         assert_eq!(left.zone, DropZone::Left);
         assert_eq!(left.rect, PreviewRect { x: 100, y: 100, width: 196, height: 400 });
         // Perto da borda direita → metade DIREITA (x = 100 + 196 + 8 = 304).
-        let right = detect_drop_target(&area, Some(target), 480, 300, &opts());
+        let right = detect_drop_target(&area, Some(target), 480, 300, &opts(), (0, 0));
         assert_eq!(right.zone, DropZone::Right);
         assert_eq!(right.rect, PreviewRect { x: 304, y: 100, width: 196, height: 400 });
     }
@@ -2350,15 +2355,29 @@ mod tests {
         // Topo do alvo, mas FORA da faixa de stack (fy = 0.25 exato) → metade superior do alvo.
         let area = area_1000x800();
         let target = PreviewRect { x: 100, y: 100, width: 400, height: 400 };
-        let p = detect_drop_target(&area, Some(target), 300, 200, &opts());
+        let p = detect_drop_target(&area, Some(target), 300, 200, &opts(), (0, 0));
         assert_eq!(p.zone, DropZone::Top);
         assert_eq!(p.rect, PreviewRect { x: 100, y: 100, width: 400, height: 196 });
     }
 
     #[test]
+    fn drop_target_local_estica_preview_pelo_min_da_arrastada() {
+        // ADR 0028: a metade local do preview CRESCE se o min-width da arrastada exigir mais que 50%.
+        let area = area_1000x800();
+        let target = PreviewRect { x: 100, y: 100, width: 400, height: 400 };
+        // Sem min → metade pura (half_w = (400-8)/2 = 196).
+        let pure = detect_drop_target(&area, Some(target), 120, 300, &opts(), (0, 0));
+        assert_eq!((pure.zone, pure.rect.width), (DropZone::Left, 196));
+        // min_width 300 > metade → preview esticado para 300, ainda ancorado à esquerda do alvo.
+        let clamped = detect_drop_target(&area, Some(target), 120, 300, &opts(), (300, 0));
+        assert_eq!(clamped.zone, DropZone::Left);
+        assert_eq!((clamped.rect.x, clamped.rect.width), (100, 300));
+    }
+
+    #[test]
     fn drop_target_none_is_plain_split() {
         let area = area_1000x800();
-        let p = detect_drop_target(&area, None, 20, 400, &opts());
+        let p = detect_drop_target(&area, None, 20, 400, &opts(), (0, 0));
         assert_eq!(p, detect_drop_zone(&area, 20, 400, &opts()));
     }
 
@@ -2506,7 +2525,7 @@ mod tests {
 
     #[test]
     fn move_window_splits_target_on_zone_side() {
-        // [1,2,3] balanceada; mover 3 para a ESQUERDA de 1 → 3 fica à esquerda de 1.
+        // [1,2,3] balanceada; mover 3 para a ESQUERDA de 1 → 3 fica à esquerda de 1, dividindo 50/50.
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], None, &area, &opts());
         let moved = move_window(&tree, 3, 1, DropZone::Left, DropScope::Local);
@@ -2514,21 +2533,50 @@ mod tests {
         assert_eq!(geo.rects.len(), 3);
         let r1 = geo.rects.iter().find(|r| r.id == 1).unwrap();
         let r3 = geo.rects.iter().find(|r| r.id == 3).unwrap();
-        // 3 à esquerda de 1 (mesma faixa vertical, x menor); 3 toma 1/3, 1 fica com 2/3.
+        // 3 à esquerda de 1 (mesma faixa vertical, x menor); agora 50/50 → larguras iguais (ADR 0028).
         assert!(r3.x < r1.x);
         assert_eq!(r3.y, r1.y);
         assert_eq!(r3.height, r1.height);
-        assert!(r3.width < r1.width, "a faixa de 1/3 da arrastada é menor que os 2/3 do alvo");
+        assert!(
+            (r3.width - r1.width).abs() <= 1,
+            "50/50: larguras iguais (r3={}, r1={})",
+            r3.width,
+            r1.width
+        );
     }
 
     #[test]
-    fn move_window_noop_for_center_and_missing_target() {
+    fn move_window_center_local_faz_swap() {
+        // KDE puro (ADR 0028): soltar no CENTRO de outra janela PERMUTA as duas (sem abas).
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], None, &area, &opts());
+        let geo0 = compute_geometry(&tree, &area, &opts(), &[], &[1, 2, 3]);
+        let p2 = {
+            let r = geo0.rects.iter().find(|r| r.id == 2).unwrap();
+            (r.x, r.y, r.width, r.height)
+        };
+        let p3 = {
+            let r = geo0.rects.iter().find(|r| r.id == 3).unwrap();
+            (r.x, r.y, r.width, r.height)
+        };
+        let moved = move_window(&tree, 2, 3, DropZone::Center, DropScope::Local);
+        let geo = compute_geometry(&moved, &area, &opts(), &[], &[1, 2, 3]);
+        assert_eq!(geo.rects.len(), 3, "nenhuma janela perdida");
+        let n2 = geo.rects.iter().find(|r| r.id == 2).unwrap();
+        let n3 = geo.rects.iter().find(|r| r.id == 3).unwrap();
+        // 2 assume a geometria que era de 3 e vice-versa.
+        assert_eq!((n2.x, n2.y, n2.width, n2.height), p3);
+        assert_eq!((n3.x, n3.y, n3.width, n3.height), p2);
+    }
+
+    #[test]
+    fn move_window_noop_for_missing_target_e_center_global() {
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
-        // Center → inalterado (fusão em abas é tratada pela ponte).
-        assert_eq!(move_window(&tree, 2, 1, DropZone::Center, DropScope::Local), tree);
         // Alvo ausente → inalterado (não perde a janela arrastada).
         assert_eq!(move_window(&tree, 2, 99, DropZone::Left, DropScope::Local), tree);
+        // Center em escopo Global (tela vazia = maximizar) → no-op topológico (a janela já é a raiz).
+        assert_eq!(move_window(&tree, 2, 1, DropZone::Center, DropScope::Global), tree);
     }
 
     #[test]
@@ -2550,47 +2598,18 @@ mod tests {
     }
 
     #[test]
-    fn move_window_local_da_um_terco_ao_arrastado() {
-        // [1,2]; soltar 2 sobre o EIXO superior de 1 (local) → 2 toma 1/3 da altura, 1 fica com 2/3.
+    fn move_window_local_divide_50_50() {
+        // [1,2]; soltar 2 sobre o EIXO superior de 1 (local) → 2 e 1 dividem 50/50 a altura (ADR 0028).
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
         let moved = move_window(&tree, 2, 1, DropZone::Top, DropScope::Local);
         let geo = compute_geometry(&moved, &area, &opts(), &[], &[1, 2]);
         let r1 = geo.rects.iter().find(|r| r.id == 1).unwrap();
         let r2 = geo.rects.iter().find(|r| r.id == 2).unwrap();
-        // 2 no topo, mais baixa que 1 (1/3 vs 2/3); empilhadas verticalmente.
+        // 2 no topo, 1 embaixo; mesma altura (50/50) e mesma largura.
         assert!(r2.y < r1.y);
-        assert!(r2.height < r1.height);
-    }
-
-    #[test]
-    fn move_window_grid_fixa_celula_unitaria_sem_esticar() {
-        // [1,2,3,4]; soltar 4 no canto SUPERIOR-DIREITO em escopo GRID (densidade 4) → 4 ocupa uma
-        // célula 1/9 da matriz 3×3 (≈1/3 de largura e altura), NÃO 50% da tela.
-        let area = area_1000x800();
-        let tree = reconcile(&LayoutTree::default(), &[1, 2, 3, 4], &[], None, &area, &opts());
-        let moved = move_window(&tree, 4, 0, DropZone::TopRight, DropScope::Grid);
-        let geo = compute_geometry(&moved, &area, &opts(), &[], &[1, 2, 3, 4]);
-        assert_eq!(geo.rects.len(), 4, "nenhuma janela perdida");
-        let r4 = geo.rects.iter().find(|r| r.id == 4).unwrap();
-        // Coluna direita, linha superior (inner x=12..988, y=12..788).
-        assert!(r4.x > 600, "4 na coluna direita (x={})", r4.x);
-        assert_eq!(r4.y, 12, "4 na linha superior (y={})", r4.y);
-        // Célula unitária: ~1/3 da largura interna (≈320), MUITO menor que a metade (484).
-        assert!(r4.width >= 300 && r4.width <= 340, "largura de célula 1/3 (w={})", r4.width);
-        assert!(r4.height >= 240 && r4.height <= 270, "altura de célula 1/3 (h={})", r4.height);
-    }
-
-    #[test]
-    fn move_window_grid_center_e_celula_central_nao_fusao() {
-        // Em escopo GRID, a zona Center é a célula (1,1) da matriz — NÃO fusão em abas.
-        let area = area_1000x800();
-        let tree = reconcile(&LayoutTree::default(), &[1, 2, 3, 4], &[], None, &area, &opts());
-        let moved = move_window(&tree, 4, 0, DropZone::Center, DropScope::Grid);
-        let geo = compute_geometry(&moved, &area, &opts(), &[], &[1, 2, 3, 4]);
-        let r4 = geo.rects.iter().find(|r| r.id == 4).unwrap();
-        assert!(r4.x > 300 && r4.x < 360, "coluna central (x={})", r4.x);
-        assert!(r4.y > 250 && r4.y < 300, "linha central (y={})", r4.y);
+        assert_eq!(r2.height, r1.height);
+        assert_eq!(r2.width, r1.width);
     }
 
     #[test]

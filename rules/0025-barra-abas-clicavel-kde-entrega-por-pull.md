@@ -1,6 +1,9 @@
 # 0025 — Barra de abas clicável no KDE: entrega da ação por PULL e fila efêmera no daemon
 
-**Status:** ✅ Aceita (estende [0018](0018-abas-atalhos-globais-drag-to-group.md) e [0022](0022-stacknode-arvore-fechar-desagrupar-unmaximize.md))
+**Status:** 🔄 **Barra clicável do KDE removida** por
+[0028](0028-eixos-limpos-cosmic-e-kde-sem-abas.md) (o KDE virou tiling puro, sem abas; o daemon perdeu
+`tabbar.rs`/glyphon/`pending_actions`/sinal `TabAction`, mas o **overlay de HUD** de preview permanece).
+Aceita em sua origem (estendia [0018](0018-abas-atalhos-globais-drag-to-group.md) e [0022](0022-stacknode-arvore-fechar-desagrupar-unmaximize.md)).
 
 ## Contexto
 

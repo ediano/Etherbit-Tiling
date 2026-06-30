@@ -1,6 +1,9 @@
 # 0026 — Grid fractal 3×3 elástico (substitui o BSP) e HUD de preview com 9 zonas
 
-**Status:** ✅ Aceita (substitui a topologia de
+**Status:** 🔄 **Zonas/escopo substituídos** por
+[0028](0028-eixos-limpos-cosmic-e-kde-sem-abas.md) — o jogo da velha 3×3, os cantos, a célula unitária
+e o split local de 1/3 saíram em favor de eixos limpos 50/50; o `Node::Grid` (binário) e a máquina de
+min-size/auto-float **permanecem**. Aceita em sua origem (substituiu a topologia de
 [0018](0018-abas-atalhos-globais-drag-to-group.md)/[0019](0019-arvore-bsp-persistente-resize-elastico.md)/[0021](0021-tamanhos-minimos-geometry-hints.md)/[0022](0022-stacknode-arvore-fechar-desagrupar-unmaximize.md);
 estende [0016](0016-extensao-ponte-burra-render-no-daemon.md))
 

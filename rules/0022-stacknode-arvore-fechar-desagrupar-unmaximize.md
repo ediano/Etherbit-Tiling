@@ -1,8 +1,10 @@
 # 0022 — `Node::Stack` na árvore, fechar/desagrupar na barra de abas e Unmaximize Recovery
 
 **Status:** 🔄 Topologia substituída por [#0026](0026-grid-fractal-3x3-elastico-e-hud.md) (o `Node::Stack`
-agora convive com `Node::Grid` no lugar do `Node::Split`). Permanecem válidos: `Stack` como variante de
-primeira classe, fechar/desagrupar na barra, e o **Unmaximize Recovery** (adaptado ao grid).
+agora convive com `Node::Grid` no lugar do `Node::Split`); por
+[#0028](0028-eixos-limpos-cosmic-e-kde-sem-abas.md) as **abas e a barra passam a ser só-GNOME** (o KDE
+removeu o `Node::Stack` da ponte e a barra clicável). Permanecem válidos no **GNOME**: `Stack` como
+variante de primeira classe, fechar/desagrupar na barra, e o **Unmaximize Recovery** (adaptado ao grid).
 
 ## Contexto
 
