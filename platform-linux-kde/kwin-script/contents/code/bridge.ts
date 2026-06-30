@@ -71,9 +71,7 @@ export function parseLayout(json: string): LayoutCommand[] {
   } catch {
     return [];
   }
-  const rects = Array.isArray(parsed)
-    ? parsed
-    : (parsed as Record<string, unknown> | null)?.rects;
+  const rects = Array.isArray(parsed) ? parsed : (parsed as Record<string, unknown> | null)?.rects;
   if (!Array.isArray(rects)) {
     return [];
   }
@@ -242,13 +240,23 @@ function localHotZone(
     block = { x: target.x, y: target.y, width: extentX, height: target.height };
   } else if (nearest === dr) {
     dropZone = 'right';
-    block = { x: target.x + target.width - extentX, y: target.y, width: extentX, height: target.height };
+    block = {
+      x: target.x + target.width - extentX,
+      y: target.y,
+      width: extentX,
+      height: target.height,
+    };
   } else if (nearest === dt) {
     dropZone = 'top';
     block = { x: target.x, y: target.y, width: target.width, height: extentY };
   } else {
     dropZone = 'bottom';
-    block = { x: target.x, y: target.y + target.height - extentY, width: target.width, height: extentY };
+    block = {
+      x: target.x,
+      y: target.y + target.height - extentY,
+      width: target.width,
+      height: extentY,
+    };
   }
   return { scope: 'local', dropZone, outline: block };
 }
@@ -515,7 +523,12 @@ export function serializeState(
   trees: Map<string, TreeNode | null>,
   focusedStable: string,
 ): string {
-  const stackDtos: Array<{ monitor: number; workspace: number; members: number[]; active: number }> = [];
+  const stackDtos: Array<{
+    monitor: number;
+    workspace: number;
+    members: number[];
+    active: number;
+  }> = [];
   for (const [key, list] of stacks) {
     const [monitor, workspace] = parseOrderKey(key);
     for (const s of list) {

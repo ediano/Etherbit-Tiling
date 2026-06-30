@@ -3,7 +3,7 @@
 **Status:** ✅ Aceita
 (emenda [0021](0021-tamanhos-minimos-geometry-hints.md) — as pontes deixam de zerar o min de apps
 tiláveis; emenda [0031](0031-cascata-sempre-spawn-unmaximize-e-preview-translucido.md) — o core volta a
-**emitir** `floating` como sinal de *overflow*; **reativa** o Merge Fallback de
+**emitir** `floating` como sinal de _overflow_; **reativa** o Merge Fallback de
 [0030](0030-distribuicao-ciclica-quadrantes-e-merge-fallback.md), que estava dormente; emenda
 [0028](0028-eixos-limpos-cosmic-e-kde-sem-abas.md) — reintroduz abas no KDE para o caso de overflow,
 buscando paridade com o GNOME; reafirma [0002](0002-arquitetura-core-agnostico.md)/[0016](0016-extensao-ponte-burra-render-no-daemon.md))
@@ -30,10 +30,12 @@ nem o tinha (abas removidas pelo [0028](0028-eixos-limpos-cosmic-e-kde-sem-abas.
 ## Decisão
 
 ### A) Min-size REAL nas pontes
+
 GNOME (`_snapshot`) e KDE (coleta do `retile`) param de zerar o min e enviam o `min_width`/`min_height`
 **real** (`Meta.Window.get_min_size()` / `KWinWindow.minSize`) para **toda** janela.
 
 ### B) Sinal de overflow no core (`core/src/layout.rs`)
+
 `geometry_from_tree` passa a detectar, **após** a cascata (`solve_tracks`) ter comprimido o máximo, as
 folhas cujo slot final ainda ficou **abaixo do mínimo** (`detect_overflow`: `round(slot) < min` em
 qualquer eixo, `<` estrito). Essas janelas voltam a ser reportadas em **`LayoutResult.floating`** —
@@ -44,10 +46,12 @@ retrocompat). As janelas **seguem tiladas** (não somem do grid); `floating` é 
 **resolve**, `floating` sai vazio).
 
 ### C) Merge Fallback reativado nas DUAS pontes (paridade)
+
 Ao receber `floating` não-vazio, a ponte agrupa a janela como **aba** no quadrante focado
 (`mergeFallback` → `addToStack`), onde cada aba recebe o slot inteiro e o app cabe. Um guard
 `_mergeAttempted` evita o loop sync↔merge; o que ainda estourar após o merge cai no float-and-elevate
 legado como rede.
+
 - **GNOME:** o caminho já existia (estava dormente) — apenas volta a receber `floating`.
 - **KDE:** **reintroduz o subsistema de abas** para esse caso (emenda [0028](0028-eixos-limpos-cosmic-e-kde-sem-abas.md)):
   estado `stacks`/`mergeAttempted`/`stackHidden` na ponte, `serializeState` enviando os stacks reais
@@ -55,9 +59,10 @@ legado como rede.
   internalId ↔ transporte, e render mínimo (minimizar abas inativas + ativa no slot).
 
 ### Escopo do KDE (mínimo viável)
+
 A **barra de abas clicável** do KDE permanece fora deste ADR (depende do helper nativo
 `etherbit-tiling-preview` do [0031](0031-cascata-sempre-spawn-unmaximize-e-preview-translucido.md));
-a troca de aba se dá por foco. Não há gesto de *ungroup* nem *drag-to-group* no KDE — só o agrupamento
+a troca de aba se dá por foco. Não há gesto de _ungroup_ nem _drag-to-group_ no KDE — só o agrupamento
 automático sob overflow. A paridade de **comportamento de layout** (mesmo algoritmo cíclico, cascata e
 Merge Fallback) está garantida; a paridade de **UI da barra** fica como evolução futura.
 

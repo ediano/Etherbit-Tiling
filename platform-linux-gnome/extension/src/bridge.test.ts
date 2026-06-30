@@ -138,7 +138,10 @@ describe('parseTabBars', () => {
 
   it('descarta barra malformada (content ausente / members não numérico)', () => {
     const json = JSON.stringify({
-      tab_bars: [{ ...bar, content: undefined }, { ...bar, members: ['x'] }],
+      tab_bars: [
+        { ...bar, content: undefined },
+        { ...bar, members: ['x'] },
+      ],
     });
     expect(parseTabBars(json)).toEqual([]);
   });
@@ -179,14 +182,18 @@ describe('estado de abas (stacks) e tiling por grupo', () => {
   });
 
   it('addToStack move o arrastado de um stack anterior', () => {
-    const stacks = new Map<string, Stack[]>([[orderKey(0, 0), [{ members: [1, 2, 5], active: 1 }]]]);
+    const stacks = new Map<string, Stack[]>([
+      [orderKey(0, 0), [{ members: [1, 2, 5], active: 1 }]],
+    ]);
     // arrasta 5 sobre 2... 5 sai do stack e volta (no-op de pertencimento), vira ativo
     expect(addToStack(stacks, orderKey(0, 0), 2, 5)).toBe(true);
     expect(stacks.get(orderKey(0, 0))).toEqual([{ members: [1, 2, 5], active: 5 }]);
   });
 
   it('setActiveMember muda a aba ativa do stack que contém o membro', () => {
-    const stacks = new Map<string, Stack[]>([[orderKey(0, 0), [{ members: [1, 2, 3], active: 1 }]]]);
+    const stacks = new Map<string, Stack[]>([
+      [orderKey(0, 0), [{ members: [1, 2, 3], active: 1 }]],
+    ]);
     expect(setActiveMember(stacks, 3)).toBe(true);
     expect(stacks.get(orderKey(0, 0))?.[0]?.active).toBe(3);
     expect(setActiveMember(stacks, 3)).toBe(false); // já ativa
@@ -195,8 +202,7 @@ describe('estado de abas (stacks) e tiling por grupo', () => {
 
 describe('Merge Fallback (ADR 0030)', () => {
   const snaps = (...ids: number[]) => ids.map((id) => ({ id, monitor: 0, workspace: 0 }));
-  const vis = (...ids: number[]) =>
-    ids.map((id) => ({ id, width: 400, height: 400 }));
+  const vis = (...ids: number[]) => ids.map((id) => ({ id, width: 400, height: 400 }));
 
   it('agrupa a janela colapsada como aba na janela focada do grupo', () => {
     const stacks = new Map<string, Stack[]>();
@@ -295,13 +301,19 @@ describe('Merge Fallback (ADR 0030)', () => {
 
   it('resizeDeltaFrom infere borda direita (cresceu) e esquerda', () => {
     // Largura 100→160 com x fixo → borda direita cresceu 60.
-    expect(resizeDeltaFrom({ x: 0, y: 0, width: 100, height: 50 }, { x: 0, y: 0, width: 160, height: 50 })).toEqual([
-      { edge: 'right', deltaPx: 60 },
-    ]);
+    expect(
+      resizeDeltaFrom(
+        { x: 0, y: 0, width: 100, height: 50 },
+        { x: 0, y: 0, width: 160, height: 50 },
+      ),
+    ).toEqual([{ edge: 'right', deltaPx: 60 }]);
     // x 100→70, largura 100→130 → borda esquerda cresceu 30.
-    expect(resizeDeltaFrom({ x: 100, y: 0, width: 100, height: 50 }, { x: 70, y: 0, width: 130, height: 50 })).toEqual([
-      { edge: 'left', deltaPx: 30 },
-    ]);
+    expect(
+      resizeDeltaFrom(
+        { x: 100, y: 0, width: 100, height: 50 },
+        { x: 70, y: 0, width: 130, height: 50 },
+      ),
+    ).toEqual([{ edge: 'left', deltaPx: 30 }]);
   });
 
   it('resizeDeltaFrom de canto devolve duas bordas', () => {
@@ -316,7 +328,9 @@ describe('Merge Fallback (ADR 0030)', () => {
   });
 
   it('resizeDeltaFrom sem mudança → vazio', () => {
-    expect(resizeDeltaFrom({ x: 1, y: 2, width: 3, height: 4 }, { x: 1, y: 2, width: 3, height: 4 })).toEqual([]);
+    expect(
+      resizeDeltaFrom({ x: 1, y: 2, width: 3, height: 4 }, { x: 1, y: 2, width: 3, height: 4 }),
+    ).toEqual([]);
   });
 
   it('serializeTarget devolve "" sem alvo e JSON com alvo', () => {

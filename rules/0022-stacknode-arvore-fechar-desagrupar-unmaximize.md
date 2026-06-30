@@ -48,10 +48,10 @@ estado, ponte aplica" (ADR [0002](0002-arquitetura-core-agnostico.md)/[0016](001
     balanceado;
   - janela maximizada que **já era folha** (maximizada temporariamente) **preserva o slot** e volta à
     posição/proporção exatas ao desmaximizar (sai de graça da árvore persistente).
-  As pontes detectam o estado (GNOME `get_maximized() === BOTH` — **ver emenda 2026-06 abaixo**; KDE comparando com a `MaximizeArea`),
-  **não aplicam geometria** em janelas maximizadas e re-tilam no evento de (des)maximização (GNOME
-  `notify::maximized-*`; KDE `maximizedChanged`, conectado defensivamente). Nenhum método D-Bus novo —
-  o evento vira um `SyncWindows` (daemon sem estado).
+    As pontes detectam o estado (GNOME `get_maximized() === BOTH` — **ver emenda 2026-06 abaixo**; KDE comparando com a `MaximizeArea`),
+    **não aplicam geometria** em janelas maximizadas e re-tilam no evento de (des)maximização (GNOME
+    `notify::maximized-*`; KDE `maximizedChanged`, conectado defensivamente). Nenhum método D-Bus novo —
+    o evento vira um `SyncWindows` (daemon sem estado).
 
 ## Consequências
 
@@ -68,13 +68,15 @@ estado, ponte aplica" (ADR [0002](0002-arquitetura-core-agnostico.md)/[0016](001
 
 ## Barra de abas clicável no KDE via wgpu/layer-shell (fundação)
 
-O 0016/0018 registrou que o KWin *Script* não faz overlay clicável. A barra interativa no KDE (x + menu
-+ preview de empilhar) é o **daemon renderizando com `wgpu` numa superfície `wlr-layer-shell`**
-(suportada pelo KWin) — superfície PRÓPRIA do daemon, não overlay sobre janelas alheias (respeita o
-0016). Isso **substitui** a ideia de um KWin *Effect* (C++/QML) e reaproveita a matemática do core
-(`tab_bars`).
+O 0016/0018 registrou que o KWin _Script_ não faz overlay clicável. A barra interativa no KDE (x + menu
+
+- preview de empilhar) é o **daemon renderizando com `wgpu` numa superfície `wlr-layer-shell`**
+  (suportada pelo KWin) — superfície PRÓPRIA do daemon, não overlay sobre janelas alheias (respeita o
+  0016). Isso **substitui** a ideia de um KWin _Effect_ (C++/QML) e reaproveita a matemática do core
+  (`tab_bars`).
 
 **Fundação já implementada (atrás da feature `wgpu-ui`, compila no CI sem GPU):**
+
 - `tabbar.rs` — modelo + **hit-testing puro** (qual guia/“x”/menu um clique atinge), com testes;
 - `render.rs` — pipeline `wgpu` de quads (faixa + guias + “x”), `build_quads` testado; **texto** do
   título/ícone do app fica como próximo passo (atlas de glifos: cosmic-text/glyphon);
@@ -85,8 +87,8 @@ O 0016/0018 registrou que o KWin *Script* não faz overlay clicável. A barra in
 - `service.rs` — sinal D-Bus **`TabAction(stack_id, member_id, action)`** (`activate|close|ungroup`) +
   `emit_tab_action`.
 
-**Restrição descoberta (a resolver na integração de hardware):** o KWin *Script* (QJSEngine) **não
-assina sinais D-Bus** — só faz `callDBus` (modelo *pull*, ver 0016). Logo o `TabAction` **não é
+**Restrição descoberta (a resolver na integração de hardware):** o KWin _Script_ (QJSEngine) **não
+assina sinais D-Bus** — só faz `callDBus` (modelo _pull_, ver 0016). Logo o `TabAction` **não é
 consumível diretamente** pela ponte KDE. O transporte da ação ao KDE será resolvido por **pull** (um
 método tipo `PollTabActions` que a ponte drena) **ou** migrando a barra para um **KWin Effect** (que tem
 acesso pleno). Decisão e ADR próprios quando a integração de hardware for feita; muda a "apresentação
@@ -102,4 +104,3 @@ o método em runtime (`get_maximized_state` → `get_maximized` → propriedades
 nunca `!== 0`). O contrato `maximized` e o Unmaximize Recovery deste ADR não mudam. Detalhes e a regra
 geral de acesso defensivo à API do Mutter em [0023](0023-compat-api-mutter-feature-detection.md).
 Status permanece **✅ Aceita**.
-

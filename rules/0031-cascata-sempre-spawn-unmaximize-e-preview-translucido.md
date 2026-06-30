@@ -31,8 +31,8 @@ Três frentes de lapidação convergiram a partir de testes em sessão real:
 
 3. **O preview do KDE perdera a translucidez.** O [0029](0029-daemon-sem-framework-visual.md) removeu o
    HUD wgpu do daemon e deixou o preview como `workspace.showOutline` nativo — um **contorno opaco**.
-   O desejado é uma **máscara translúcida** (alpha 0.3–0.4). Um KWin *Script* (QJSEngine) **não pinta
-   superfícies próprias** (só `showOutline`), e um KWin *Effect* scriptado só anima janelas existentes —
+   O desejado é uma **máscara translúcida** (alpha 0.3–0.4). Um KWin _Script_ (QJSEngine) **não pinta
+   superfícies próprias** (só `showOutline`), e um KWin _Effect_ scriptado só anima janelas existentes —
    translucidez real exige um **cliente Wayland próprio** (layer-shell).
 
 ## Decisão

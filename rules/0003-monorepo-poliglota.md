@@ -3,11 +3,13 @@
 **Status:** ✅ Aceita
 
 ## Contexto
+
 O projeto reúne componentes em Rust (core + daemon), Swift (macOS) e TypeScript (extension GNOME). É
 desejável versioná-los juntos, mas com **builds isolados** ao estilo monorepo — a raiz é agnóstica e
 não deve depender de código específico de plataforma.
 
 ## Decisão
+
 Adotar um **monorepo com workspaces Cargo independentes**, um por domínio de build:
 
 ```toml
@@ -38,6 +40,7 @@ members = ["daemon"]
   às camadas de **UI** de fato específicas de plataforma (`platform-linux-gnome/`, `platform-linux-kde/`).
 
 ## Consequências
+
 - **Builds isolados:** o core compila sem nada de plataforma; o daemon compila no seu próprio workspace.
 - A raiz permanece agnóstica; cada plataforma evolui de forma autocontida.
 - Componentes não-Rust convivem no mesmo repo, com builds próprios.

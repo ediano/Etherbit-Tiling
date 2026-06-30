@@ -94,9 +94,7 @@ export function parseLayout(json: string): LayoutCommand[] {
     return [];
   }
   // Novo formato: objeto com `rects`. Legado: o próprio array.
-  const rects = Array.isArray(parsed)
-    ? parsed
-    : (parsed as Record<string, unknown> | null)?.rects;
+  const rects = Array.isArray(parsed) ? parsed : (parsed as Record<string, unknown> | null)?.rects;
   if (!Array.isArray(rects)) {
     return [];
   }
@@ -373,13 +371,23 @@ function localHotZone(
     block = { x: target.x, y: target.y, width: extentX, height: target.height };
   } else if (nearest === dr) {
     dropZone = 'right';
-    block = { x: target.x + target.width - extentX, y: target.y, width: extentX, height: target.height };
+    block = {
+      x: target.x + target.width - extentX,
+      y: target.y,
+      width: extentX,
+      height: target.height,
+    };
   } else if (nearest === dt) {
     dropZone = 'top';
     block = { x: target.x, y: target.y, width: target.width, height: extentY };
   } else {
     dropZone = 'bottom';
-    block = { x: target.x, y: target.y + target.height - extentY, width: target.width, height: extentY };
+    block = {
+      x: target.x,
+      y: target.y + target.height - extentY,
+      width: target.width,
+      height: extentY,
+    };
   }
   return { scope: 'local', dropZone, cells: [block], hot: [0], outline: block };
 }
@@ -481,7 +489,6 @@ export function sortByOrder(order: Map<string, number[]>, key: string, ids: numb
     .sort((a, b) => rankOf(a.id) - rankOf(b.id) || a.index - b.index)
     .map((e) => e.id);
 }
-
 
 // ---- Estado de abas (stacks) e de tiling por grupo (estado leve da ponte) ----
 //

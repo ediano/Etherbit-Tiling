@@ -3,12 +3,14 @@
 **Status:** ✅ Aceita
 
 ## Contexto
+
 O monorepo é poliglota (ADR 0003): núcleo agnóstico em Rust, daemon Rust, extensão TypeScript e
 landing em JS, cada um com sua própria toolchain. Até aqui não havia **nenhum** teste automatizado e
 o CI (`release.yml`) ia direto para build/release, sem validação prévia. Faltava fixar **como** cada
 plataforma é testada e **como** os testes barram um release defeituoso.
 
 ## Decisão
+
 - **Uma suíte e um runner por plataforma — independentes entre si.** Rodar os testes de uma
   plataforma nunca exige a toolchain de outra.
   - **core/** e **etherbit-tiling-daemon/daemon/** (Rust): testes nativos `#[cfg(test)]` + `cargo test`,
@@ -36,6 +38,7 @@ plataforma é testada e **como** os testes barram um release defeituoso.
   espelhando o `release-macos` comentado.
 
 ## Consequências
+
 - A cobertura inicial foca em serialização/contrato e lógica pura. O contrato `Config` (daemon) ↔
   `TilingConfig`/`DEFAULT_CONFIG` (extensão) passa a ter teste que detecta divergência entre as duas
   pontas — antes só garantido por convenção (ADR 0009).

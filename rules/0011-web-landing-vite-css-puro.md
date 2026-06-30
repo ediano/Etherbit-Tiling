@@ -3,12 +3,14 @@
 **Status:** ✅ Aceita
 
 ## Contexto
+
 O ecossistema precisa de um **hub oficial de distribuição**: uma landing page única, global e
 agnóstica de SO, que apresente o manifesto da marca e centralize os downloads (macOS, Linux/GNOME e
 futuros ambientes). O foco é **latência mínima e SEO máximo** (Core Web Vitals). Faltava fixar onde
 o módulo vive, qual stack usa e a regra estrita anti-CDN.
 
 ## Decisão
+
 - **Localização:** `web/` na **raiz** do monorepo — projeto independente, como
   `platform-linux-gnome/extension/` (não há workspace pnpm na raiz; cada módulo Node é isolado).
 - **Stack:** **Vite** em modo aplicação (SPA estática), **HTML5 semântico + CSS3 puro nativo**
@@ -26,6 +28,7 @@ o módulo vive, qual stack usa e a regra estrita anti-CDN.
   essas chaves de forma confiável). Sem isso, `pnpm build` falha no pré-check de dependências.
 
 ## Consequências
+
 - Carregamento praticamente instantâneo: HTML + 1 CSS minificado + ~1 KB de JS, sem fontes/CDNs.
 - Os links de download, `install.sh` e `og-image.png` são **placeholders** apontando para o repo
   (privado) / Pages; passam a resolver quando houver releases/Pages públicos. Marcados como TODO.

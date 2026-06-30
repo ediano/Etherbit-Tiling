@@ -45,14 +45,14 @@ E o **toggle "Iniciar com o sistema"** se mostrou redundante: o daemon já sobe 
     ao `ConfigChanged` (relê `enabled` e pausa/retoma).
   - **KDE:** **atalho global `Meta+Shift+Y`** (controle em **tempo real**) que alterna uma flag de
     runtime e chama `SetEnabled`, **mais** um checkbox `enabled` no KCM (default persistido em kwinrc).
-    **Limitação registrada:** o atalho **não reescreve** o kwinrc (um KWin *Script* não escreve
+    **Limitação registrada:** o atalho **não reescreve** o kwinrc (um KWin _Script_ não escreve
     KConfig de forma confiável), então o estado de runtime volta ao default do KCM se o script
-    recarregar. Sem barra/applet novo — manter o KWin *Script* "ponte burra".
+    recarregar. Sem barra/applet novo — manter o KWin _Script_ "ponte burra".
 - **Raio dos cantos é a ÚNICA fonte de verdade do arredondamento (refina [0019](0019-arvore-bsp-persistente-resize-elastico.md)).**
   `0` desliga; `> 0` liga. O **toggle "Cantos arredondados" some do GNOME**; a extensão aplica/limpa o
   efeito por `corner_radius > 0`. O campo `rounded_corners` **permanece no contrato** como espelho de
   `corner_radius > 0` (sem churn). O **KDE mantém** seu checkbox `roundedCorners` — ali o arredondamento
-  depende do **efeito nativo** do KWin (um *Script* não instancia shaders), então o controle nativo
+  depende do **efeito nativo** do KWin (um _Script_ não instancia shaders), então o controle nativo
   segue fazendo sentido.
 - **Toggle de autostart REMOVIDO da UI (GNOME e KDE).** A infra do daemon
   ([autostart.rs](../etherbit-tiling-daemon/daemon/src/autostart.rs) + `SetAutostart`) fica

@@ -54,7 +54,7 @@ seguro, reafirma 0016/0019):
 
 - **KDE:** coberto pela **ativação** (o `callDBus` a um nome ativável relança o daemon; os eventos do
   KWin seguem disparando `retile()` → revive e re-sincroniza). A reconexão fina do GNOME (watch de
-  nome, recriação de proxy) **não se aplica** a um KWin *Script* sandbox — assimetria aceita, na mesma
+  nome, recriação de proxy) **não se aplica** a um KWin _Script_ sandbox — assimetria aceita, na mesma
   família das de 0016/0018/0019.
 - **Nova dependência** no daemon: `futures-util` (iterar o stream de sinais do zbus).
 - **Diagnóstico** documentado em [docs/DIAGNOSTICO-IPC.md](../docs/DIAGNOSTICO-IPC.md) (busctl,
@@ -84,4 +84,4 @@ A resiliência acima cobre o canal que **cai após estar de pé**. Um modo de fa
   janela** (um erro de runtime numa janela não paralisa o grid); o KWin Script faz o handshake `Ping`
   e loga `[etherbit]`. Regra: `ponte carregando` sem `Ping OK` ⇒ daemon inacessível.
 - **Observabilidade no KDE não contradiz** o item acima sobre a reconexão fina não se aplicar ao
-  sandbox: o handshake e os logs são apenas *diagnóstico* (não assinam sinais).
+  sandbox: o handshake e os logs são apenas _diagnóstico_ (não assinam sinais).

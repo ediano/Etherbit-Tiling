@@ -21,6 +21,7 @@ previsibilidade do Grid Cíclico no GNOME — sintomas que o módulo **KDE** (es
    Store) nascem flutuantes e só encaixam quando uma **3ª** janela é aberta, forçando um relayout.
 
 A causa é **única**: no instante do `window-created`, o Mutter **ainda não populou** o estado da janela.
+
 - O `Meta.WindowActor` frequentemente **não existe** (`get_compositor_private()` → `null`), então o
   gatilho `first-frame` do [0033](0033-min-size-real-e-merge-em-abas-sob-overflow.md) **nunca arma**
   (`firstFrameId = 0`) e o `_scheduleRelayout` de 80 ms aplica geometria **antes** de o ator mapear — o
@@ -40,6 +41,7 @@ síncrono** — precisa **estabilizar**: re-ler o estado quando ele já estiver 
 ## Decisão
 
 ### A) Estabilização por micro-delay (`_scheduleSpawnSettle`)
+
 A ponte arma **sempre**, no `window-created`, uma sequência de timers `GLib.timeout_add` escalonados
 (`SPAWN_SETTLE_MS = [50, 150, 400]` ms) — cobrindo o caso "ator ainda inexistente". Cada disparo revalida
 a janela (`_isWindowLive`), reaplica `_spawnUnmaximizeIfBorn` (lendo a maximização já confirmada) e chama
@@ -50,6 +52,7 @@ os que caem durante a aplicação — **sem loop** sync↔relayout. O `first-fra
 escalonamento absorve a variância de hardware sem fixar um único valor frágil.
 
 ### B) Unmaximize robusto em três instantes convergentes
+
 `_spawnUnmaximizeIfBorn` é chamado (1) **síncrono** no nascimento, (2) nos
 `notify::maximized-horizontally`/`vertically`, e (3) nos **spawn-settle ticks** — garantindo que ao menos
 um pegue o estado de maximização já confirmado. O guard `everTiled` preserva o **Unmaximize Recovery** de
@@ -57,6 +60,7 @@ um pegue o estado de maximização já confirmado. O guard `everTiled` preserva 
 maximiza manualmente **não** é tocada). Duplo-`unmaximize` é no-op seguro.
 
 ### C) Min-size estável → Merge Fallback no nascimento
+
 Os spawn-settle ticks forçam um relayout **depois** de o `xdg min_size` assentar, então o core sinaliza
 overflow e a ponte agrupa a janela como **aba** (`mergeFallback`/`addToStack`) já no nascimento, sem
 depender de uma 3ª janela. Complementarmente, o one-shot `settled` do `size-changed` em `_onWindowCreated`
@@ -64,6 +68,7 @@ deixa de **travar** enquanto o min-size for `[0,0]` numa janela tileável — ev
 antes de o overflow ser detectável.
 
 ### Limpeza de recursos
+
 Novo campo `Tracked.spawnSettleIds: number[]`, cancelado com `GLib.source_remove` no handler `unmanaged` e
 no `disable()` (espelha o tratamento de `firstFrameId`).
 

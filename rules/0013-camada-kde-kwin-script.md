@@ -3,8 +3,9 @@
 **Status:** ✅ Aceita
 
 ## Contexto
+
 Queremos suportar **KDE Plasma 6**, exclusivamente sob **Wayland**. No GNOME, a camada nativa é uma
-*GNOME Shell extension* que escuta eventos do Mutter e aplica o layout. No KDE/Wayland o compositor e
+_GNOME Shell extension_ que escuta eventos do Mutter e aplica o layout. No KDE/Wayland o compositor e
 gerenciador de janelas é o **KWin**, que **não** tem o conceito de "extensions" do GNOME Shell. O ponto
 de extensão equivalente é um **KWin Script** (JavaScript executado dentro do próprio KWin), com acesso
 aos globais `workspace` (sinais `windowAdded`/`windowRemoved`/`windowActivated`, `clientArea()`), ao
@@ -13,6 +14,7 @@ objeto `Window` (geometria via `frameGeometry`, flags de classificação) e a `c
 Decisões a fixar: **o que** a camada KDE entrega, **como** é compilada e **como** é configurada.
 
 ## Decisão
+
 - **A camada KDE (`platform-linux-kde/`) entrega apenas o KWin Script** (`kwin-script/`), análogo da
   `extension/` do GNOME. O daemon **não** é recriado aqui — é reaproveitado (ver [0014](0014-daemon-linux-compartilhado.md)).
 - **Wayland apenas.** Sem suporte/teste em X11.
@@ -27,14 +29,15 @@ Decisões a fixar: **o que** a camada KDE entrega, **como** é compilada e **com
   à mão em `kwin-globals.d.ts`. Lógica pura (`config.ts`, `tiling.ts`) fica isolada e testável em Node
   (ver estratégia de testes por plataforma).
 - **Configuração nativa do KWin Script** (não um plasmoid de bandeja nesta fase): `main.xml` + `config.ui`
-  (widgets `objectName = kcfg_<chave>`), acessível em *Configurações do Sistema → KWin Scripts → ⚙*.
+  (widgets `objectName = kcfg_<chave>`), acessível em _Configurações do Sistema → KWin Scripts → ⚙_.
   Os valores ficam em `~/.config/kwinrc`. O script lê via `readConfig()` e **propaga ao daemon** via
   `callDBus(... Set*)`, mantendo o TOML e o autostart consistentes.
 - **Instalação/atualização** via `kpackagetool6 --type=KWin/Script -i|-u`, habilitação via
   `kwriteconfig6 ... <Id>Enabled true` e recarga sem logout via `qdbus org.kde.KWin /KWin reconfigure`.
 
 ## Consequências
-- **Limitação vs. GNOME:** o `callDBus` do KWin faz *chamadas* de método, mas não há caminho simples
+
+- **Limitação vs. GNOME:** o `callDBus` do KWin faz _chamadas_ de método, mas não há caminho simples
   para **assinar** o sinal `ConfigChanged` do daemon. No KDE a entrada de configuração é o `kwinrc`
   (via `readConfig`/reconfigure); o fluxo é script → daemon (one-way), não bidirecional.
 - O layout atual usa um **placeholder** (`tileColumns`) até o core (Ether Flow) decidir o layout —
@@ -51,7 +54,7 @@ Decisões a fixar: **o que** a camada KDE entrega, **como** é compilada e **com
   `KWin reconfigure` — o `qdbus` puro foi removido da cadeia de fallback porque, num sistema misto,
   pode ser o do **Qt 5** e falar com o KWin errado. Sem nenhum dos dois, o install avisa/erra.
 - **O daemon é cliente-obrigatório, e em DEV vem à parte:** como a camada KDE entrega só o KWin
-  Script, o `scripts/install.sh` agora faz um *health-check* (`busctl --user status …`) e orienta
+  Script, o `scripts/install.sh` agora faz um _health-check_ (`busctl --user status …`) e orienta
   rodar o daemon (`cargo run --manifest-path etherbit-tiling-daemon/Cargo.toml`) ou o pacote completo.
   O `install-kde.sh` valida o daemon com `Ping` após subir o systemd e corrige o `ExecStart` para o
   `$BIN_DIR` real (não o hardcode `%h/.local/bin`).
@@ -95,7 +98,7 @@ Decisões a fixar: **o que** a camada KDE entrega, **como** é compilada e **com
 ## Emenda (2026-06): alvo do Vite `es2018` → `es2017` (object spread)
 
 - **Sintoma real (Plasma 6, após nova compilação das regras de UI):** `kwin_scripting:
-  .../main.js:199: error: Unexpected token '...'` já na carga — o KWin rejeita o script inteiro e o
+.../main.js:199: error: Unexpected token '...'` já na carga — o KWin rejeita o script inteiro e o
   tiling fica **completamente** inerte (nenhum handler é registrado).
 - **Causa:** a linha era `outline: { ...target }` (**object spread**, uma feature **ES2018**) no HUD
   de drop-zone (`bridge.ts`, introduzido com o jogo-da-velha — ADR 0026). O QJSEngine do Qt 6 **não**
@@ -112,10 +115,10 @@ Decisões a fixar: **o que** a camada KDE entrega, **como** é compilada e **com
 
 ## Emenda (2026-06): KWin Script não pinta superfícies — preview translúcido vive num helper
 
-- **Limite real da API:** o KWin *Script* (QJSEngine, `X-Plasma-API: javascript`) expõe **só**
+- **Limite real da API:** o KWin _Script_ (QJSEngine, `X-Plasma-API: javascript`) expõe **só**
   `workspace.showOutline`/`hideOutline` para desenho — um **contorno opaco**. Não há `Qt`/QML/
   `createQmlObject`/`PlasmaCore` no contexto do script (a API QML do KWin é `undefined` em JS). Um KWin
-  *Effect* scriptado também não pinta retângulos livres (só anima janelas existentes).
+  _Effect_ scriptado também não pinta retângulos livres (só anima janelas existentes).
 - **Consequência (ADR [0031](0031-cascata-sempre-spawn-unmaximize-e-preview-translucido.md)):** o
   preview **translúcido** (alpha 0.3–0.4) é impossível dentro do Script. Ele vive num **helper nativo
   separado** (`etherbit-tiling-preview`): cliente Wayland wlr-layer-shell que desenha o retângulo via

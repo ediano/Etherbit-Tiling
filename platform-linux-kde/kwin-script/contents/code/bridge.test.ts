@@ -159,7 +159,9 @@ describe('estado de tiling por grupo e árvores (ids string)', () => {
     expect(treeToTransport(node, new Map([['b', 2]]))).toEqual({ win: 2 });
     // Mesma preservação na volta (transporte → internalId).
     const nodeT: TransportNode = { stack: { members: [1, 2], active: 2 } };
-    expect(treeFromTransport(nodeT, toStable)).toEqual({ stack: { members: ['a', 'b'], active: 'b' } });
+    expect(treeFromTransport(nodeT, toStable)).toEqual({
+      stack: { members: ['a', 'b'], active: 'b' },
+    });
   });
 
   it('árvore: round-trip internalId ↔ transporte e colapso de célula intraduzível (grid)', () => {
@@ -210,11 +212,17 @@ describe('estado de tiling por grupo e árvores (ids string)', () => {
   });
 
   it('resizeDeltaFrom infere bordas e canto', () => {
-    expect(resizeDeltaFrom({ x: 0, y: 0, width: 100, height: 50 }, { x: 0, y: 0, width: 160, height: 50 })).toEqual([
-      { edge: 'right', deltaPx: 60 },
-    ]);
     expect(
-      resizeDeltaFrom({ x: 0, y: 0, width: 100, height: 100 }, { x: 0, y: 0, width: 140, height: 130 }),
+      resizeDeltaFrom(
+        { x: 0, y: 0, width: 100, height: 50 },
+        { x: 0, y: 0, width: 160, height: 50 },
+      ),
+    ).toEqual([{ edge: 'right', deltaPx: 60 }]);
+    expect(
+      resizeDeltaFrom(
+        { x: 0, y: 0, width: 100, height: 100 },
+        { x: 0, y: 0, width: 140, height: 130 },
+      ),
     ).toEqual([
       { edge: 'right', deltaPx: 40 },
       { edge: 'bottom', deltaPx: 30 },

@@ -5,10 +5,12 @@
 passam a ser bilíngues, com inglês como default global; docs e comunicação seguem em pt-BR)
 
 ## Contexto
+
 O time e o público inicial do projeto são lusófonos. A clareza na comunicação e na documentação é
 prioridade nesta fase de fundação.
 
 ## Decisão
+
 Toda a **comunicação do projeto e a documentação (`docs/`, `rules/`, README)** são escritas em
 **português (PT-BR)**.
 
@@ -20,5 +22,6 @@ Identificadores de código (nomes de crates, funções, variáveis), comandos e 
 consagrados permanecem em inglês, seguindo a convenção do ecossistema.
 
 ## Consequências
+
 - Documentos e respostas em português por padrão.
 - Código permanece em inglês para interoperabilidade com a comunidade.

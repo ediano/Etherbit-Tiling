@@ -13,11 +13,11 @@ O ADR [0022](0022-stacknode-arvore-fechar-desagrupar-unmaximize.md) firmou que a
 (respeita o [0016](0016-extensao-ponte-burra-render-no-daemon.md): não é overlay sobre janelas
 alheias) e deixou a **fundação** pronta atrás da feature `wgpu-ui` (`tabbar.rs` com hit-testing puro,
 `render.rs` de quads, `layer.rs` de orquestração, e o sinal `TabAction`). Esse mesmo ADR registrou a
-**restrição descoberta**: o KWin *Script* (QJSEngine) **só faz `callDBus`** — não assina sinais D-Bus
-e não tem `setTimeout` (modelo *pull*, ver [0016](0016-extensao-ponte-burra-render-no-daemon.md)).
+**restrição descoberta**: o KWin _Script_ (QJSEngine) **só faz `callDBus`** — não assina sinais D-Bus
+e não tem `setTimeout` (modelo _pull_, ver [0016](0016-extensao-ponte-burra-render-no-daemon.md)).
 Logo o `TabAction` **não é consumível** pela ponte KDE, e a entrega da ação ficou em aberto ("resolver
 na integração de hardware: um método tipo `PollTabActions` que a ponte drena **ou** migrar a barra
-para um KWin *Effect*").
+para um KWin _Effect_").
 
 Era também tentador criar um **applet satélite** separado para desenhar as abas. Mas o core já é puro
 (zero deps, sem código visual) e a barra já é renderizada pelo daemon na sua própria superfície — um
@@ -31,10 +31,10 @@ binário novo **duplicaria** a fundação do 0022 e contrariaria o 0016. A decis
   drena o callback do `SyncWindows` a cada evento de janela; ela passa a aplicar também as ações ali —
   **sem método D-Bus novo nem gatilho novo**. Preferida a um `PollTabActions` separado (que, sem timer
   no sandbox, só poderia ser chamado nos mesmos eventos de janela — colapsa neste desenho com um passo
-  a mais) e ao KWin *Effect* (C++/QML, fora do escopo do KWin *Script*; fica como plano B se a latência
+  a mais) e ao KWin _Effect_ (C++/QML, fora do escopo do KWin _Script_; fica como plano B se a latência
   virar requisito).
 - **O daemon ganha UMA fila efêmera de ações** (`Arc<Mutex<VecDeque<TabActionDto>>>`): o overlay
-  enfileira no clique (e mantém o sinal `TabAction` para diagnóstico/GNOME/futuro *Effect*); o
+  enfileira no clique (e mantém o sinal `TabAction` para diagnóstico/GNOME/futuro _Effect_); o
   `SyncWindows` **drena** a fila na própria resposta. **É a única exceção ao "daemon sem estado"**
   ([0016](0016-extensao-ponte-burra-render-no-daemon.md)) — e é deliberadamente contida: estado de UI
   **transitório** (cliques pendentes), **não** estado de janelas/layout, que continua vivendo na
@@ -55,12 +55,12 @@ binário novo **duplicaria** a fundação do 0022 e contrariaria o 0016. A decis
   está implementado em `layer.rs::run_event_loop` (uma `LayerSurface` `Overlay` por barra, ancorada no
   topo do quadrante; `wl_pointer` resolvido por `tabbar::hit_test`; barras alimentadas por um canal
   `tokio::watch` que só re-materializa superfícies quando o estado muda) sobre `smithay-client-toolkit`
-  + `calloop`. Fora de uma sessão com `wlr-layer-shell` (Mutter/headless/CI) o `LayerShell::bind` falha
-  e o loop **encerra gracioso**, então o binário é válido em qualquer ambiente. A `libwayland` é
-  carregada em **runtime via `dlopen`** (feature `wayland-client/dlopen`), mantendo o CI/devcontainer
-  **sem** dependência de build da `libwayland-client`. O `build-kde-release.sh` compila o daemon com
-  `--features wgpu-ui` (o release GNOME não, pois o Mutter não tem layer-shell). Validação interativa
-  real (clicar aba/X/desagrupar) é em hardware numa sessão KWin.
+  - `calloop`. Fora de uma sessão com `wlr-layer-shell` (Mutter/headless/CI) o `LayerShell::bind` falha
+    e o loop **encerra gracioso**, então o binário é válido em qualquer ambiente. A `libwayland` é
+    carregada em **runtime via `dlopen`** (feature `wayland-client/dlopen`), mantendo o CI/devcontainer
+    **sem** dependência de build da `libwayland-client`. O `build-kde-release.sh` compila o daemon com
+    `--features wgpu-ui` (o release GNOME não, pois o Mutter não tem layer-shell). Validação interativa
+    real (clicar aba/X/desagrupar) é em hardware numa sessão KWin.
 - **Texto das abas (título) via `glyphon`.** A barra rotula cada guia com o título da janela. O
   `caption` viaja da ponte no `windows_json` (`WindowDto.title`, `#[serde(default)]`); o daemon o
   reanexa às `tab_bars` (`TabBarDto.titles`, paralelo a `members`) — o **core continua sem conhecer
@@ -79,6 +79,6 @@ binário novo **duplicaria** a fundação do 0022 e contrariaria o 0016. A decis
 - **Limitação de latência registrada:** a ação chega no **próximo** `SyncWindows`. Na prática quase
   sempre coincide com atividade de janela (`close` → `windowRemoved`; `activate` → `windowActivated`;
   `ungroup` muda a geometria), então o atraso é imperceptível. Se latência zero virar requisito, o
-  plano B é o KWin *Effect* (acesso pleno, sem o gargalo pull) — decisão e ADR próprios.
+  plano B é o KWin _Effect_ (acesso pleno, sem o gargalo pull) — decisão e ADR próprios.
 - **GNOME inalterado:** desenha e age na própria extensão (dentro do Mutter); não usa `pending_actions`
   nem a fila. O sinal `TabAction` segue disponível para diagnóstico.

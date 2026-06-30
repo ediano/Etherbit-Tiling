@@ -19,7 +19,7 @@ precisavam respeitar ambos.
 ## Decisão
 
 - **A "árvore lógica" vive no core como ENTRADA pura.** `compute_layout_with(windows, areas, opts,
-  stacks, disabled_groups)` estende o BSP: o espaço é dividido sobre *slots*, onde um slot é uma
+stacks, disabled_groups)` estende o BSP: o espaço é dividido sobre _slots_, onde um slot é uma
   janela solta **ou** um `StackDescriptor` (conjunto de janelas que ocupam UMA folha). A aritmética
   do BSP é idêntica — um stack conta como 1; ele assume a posição de ordem do seu **primeiro membro**
   presente (determinismo preservado). `compute_layout` antigo vira um wrapper fino
@@ -35,20 +35,20 @@ precisavam respeitar ambos.
   `DropZone::Stack`. Se o cursor está na **faixa superior (~25%)** da janela-alvo, o destino é
   empilhar (preview = o retângulo da janela-alvo); fora disso, delega a `detect_drop_zone` (split,
   inalterado). A ponte resolve QUAL é a janela sob o cursor; o core resolve a fração.
-- **Todo o estado novo vive na PONTE (o daemon segue sem estado).** Como a *ordem*, a ponte guarda os
+- **Todo o estado novo vive na PONTE (o daemon segue sem estado).** Como a _ordem_, a ponte guarda os
   stacks, a aba ativa e os grupos desligados, e os envia em cada `SyncWindows` via `state_json`. O
   contrato D-Bus evolui (mudança de aridade, atualizada nas duas pontes em conjunto):
   - `SyncWindows(windows_json, monitors_json, state_json) -> layout_json` — `layout_json` passa a ser
     um **objeto** `{ rects, tab_bars }` (as pontes toleram o array legado);
   - `ResolveDropZone(x, y, monitors_json, target_json) -> preview_json` — `target_json` é o retângulo
     da janela sob o cursor (ou `""`); a zona `"stack"` é possível.
-  Os DTOs novos usam `#[serde(default)]` (retrocompatíveis, como em `config.rs`).
+    Os DTOs novos usam `#[serde(default)]` (retrocompatíveis, como em `config.rs`).
 - **A barra de abas é desenhada pela PONTE** (reafirma o 0016): o core/daemon só calculam a
   geometria. **GNOME:** um `St.BoxLayout` reativo (irmão do preview de drop) com um botão por aba —
   ícone (`Shell.WindowTracker`) + título (`Meta.Window.get_title()`); clicar troca a aba ativa. As
-  inativas são minimizadas. **KDE (paridade funcional):** um KWin *Script* (QJSEngine sandboxed), ao
+  inativas são minimizadas. **KDE (paridade funcional):** um KWin _Script_ (QJSEngine sandboxed), ao
   contrário do `St.Widget`, **não instancia overlay QML posicionado** de forma confiável — isso seria
-  um KWin *Effect*, fora do escopo do script. Então no KDE a aba ativa fica visível, as demais são
+  um KWin _Effect_, fora do escopo do script. Então no KDE a aba ativa fica visível, as demais são
   **minimizadas** (afordância nativa: barra de tarefas/alt-tab) e **ativar** uma janela do stack a
   traz à frente (troca de aba **dirigida por ativação**). É a mesma família de "diferença de
   apresentação aceita" já registrada no 0016 (GNOME = caixa preenchida; KDE = primitivo nativo).
@@ -58,7 +58,7 @@ precisavam respeitar ambos.
     `metadata.json`) + `Main.wm.addKeybinding`/`removeKeybinding`. O `install.sh` já compila/copia o
     schema.
     - **KDE:** `registerShortcut('EtherbitToggle…', …, 'Meta+Y'/'Meta+S', cb)` (editável em
-    Configurações do Sistema → Atalhos).
+      Configurações do Sistema → Atalhos).
   - O atalho **muta o estado leve na ponte e dispara o relayout**; é o `SyncWindows` (com o
     `state_json` atualizado) que leva o disparo ao **core em Rust**, que de fato processa o resultado
     empilhado/desligado. Nenhum método D-Bus de toggle é necessário — o daemon segue sem estado.
@@ -75,8 +75,8 @@ precisavam respeitar ambos.
 - **Ids opacos no KDE:** os membros de um stack são `internalId` (string) na ponte e traduzidos para
   ids de transporte (números) no `serializeState` via o mapa do retile; a resposta é traduzida de
   volta por `byId`. Quem mexer no KWin script deve preservar esse de/para.
-- **Limitação registrada:** uma barra de abas **clicável** no KDE exigiria um KWin *Effect* (C++/QML),
-  fora do escopo do KWin *Script*. A paridade entregue é **funcional** (empilhar, trocar, agrupar,
+- **Limitação registrada:** uma barra de abas **clicável** no KDE exigiria um KWin _Effect_ (C++/QML),
+  fora do escopo do KWin _Script_. A paridade entregue é **funcional** (empilhar, trocar, agrupar,
   arrastar), com apresentação nativa de cada plataforma.
 - **`Super+S` pode colidir** com um atalho padrão do Plasma — documentado; o usuário pode religar.
 

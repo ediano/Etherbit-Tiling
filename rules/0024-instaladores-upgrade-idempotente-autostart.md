@@ -27,15 +27,15 @@ mostraram **falsos** e ficam aqui registrados para não se repetirem:
   DE** (o daemon é compartilhado, ADR [0014](0014-daemon-linux-compartilhado.md)):
   `${XDG_STATE_HOME:-$HOME/.local/state}/etherbit-tiling/version`. Os uninstall removem o marcador.
 - **Matriz de decisão (antes de copiar/registrar qualquer coisa):**
-  | Estado | Ação |
-  | --- | --- |
-  | sem marcador | instalação limpa |
-  | `VERSION` ausente no pacote | reinstalação forçada (override de dev) |
-  | nova `=` instalada | **reaplica** (idempotente; cobre rebuild de dev na mesma versão) |
-  | nova `>` instalada | upgrade |
-  | nova `<` instalada | **recusa** e mantém a atual; só prossegue com `ETHERBIT_FORCE=1` |
-  A comparação usa `sort -V` (coreutils), que trata corretamente `1.9.0 < 1.10.0`. A recusa de
-  downgrade sai com `exit 0` (não quebra `curl … | bash`).
+  | Estado                                                                                       | Ação                                                             |
+  | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+  | sem marcador                                                                                 | instalação limpa                                                 |
+  | `VERSION` ausente no pacote                                                                  | reinstalação forçada (override de dev)                           |
+  | nova `=` instalada                                                                           | **reaplica** (idempotente; cobre rebuild de dev na mesma versão) |
+  | nova `>` instalada                                                                           | upgrade                                                          |
+  | nova `<` instalada                                                                           | **recusa** e mantém a atual; só prossegue com `ETHERBIT_FORCE=1` |
+  | A comparação usa `sort -V` (coreutils), que trata corretamente `1.9.0 < 1.10.0`. A recusa de |
+  | downgrade sai com `exit 0` (não quebra `curl …                                               | bash`).                                                          |
 - **Parada segura do daemon ANTES da sobrescrita** — a sequência por execução é
   **parar → sobrescrever → `daemon-reload` → start → hot-reload → gravar marcador**. O motivo NÃO é
   ETXTBSY (verificado): o `install` do coreutils faz **unlink + create** (novo inode), logo sobrescreve

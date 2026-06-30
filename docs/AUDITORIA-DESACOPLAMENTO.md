@@ -24,16 +24,16 @@ acoplamentos reais eram **poucos e concentrados** — listados abaixo com a clas
 
 ## Achados
 
-| # | Local | Símbolo | Classe | Problema | Ação tomada |
-|---|-------|---------|--------|----------|-------------|
-| 1 | `daemon/src/render.rs` (255 linhas) | pipeline `wgpu` (shaders WGSL, `QuadRenderer`) | **B** | Renderização gráfica dentro do daemon | **Arquivo deletado** |
-| 2 | `daemon/src/layer.rs` (519 linhas) | overlay `wlr-layer-shell` + event loop de pointer | **B** | Superfícies Wayland + loop de eventos no daemon | **Arquivo deletado** |
-| 3 | `daemon/Cargo.toml` | feature `wgpu-ui` + 5 deps (`wgpu`, `smithay-client-toolkit`, `raw-window-handle`, `bytemuck`, `wayland-client`) | **B** | Libs gráficas/Wayland atreladas ao core | **Removidas** |
-| 4 | `daemon/src/service.rs` | métodos `ShowDropHud`/`HideDropHud`, campo `hud_tx`, struct `Shared` | **B** | Verbos de UI no contrato D-Bus | **Removidos**; `serve()` devolve só a conexão |
-| 5 | `daemon/src/protocol.rs` | `HudCellDto`, `parse_hud_cells` | **B** | DTO/parse exclusivos do overlay wgpu | **Removidos** |
-| 6 | `daemon/src/protocol.rs` | `WindowDto.title`, `TabBarDto.titles` | **B** | Texto de aba (apresentação) trafegando no contrato | **Removidos** (GNOME usa `get_title()` local) |
-| 7 | `core/src/layout.rs`, `config.rs` | `LayoutOptions.tab_bar_height` / `Config.tab_bar_height` | **C** | Faixa geométrica com nome de widget | **Renomeado** `group_header_px` (alias TOML legado) |
-| 8 | `kwin-script/.../main.ts`, `bridge.ts` | `ShowDropHud`/`HideDropHud`, `serializeHudCells`, `HotZone.cells/hot`, `WindowSnapshot.title` | **B** | Ponte KDE alimentando o overlay wgpu morto | **Removidos**; preview vira `showOutline` nativo |
+| #   | Local                                  | Símbolo                                                                                                          | Classe | Problema                                           | Ação tomada                                         |
+| --- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------ | -------------------------------------------------- | --------------------------------------------------- |
+| 1   | `daemon/src/render.rs` (255 linhas)    | pipeline `wgpu` (shaders WGSL, `QuadRenderer`)                                                                   | **B**  | Renderização gráfica dentro do daemon              | **Arquivo deletado**                                |
+| 2   | `daemon/src/layer.rs` (519 linhas)     | overlay `wlr-layer-shell` + event loop de pointer                                                                | **B**  | Superfícies Wayland + loop de eventos no daemon    | **Arquivo deletado**                                |
+| 3   | `daemon/Cargo.toml`                    | feature `wgpu-ui` + 5 deps (`wgpu`, `smithay-client-toolkit`, `raw-window-handle`, `bytemuck`, `wayland-client`) | **B**  | Libs gráficas/Wayland atreladas ao core            | **Removidas**                                       |
+| 4   | `daemon/src/service.rs`                | métodos `ShowDropHud`/`HideDropHud`, campo `hud_tx`, struct `Shared`                                             | **B**  | Verbos de UI no contrato D-Bus                     | **Removidos**; `serve()` devolve só a conexão       |
+| 5   | `daemon/src/protocol.rs`               | `HudCellDto`, `parse_hud_cells`                                                                                  | **B**  | DTO/parse exclusivos do overlay wgpu               | **Removidos**                                       |
+| 6   | `daemon/src/protocol.rs`               | `WindowDto.title`, `TabBarDto.titles`                                                                            | **B**  | Texto de aba (apresentação) trafegando no contrato | **Removidos** (GNOME usa `get_title()` local)       |
+| 7   | `core/src/layout.rs`, `config.rs`      | `LayoutOptions.tab_bar_height` / `Config.tab_bar_height`                                                         | **C**  | Faixa geométrica com nome de widget                | **Renomeado** `group_header_px` (alias TOML legado) |
+| 8   | `kwin-script/.../main.ts`, `bridge.ts` | `ShowDropHud`/`HideDropHud`, `serializeHudCells`, `HotZone.cells/hot`, `WindowSnapshot.title`                    | **B**  | Ponte KDE alimentando o overlay wgpu morto         | **Removidos**; preview vira `showOutline` nativo    |
 
 ### O que é geometria legítima e permaneceu (classe A)
 

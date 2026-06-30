@@ -3,12 +3,14 @@
 **Status:** ✅ Aceita
 
 ## Contexto
+
 A extensão alvo GNOME 45+ usa ESM (`gi://`, `resource:///`) resolvido em runtime pelo GJS
 (SpiderMonkey). O daemon precisa falar D-Bus. Faltava fixar **como** a extensão é compilada (Vite)
 e **como** o daemon implementa D-Bus, evitando armadilhas (bundlar módulos do Shell; FFI desnecessário).
 
 ## Decisão
-- **Build da extensão com Vite em modo *library*, saída ESM única `extension.js`.** Os specifiers
+
+- **Build da extensão com Vite em modo _library_, saída ESM única `extension.js`.** Os specifiers
   `gi://*`, `resource:///*` (e os builtins `system`/`gettext`) são marcados como **externos** por
   regex e **nunca** bundlados — permanecem literais no bundle. `minify: false` para não manglar
   nomes de classe usados por `GObject.registerClass`. Alvo `firefox115` (SM 115+, ES2022).
@@ -30,6 +32,7 @@ e **como** o daemon implementa D-Bus, evitando armadilhas (bundlar módulos do S
   `#[interface]` (zbus 5) e `serde`/`toml`/`directories` para persistência.
 
 ## Consequências
+
 - O `libdbus-1-dev`/`pkg-config` no `docker/Dockerfile.core` deixou de ser estritamente necessário
   para o daemon. Mantido por ora (não faz mal); pode ser removido num passo futuro — registrar aqui
   se/quando for.

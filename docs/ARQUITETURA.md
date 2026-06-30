@@ -2,9 +2,9 @@
 
 O princípio central do Etherbit Tiling é a **separação entre decisão e aplicação**:
 
-- **Decisão** — *onde cada janela deve ficar* — é responsabilidade do **core agnóstico** (Ether Flow),
+- **Decisão** — _onde cada janela deve ficar_ — é responsabilidade do **core agnóstico** (Ether Flow),
   escrito uma única vez em Rust.
-- **Aplicação** — *capturar eventos e mover janelas de verdade* — é responsabilidade de uma **camada
+- **Aplicação** — _capturar eventos e mover janelas de verdade_ — é responsabilidade de uma **camada
   fina e nativa por plataforma**.
 
 Assim, a lógica difícil (geometria, regras de filtragem, fluxo) não é reescrita por SO, e cada
@@ -37,17 +37,20 @@ plataforma só implementa o mínimo que depende de APIs nativas.
 ## Componentes
 
 ### `core` — Ether Flow (Rust, agnóstico)
+
 Biblioteca pura, sem dependência de SO. Recebe o estado das janelas (geometria, monitores, foco) e
 devolve o layout-alvo. Aqui vivem a matemática da divisão de tela, as regras de filtragem (quais
 janelas entram no tiling) e a adaptação em tempo real ao abrir/fechar apps.
 
 ### macOS — camada nativa (Swift)
+
 Usa **AppKit** e a **Accessibility API** para observar a criação/movimentação/fechamento de janelas e
 para reposicioná-las conforme as decisões do core. É a plataforma-alvo principal. Construída sobre as
 APIs estáveis da Apple para resistir a atualizações do macOS. **Compilada no host macOS** (o SDK da
 Apple não roda no container Linux).
 
 ### Linux / GNOME — daemon + extension
+
 No Wayland/GNOME, um processo não pode mover janelas de outro diretamente; a manipulação acontece
 **dentro do GNOME Shell**. Por isso há dois componentes:
 

@@ -98,12 +98,7 @@ export interface TilingProxy {
   SyncWindowsSync(windowsJson: string, monitorsJson: string, stateJson: string): [string];
   /// Resolve o destino de drop sob `(x, y)`. `targetJson` é o retângulo da janela sob o cursor
   /// (ou `""`), usado para detectar empilhamento. Recebe o `preview_json`.
-  ResolveDropZoneSync(
-    x: number,
-    y: number,
-    monitorsJson: string,
-    targetJson: string,
-  ): [string];
+  ResolveDropZoneSync(x: number, y: number, monitorsJson: string, targetJson: string): [string];
   /// Drag-to-tile do jogo da velha (ADR 0026): move `draggedId` para junto de `targetId` no lado
   /// `zone`, com `scope` (`local` = faixa de 1/3 na submatriz do alvo; `global` = bloco de 50%).
   /// Recebe o `stateJson` (com as árvores) e devolve `{"trees":[...]}`; a geometria vem do `SyncWindows`.
@@ -130,15 +125,9 @@ export interface TilingProxy {
   disconnectSignal(id: number): void;
 }
 
-type TilingProxyCtor = (
-  bus: Gio.DBusConnection,
-  name: string,
-  objectPath: string,
-) => TilingProxy;
+type TilingProxyCtor = (bus: Gio.DBusConnection, name: string, objectPath: string) => TilingProxy;
 
-const TilingProxyWrapper = Gio.DBusProxy.makeProxyWrapper(
-  IFACE_XML,
-) as unknown as TilingProxyCtor;
+const TilingProxyWrapper = Gio.DBusProxy.makeProxyWrapper(IFACE_XML) as unknown as TilingProxyCtor;
 
 /// Cria um proxy síncrono no barramento de sessão. Pode lançar se o daemon não estiver no bus.
 export function createTilingProxy(): TilingProxy {

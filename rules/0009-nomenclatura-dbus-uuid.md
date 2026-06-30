@@ -3,6 +3,7 @@
 **Status:** ✅ Aceita
 
 ## Contexto
+
 A vertente Linux/GNOME tem duas partes que conversam: o daemon Rust (`etherbit-tiling-daemon`) e a
 extensão GNOME Shell (`etherbit-tiling-extension`). Essa conversa é feita por **D-Bus** no barramento
 de sessão. Precisávamos fixar nomes estáveis (bus name, object path, interface), o **UUID** da
@@ -10,6 +11,7 @@ extensão e o formato do payload de configuração, para que daemon e extensão 
 contrato e não por convenção implícita.
 
 ## Decisão
+
 - **Barramento:** sessão (`session bus`). O daemon roda na sessão do usuário; nada de system bus.
 - **Bus name / interface:** `dev.ediano.etherbit.Tiling`
 - **Object path:** `/dev/ediano/etherbit/Tiling`
@@ -17,7 +19,7 @@ contrato e não por convenção implícita.
   instalação (`~/.local/share/gnome-shell/extensions/etherbit.tiling@ediano.dev/`) e no
   `gnome-extensions enable`. O `.desktop` de autostart usa o mesmo nome.
   > Migrado de `org.etherbit.*` / `tiling@etherbit.org` para o domínio próprio `ediano.dev` —
-  > ver ADR [0017](0017-dominio-proprio-ediano-dev.md). A decisão de *forma* (DNS reverso, nomes
+  > ver ADR [0017](0017-dominio-proprio-ediano-dev.md). A decisão de _forma_ (DNS reverso, nomes
   > alinhados, contrato JSON) permanece; só mudaram os valores do domínio.
 - **Contrato da configuração via JSON string:** `GetConfig` retorna `s` (JSON) e o sinal
   `ConfigChanged(s)` carrega o mesmo JSON. O schema evolui só no daemon (serde); a extensão faz
@@ -27,6 +29,7 @@ contrato e não por convenção implícita.
   habilitada (regra herdada do macOS); ligar/desligar o motor é ligar/desligar a extensão.
 
 ## Consequências
+
 - O XML de introspecção da interface é a **fonte de verdade compartilhada**: vive no
   `#[interface]` do daemon e replicado no `makeProxyWrapper` da extensão. Mudou um lado, muda o outro.
 - JSON string reduz boilerplate de `GVariant` e permite evoluir o schema sem renegociar o XML; em

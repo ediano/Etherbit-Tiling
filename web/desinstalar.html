@@ -23,7 +23,12 @@
 
     <header class="site-header">
       <div class="container site-header__inner">
-        <a class="brand" href="/" data-i18n-aria-label="brand.aria" aria-label="Etherbit Tiling — início">
+        <a
+          class="brand"
+          href="/"
+          data-i18n-aria-label="brand.aria"
+          aria-label="Etherbit Tiling — início"
+        >
           <svg class="brand__mark" width="28" height="28" viewBox="0 0 32 32" aria-hidden="true">
             <rect x="2" y="2" width="13" height="13" rx="2" />
             <rect x="17" y="2" width="13" height="8" rx="2" />
@@ -34,8 +39,16 @@
         </a>
         <nav class="site-nav" aria-label="Navegação principal">
           <a href="/#sistemas" data-i18n="nav.backHome">Voltar ao início</a>
-          <a class="site-nav__cta" href="https://github.com/ediano" target="_blank" rel="noopener noreferrer">GitHub</a>
-          <button class="site-nav__lang" type="button" data-lang-toggle aria-label="Mudar idioma">EN</button>
+          <a
+            class="site-nav__cta"
+            href="https://github.com/ediano"
+            target="_blank"
+            rel="noopener noreferrer"
+            >GitHub</a
+          >
+          <button class="site-nav__lang" type="button" data-lang-toggle aria-label="Mudar idioma">
+            EN
+          </button>
         </nav>
       </div>
     </header>
@@ -54,26 +67,52 @@
             <h2 data-i18n="uninstall.gnomeH2">Linux · GNOME</h2>
             <div class="uninstall__step">
               <h3 data-i18n="uninstall.oneCmd">Em um comando</h3>
-              <p class="uninstall__hint" data-i18n="uninstall.gnomeHint">Baixa e executa o desinstalador oficial:</p>
+              <p class="uninstall__hint" data-i18n="uninstall.gnomeHint">
+                Baixa e executa o desinstalador oficial:
+              </p>
               <div class="code" data-copy>
-                <code>curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/uninstall-gnome.sh | bash</code>
-                <button class="code__copy" type="button" data-copy-btn data-i18n="copy.btn" data-i18n-aria-label="copy.aria" aria-label="Copiar comando">Copiar</button>
+                <code
+                  >curl -sSL
+                  https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/uninstall-gnome.sh
+                  | bash</code
+                >
+                <button
+                  class="code__copy"
+                  type="button"
+                  data-copy-btn
+                  data-i18n="copy.btn"
+                  data-i18n-aria-label="copy.aria"
+                  aria-label="Copiar comando"
+                >
+                  Copiar
+                </button>
               </div>
             </div>
 
             <div class="uninstall__step">
               <h3 data-i18n="uninstall.manual">Manualmente</h3>
               <p class="uninstall__hint" data-i18n="uninstall.gnomeManualHint">
-                Se preferir, execute os passos à mão — eles revertem exatamente o que a instalação fez:
+                Se preferir, execute os passos à mão — eles revertem exatamente o que a instalação
+                fez:
               </p>
               <div class="code code--block" data-copy>
-                <code>gnome-extensions disable etherbit.tiling@ediano.dev
-systemctl --user disable --now etherbit-tiling-daemon.service
-rm -f ~/.local/bin/etherbit-tiling-daemon
-rm -rf ~/.local/share/gnome-shell/extensions/etherbit.tiling@ediano.dev
-rm -f ~/.config/systemd/user/etherbit-tiling-daemon.service
-systemctl --user daemon-reload</code>
-                <button class="code__copy" type="button" data-copy-btn data-i18n="copy.btn" data-i18n-aria-label="copy.ariaPlural" aria-label="Copiar comandos">Copiar</button>
+                <code
+                  >gnome-extensions disable etherbit.tiling@ediano.dev systemctl --user disable
+                  --now etherbit-tiling-daemon.service rm -f ~/.local/bin/etherbit-tiling-daemon rm
+                  -rf ~/.local/share/gnome-shell/extensions/etherbit.tiling@ediano.dev rm -f
+                  ~/.config/systemd/user/etherbit-tiling-daemon.service systemctl --user
+                  daemon-reload</code
+                >
+                <button
+                  class="code__copy"
+                  type="button"
+                  data-copy-btn
+                  data-i18n="copy.btn"
+                  data-i18n-aria-label="copy.ariaPlural"
+                  aria-label="Copiar comandos"
+                >
+                  Copiar
+                </button>
               </div>
             </div>
 
@@ -81,10 +120,25 @@ systemctl --user daemon-reload</code>
             <h2 data-i18n="uninstall.kdeH2">Linux · KDE Plasma 6</h2>
             <div class="uninstall__step">
               <h3 data-i18n="uninstall.oneCmd">Em um comando</h3>
-              <p class="uninstall__hint" data-i18n="uninstall.kdeHint">Baixa e executa o desinstalador oficial do KDE:</p>
+              <p class="uninstall__hint" data-i18n="uninstall.kdeHint">
+                Baixa e executa o desinstalador oficial do KDE:
+              </p>
               <div class="code" data-copy>
-                <code>curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/uninstall-kde.sh | bash</code>
-                <button class="code__copy" type="button" data-copy-btn data-i18n="copy.btn" data-i18n-aria-label="copy.aria" aria-label="Copiar comando">Copiar</button>
+                <code
+                  >curl -sSL
+                  https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/uninstall-kde.sh
+                  | bash</code
+                >
+                <button
+                  class="code__copy"
+                  type="button"
+                  data-copy-btn
+                  data-i18n="copy.btn"
+                  data-i18n-aria-label="copy.aria"
+                  aria-label="Copiar comando"
+                >
+                  Copiar
+                </button>
               </div>
             </div>
 
@@ -94,24 +148,35 @@ systemctl --user daemon-reload</code>
                 Desabilita e remove o KWin Script, o daemon e o serviço:
               </p>
               <div class="code code--block" data-copy>
-                <code>kwriteconfig6 --file kwinrc --group Plugins --key etherbit-tilingEnabled false
-kpackagetool6 --type=KWin/Script -r etherbit-tiling
-qdbus6 org.kde.KWin /KWin reconfigure
-systemctl --user disable --now etherbit-tiling-daemon.service
-rm -f ~/.local/bin/etherbit-tiling-daemon
-rm -f ~/.config/systemd/user/etherbit-tiling-daemon.service
-systemctl --user daemon-reload</code>
-                <button class="code__copy" type="button" data-copy-btn data-i18n="copy.btn" data-i18n-aria-label="copy.ariaPlural" aria-label="Copiar comandos">Copiar</button>
+                <code
+                  >kwriteconfig6 --file kwinrc --group Plugins --key etherbit-tilingEnabled false
+                  kpackagetool6 --type=KWin/Script -r etherbit-tiling qdbus6 org.kde.KWin /KWin
+                  reconfigure systemctl --user disable --now etherbit-tiling-daemon.service rm -f
+                  ~/.local/bin/etherbit-tiling-daemon rm -f
+                  ~/.config/systemd/user/etherbit-tiling-daemon.service systemctl --user
+                  daemon-reload</code
+                >
+                <button
+                  class="code__copy"
+                  type="button"
+                  data-copy-btn
+                  data-i18n="copy.btn"
+                  data-i18n-aria-label="copy.ariaPlural"
+                  aria-label="Copiar comandos"
+                >
+                  Copiar
+                </button>
               </div>
             </div>
 
             <p class="uninstall__note" data-i18n="uninstall.note">
               <strong>Sua configuração é preservada por padrão.</strong> Os arquivos
               <code>~/.config/etherbit-tiling/</code> e (no GNOME) o
-              <code>~/.config/autostart/etherbit.tiling@ediano.dev.desktop</code> não são removidos. Para
-              apagá-los também, rode o desinstalador com <code>ETHERBIT_PURGE=1</code> ou remova-os à
-              mão. No <strong>Wayland</strong>: no GNOME, faça logout/login para descarregar a extensão;
-              no KDE, o <code>qdbus … reconfigure</code> já descarrega o KWin Script.
+              <code>~/.config/autostart/etherbit.tiling@ediano.dev.desktop</code> não são removidos.
+              Para apagá-los também, rode o desinstalador com <code>ETHERBIT_PURGE=1</code> ou
+              remova-os à mão. No <strong>Wayland</strong>: no GNOME, faça logout/login para
+              descarregar a extensão; no KDE, o <code>qdbus … reconfigure</code> já descarrega o
+              KWin Script.
             </p>
           </div>
         </div>
@@ -121,13 +186,22 @@ systemctl --user daemon-reload</code>
     <footer class="site-footer">
       <div class="container site-footer__inner">
         <p data-i18n="footer.tagline">
-          <strong>Etherbit Tiling</strong> — o tecido invisível que coloca suas janelas em órbita perfeita.
+          <strong>Etherbit Tiling</strong> — o tecido invisível que coloca suas janelas em órbita
+          perfeita.
         </p>
         <nav aria-label="Links do rodapé">
           <a href="/" data-i18n="footer.home">Início</a>
-          <a href="https://github.com/ediano" target="_blank" rel="noopener noreferrer" data-i18n="footer.repo">Repositório</a>
+          <a
+            href="https://github.com/ediano"
+            target="_blank"
+            rel="noopener noreferrer"
+            data-i18n="footer.repo"
+            >Repositório</a
+          >
         </nav>
-        <p class="site-footer__legal" data-i18n="footer.legal">© <span id="year">2026</span> Etherbit Tiling · Inspirado no COSMIC do Pop!_OS</p>
+        <p class="site-footer__legal" data-i18n="footer.legal">
+          © <span id="year">2026</span> Etherbit Tiling · Inspirado no COSMIC do Pop!_OS
+        </p>
       </div>
     </footer>
 

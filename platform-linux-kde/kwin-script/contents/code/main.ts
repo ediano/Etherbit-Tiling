@@ -93,7 +93,14 @@ function loadConfig(): TilingConfig {
 function pushConfigToDaemon(cfg: TilingConfig): void {
   callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetEnabled', cfg.enabled);
   callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetGap', cfg.gap);
-  callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetRoundedCorners', cfg.rounded_corners, cfg.corner_radius);
+  callDBus(
+    BUS_NAME,
+    OBJECT_PATH,
+    IFACE,
+    'SetRoundedCorners',
+    cfg.rounded_corners,
+    cfg.corner_radius,
+  );
 }
 
 const config = loadConfig();
@@ -148,8 +155,10 @@ let resolving = false;
 /// Zona quente resolvida no último passo do arrasto (define o drop: stack/split + escopo).
 let lastHot: HotZone | null = null;
 /// Resize manual em curso: internalId + frame inicial (para derivar borda/delta ao soltar).
-let resizeStart: { id: string; rect: { x: number; y: number; width: number; height: number } } | null =
-  null;
+let resizeStart: {
+  id: string;
+  rect: { x: number; y: number; width: number; height: number };
+} | null = null;
 /// Suprime retile reentrante enquanto aplicamos geometria/minimização.
 let applying = false;
 /// Sequência de SyncWindows enviados/confirmados. Sem `setTimeout` no sandbox, é assim que
@@ -328,8 +337,13 @@ function retile(): void {
   // Detector de daemon-ausente (sem timer no sandbox): se havia janelas e o sync anterior nunca
   // foi confirmado, o canal está mudo. Sempre logado — é o sinal que faltava na falha silenciosa.
   if (workspace.windowList().length > 0 && syncAckSeq < syncSeq) {
-    log('AVISO: SyncWindows anterior sem resposta (', syncAckSeq, '/', syncSeq,
-      ') — daemon provavelmente fora do barramento');
+    log(
+      'AVISO: SyncWindows anterior sem resposta (',
+      syncAckSeq,
+      '/',
+      syncSeq,
+      ') — daemon provavelmente fora do barramento',
+    );
   }
 
   const outputs = collectOutputs();
@@ -461,8 +475,14 @@ function retile(): void {
       }
       if (floatingStable.length > 0) {
         const snapStable = snapshots
-          .map((s) => ({ id: transportToStable.get(s.id), monitor: s.monitor, workspace: s.workspace }))
-          .filter((s): s is { id: string; monitor: number; workspace: number } => s.id !== undefined);
+          .map((s) => ({
+            id: transportToStable.get(s.id),
+            monitor: s.monitor,
+            workspace: s.workspace,
+          }))
+          .filter(
+            (s): s is { id: string; monitor: number; workspace: number } => s.id !== undefined,
+          );
         const visibleStable = commands
           .map((c) => ({ id: transportToStable.get(c.id), width: c.width, height: c.height }))
           .filter((v): v is { id: string; width: number; height: number } => v.id !== undefined);
@@ -661,9 +681,7 @@ function updateOutline(rect: Rect | null): void {
 /// Área útil do monitor que contém `(x, y)` (fallback: o primeiro monitor, ou um retângulo zerado).
 function monitorRectUnder(x: number, y: number): Rect {
   const monitors = monitorsFrom(collectOutputs());
-  const hit = monitors.find(
-    (m) => x >= m.x && x < m.x + m.width && y >= m.y && y < m.y + m.height,
-  );
+  const hit = monitors.find((m) => x >= m.x && x < m.x + m.width && y >= m.y && y < m.y + m.height);
   const m = hit ?? monitors[0];
   return m
     ? { x: m.x, y: m.y, width: m.width, height: m.height }
@@ -699,7 +717,10 @@ function draggedMinSize(id: string): { width: number; height: number } {
     }
     const min = win.minSize;
     if (min) {
-      return { width: Math.max(0, Math.round(min.width)), height: Math.max(0, Math.round(min.height)) };
+      return {
+        width: Math.max(0, Math.round(min.width)),
+        height: Math.max(0, Math.round(min.height)),
+      };
     }
     return { width: 0, height: 0 };
   }
@@ -729,7 +750,12 @@ function onMoveStep(): void {
     : null;
   const monitor = monitorRectUnder(cursor.x, cursor.y);
   // Min da janela em arrasto: estica a metade local do preview se o min-size exigir (ADR 0028).
-  const hot = resolveHotZone({ x: cursor.x, y: cursor.y }, targetRect, monitor, draggedMinSize(draggedId));
+  const hot = resolveHotZone(
+    { x: cursor.x, y: cursor.y },
+    targetRect,
+    monitor,
+    draggedMinSize(draggedId),
+  );
   lastHot = hot;
   // Preview via outline NATIVO do KWin (o daemon não desenha nada — é geometria pura). Contorno do
   // retângulo-destino da zona quente; `none` esconde.

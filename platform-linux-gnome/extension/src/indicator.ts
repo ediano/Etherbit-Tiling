@@ -200,6 +200,6 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
 
 // registerClass não preserva a assinatura do construtor customizado; reexpomos com o tipo correto.
 export type EtherbitIndicator = EtherbitIndicatorImpl;
-export const EtherbitIndicator = GObject.registerClass(
-  EtherbitIndicatorImpl,
-) as unknown as new (handlers: IndicatorHandlers) => EtherbitIndicatorImpl;
+export const EtherbitIndicator = GObject.registerClass(EtherbitIndicatorImpl) as unknown as new (
+  handlers: IndicatorHandlers,
+) => EtherbitIndicatorImpl;

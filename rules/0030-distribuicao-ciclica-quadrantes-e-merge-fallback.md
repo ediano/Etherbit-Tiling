@@ -43,7 +43,7 @@ daemon) mas só serve à **proteção anti-floating** do [0021](0021-tamanhos-mi
 (`enforce_min_sizes`).
 
 **Bootstrap ≡ incremental.** `balanced_node`/`half_rects` são removidas; o bootstrap (árvore vazia) vira
-`cyclic_bootstrap` = *fold* de `insert_cyclic` sobre os ids. Garante a invariante: reconciliar **N** ids
+`cyclic_bootstrap` = _fold_ de `insert_cyclic` sobre os ids. Garante a invariante: reconciliar **N** ids
 de uma vez é idêntico a abrir **1→N** uma a uma (teste `reconcile_bootstrap_matches_cyclic_incremental`).
 
 **Contagem por estado, não monotônica.** `count_before` é recomputado do estado **atual** da árvore a

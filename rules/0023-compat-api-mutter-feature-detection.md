@@ -48,6 +48,6 @@ não existe em toda a faixa. Faltava firmar isso como **regra da camada**, não 
 - **Regra para código futuro:** ao consumir qualquer API nova/instável do Mutter na extensão, use o
   mesmo padrão defensivo (precedentes: `_isMaximized`, `_minSize`/`get_min_size`).
 - **Tema irmão no KDE:** o endurecimento equivalente do **runtime do KWin (QJSEngine/Qt 6)** — alvo do
-  Vite em `es2018` por causa do *optional catch binding* — está em
+  Vite em `es2018` por causa do _optional catch binding_ — está em
   [0013](0013-camada-kde-kwin-script.md) (emenda 2026-06). Juntos cobrem "a mesma classe de bug:
   pressuposto de runtime da camada nativa que falha numa versão real do ambiente gráfico".

@@ -37,13 +37,13 @@ tracks (com `inner_gap` entre elas, `outer_gap` na borda da área) e **recorre**
 
 ### Semântica das 9 zonas + escopo (drop)
 
-| Zona (jogo da velha) | Ação no drop |
-| --- | --- |
-| **5 — Centro** | **Merge/abas**: o alvo vira `Stack { [alvo, arrastada] }` |
-| **2/4/6/8 — Eixos** | A nova janela toma a **linha/coluna inteira** daquele lado (track 1/3); o alvo é empurrado para as 2/3 restantes |
-| **1/3/7/9 — Cantos** | A nova janela toma a **célula de canto**; o alvo ocupa o restante (span) |
-| **Escopo Global** (perto das bordas da tela / em *gap* vazio) | Insere como **nó principal do workspace**: bloco de **50%**; o resto cascateia no outro 50% |
-| **Escopo Local** (sobre o corpo de uma janela) | Subdivide **dentro** da submatriz daquela janela |
+| Zona (jogo da velha)                                          | Ação no drop                                                                                                     |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **5 — Centro**                                                | **Merge/abas**: o alvo vira `Stack { [alvo, arrastada] }`                                                        |
+| **2/4/6/8 — Eixos**                                           | A nova janela toma a **linha/coluna inteira** daquele lado (track 1/3); o alvo é empurrado para as 2/3 restantes |
+| **1/3/7/9 — Cantos**                                          | A nova janela toma a **célula de canto**; o alvo ocupa o restante (span)                                         |
+| **Escopo Global** (perto das bordas da tela / em _gap_ vazio) | Insere como **nó principal do workspace**: bloco de **50%**; o resto cascateia no outro 50%                      |
+| **Escopo Local** (sobre o corpo de uma janela)                | Subdivide **dentro** da submatriz daquela janela                                                                 |
 
 ### Min-size como span elástico em cascata (generaliza [0021](0021-tamanhos-minimos-geometry-hints.md))
 
@@ -69,7 +69,7 @@ apenas move a aritmética **barata e efêmera** do preview para a ponte (ganho d
 - **GNOME:** a extensão (dentro do Mutter) desenha as **9 células translúcidas** com `St.Widget` em
   `Main.layoutManager.uiGroup` — estático, efêmero, sem animação (reafirma 0016). Centro = realce de
   merge; eixos = linha/coluna inteira; cantos = célula.
-- **KDE:** o KWin *Script* (QJSEngine) **não desenha overlay de 9 células** — usa o primitivo nativo
+- **KDE:** o KWin _Script_ (QJSEngine) **não desenha overlay de 9 células** — usa o primitivo nativo
   `workspace.showOutline(rect)` para realçar **só a zona resultante** (1 retângulo). **Paridade
   funcional**, não visual (mesma família do 0016/0018/0025). A barra de abas clicável do KDE
   (wgpu/wlr-layer-shell, 0025) **não** é reusada para o HUD nesta decisão.
@@ -93,11 +93,11 @@ no `callDBus` do KDE ([0009](0009-nomenclatura-dbus-uuid.md)); a tradução `int
 - **Reescrita do motor e dos testes:** `compute_geometry`/`reconcile`/`move_window`/`resize_window` e os
   ~57 testes do `layout.rs` foram reescritos para o grid. A máquina de mínimos/auto-float, os stacks e o
   esqueleto de drop foram **reaproveitados** (generalizados), não jogados fora.
-- **ADRs substituídos na topologia:** 0018/0019/0021/0022 têm o status alterado para *Substituída por
-  #0026* na parte de árvore BSP; o que permanece válido (stacks como conceito, min-size como requisito,
+- **ADRs substituídos na topologia:** 0018/0019/0021/0022 têm o status alterado para _Substituída por
+  #0026_ na parte de árvore BSP; o que permanece válido (stacks como conceito, min-size como requisito,
   Unmaximize Recovery, contrato espelhado, daemon sem estado) foi transportado para cá.
 - **Limitação registrada (KDE):** sem as 9 células visuais (só outline da zona resultante), igual à
   família de degradações já aceitas. Latência zero/paridade visual no KDE continuaria a depender de um
-  KWin *Effect* ou de estender a superfície wgpu/layer-shell do 0025 — fora do escopo desta decisão.
+  KWin _Effect_ ou de estender a superfície wgpu/layer-shell do 0025 — fora do escopo desta decisão.
 - **Fora do escopo:** `platform-macos` (Swift, não compila no container Linux). O core continua
   agnóstico; o consumo macOS do novo modelo é **trabalho futuro** adaptado no host.

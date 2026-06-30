@@ -5,6 +5,7 @@
 daemon sem estado" permanece.
 
 ## Contexto
+
 Sob **Wayland em VMs sem aceleração 3D** (GNOME Boxes / LLVMpipe) o ecossistema travava ou não
 inicializava. A causa raiz era carga de renderização e lógica acoplada dentro do **GNOME Shell (JS)**:
 qualquer desenho customizado (ex.: a "Borda Ativa") e animação no processo do compositor sob
@@ -12,11 +13,12 @@ rasterização por software congela a UI.
 
 Surgiu também a tentação de mover a renderização da borda para o daemon Rust com `wgpu`. Porém, sob
 Wayland, **um processo separado não desenha overlay ao redor das janelas de outros apps** — só o
-compositor pode (o COSMIC contorna isso *sendo* o compositor; o Etherbit roda *sobre* GNOME/KWin). O
+compositor pode (o COSMIC contorna isso _sendo_ o compositor; o Etherbit roda _sobre_ GNOME/KWin). O
 ADR [0002](0002-arquitetura-core-agnostico.md) já separa **decisão de layout** (core) de **aplicação**
 (camadas nativas), mas faltava firmar onde mora a renderização e o quanto a camada nativa pode conter.
 
 ## Decisão
+
 - **A extensão GNOME e o KWin Script são "pontes burras":** não decidem layout e não desenham nada,
   **com a única exceção do preview estático de drop zone** (ver Emenda 2026 abaixo). Atuam como ponte
   IPC de via dupla — coletam metadados brutos das janelas e áreas úteis, chamam `SyncWindows` no
@@ -26,7 +28,7 @@ ADR [0002](0002-arquitetura-core-agnostico.md) já separa **decisão de layout**
   (filtro cirúrgico) são únicos e agnósticos, sem dependências nem GL. Elimina a duplicação que existia
   no `_shouldIgnore` (GNOME) e no `tileColumns`/`shouldTile` (KDE).
 - **Contrato D-Bus `SyncWindows(windows_json, monitors_json) -> layout_json`** (request/response): serve
-  GNOME e KDE igualmente. O KWin Script **não assina sinais**, então usa o RETORNO (modelo *pull*); o
+  GNOME e KDE igualmente. O KWin Script **não assina sinais**, então usa o RETORNO (modelo _pull_); o
   daemon permanece **sem estado de janelas** (a verdade vive no compositor).
 - **A "Borda Ativa" é removida do produto.** Não é desenhável por um cliente Wayland; só pelo
   compositor. Os campos `active_border`/`border_color`/`border_width` e o método `SetActiveBorder`
@@ -49,7 +51,7 @@ esta ADR em vez de revogá-la (status permanece **✅ Aceita**).
 
 - **A matemática continua 100% no Rust.** O core ganha `detect_drop_zone(area, x, y, opts)` (zona +
   retângulo, FRAÇÕES da área) e o daemon expõe `ResolveDropZone(x, y, monitors_json) ->
-  preview_json` (request/response, **modelo pull**, espelhável GNOME/KDE). A ponte **não decide**
+preview_json` (request/response, **modelo pull**, espelhável GNOME/KDE). A ponte **não decide**
   a zona — só envia o ponto do cursor e recebe o retângulo pronto.
 - **O preview é desenhado pela EXTENSÃO**, não pelo daemon. Sob Wayland/GNOME (Mutter, **sem
   `wlr-layer-shell`**) apenas o compositor pode sobrepor janelas alheias; a extensão roda **dentro**
@@ -64,7 +66,7 @@ esta ADR em vez de revogá-la (status permanece **✅ Aceita**).
   **nativo** `workspace.showOutline(rect)` / `hideOutline()` — não há equivalente ao `St.Widget`
   preenchido, e uma caixa QML seria peso/fragilidade fora da "ponte burra". O arrasto é rastreado por
   eventos (`Window.interactiveMoveResizeStarted/Stepped/Finished`), sem polling. **Diferença de
-  apresentação aceita:** GNOME = caixa preenchida semi-transparente; KDE = *outline* nativo (o mesmo
+  apresentação aceita:** GNOME = caixa preenchida semi-transparente; KDE = _outline_ nativo (o mesmo
   do quick-tile). Paridade funcional total.
 - **O daemon permanece SEM ESTADO.** O motor de layout evoluiu de colunas para uma **divisão binária
   (BSP) determinística** (grades simétricas infinitas, isoladas por `(monitor, workspace)`), que é
@@ -76,7 +78,7 @@ esta ADR em vez de revogá-la (status permanece **✅ Aceita**).
 ## Emenda (2026): Abas, atalhos globais e drag-to-group → ver [0018](0018-abas-atalhos-globais-drag-to-group.md)
 
 A barra de abas é a **segunda exceção** de "desenho na ponte" (após o preview de drop): GNOME usa um
-`St.Widget` (`St.BoxLayout`); o KDE, por limitação do KWin *Script* (sem overlay QML confiável), usa
+`St.Widget` (`St.BoxLayout`); o KDE, por limitação do KWin _Script_ (sem overlay QML confiável), usa
 apresentação nativa (aba ativa visível, inativas minimizadas, troca dirigida por ativação). A
 matemática (slots/stacks, `detect_drop_target`) segue 100% no core, e o estado novo (stacks, aba
 ativa, grupos com tiling desligado) vive na **ponte** — o daemon **permanece sem estado**. Detalhes,
@@ -124,6 +126,7 @@ puro) **sai reforçado**: agora o daemon não desenha nem as próprias superfíc
 **✅ Aceita**, com a ressalva do cabeçalho.
 
 ## Consequências
+
 - **Resiliência estrutural:** como a extensão não renderiza layout e aplica geometria instantânea, o
   congelamento em LLVMpipe deixa de ocorrer — sem precisar detectar render por software no compositor.
   A flag/runtime de "degradação suave" no lado JS torna-se desnecessária. O overlay de drop zone é

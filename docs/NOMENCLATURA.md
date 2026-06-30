@@ -6,7 +6,7 @@ O **Etherbit Tiling** nasceu de uma frustração que quase todo desenvolvedor se
 um gerenciador de janelas que seja realmente automático, fluido e resistente a atualizações. Enquanto
 as opções do mercado exigem que você fique arrastando janelas ou quebram a cada versão nova do macOS,
 nós fomos buscar inspiração na física, na computação e no comportamento do aclamado ambiente
-**COSMIC do Pop!_OS**.
+**COSMIC do Pop!\_OS**.
 
 O nome **Etherbit** é a fusão cirúrgica de dois conceitos que definem a alma do nosso algoritmo:
 
@@ -20,10 +20,10 @@ O nome **Etherbit** é a fusão cirúrgica de dois conceitos que definem a alma 
 
 ## 🌌 A Filosofia por trás do Nome
 
-1. **Ether (Éter):** Na física clássica, o *Éter* era a substância invisível que preenchia todo o
+1. **Ether (Éter):** Na física clássica, o _Éter_ era a substância invisível que preenchia todo o
    espaço vazio do universo. No nosso software, o **Ether** representa a eliminação do espaço
    desperdiçado na tela. O aplicativo funciona como esse tecido invisível, organizando as janelas
-   automaticamente em blocos (*tiles*) para garantir que cada pixel da sua tela seja aproveitado de
+   automaticamente em blocos (_tiles_) para garantir que cada pixel da sua tela seja aproveitado de
    ponta a ponta, sem buracos e sem sobreposições.
 
 2. **Bit (Órbita e Tecnologia):** O sufixo **Bit** cumpre um papel duplo. Ele herda a mecânica de
@@ -51,9 +51,9 @@ O Etherbit resolve o problema do ecossistema Mac trazendo a inteligência do Pop
 
 ### Glossário de marca (referência rápida)
 
-| Termo | Significado no projeto |
-|-------|------------------------|
-| **Ether** | Tecido invisível que preenche o vazio da tela (zero espaço desperdiçado). |
-| **Bit** | Órbita (equilíbrio automático) + unidade de computação (performance pura). |
-| **Ether Flow** | Algoritmo agnóstico de divisão de tela (crate `core/`). |
-| **Tiling Dinâmico** | Organização automática de janelas ao abrir/fechar apps. |
+| Termo               | Significado no projeto                                                     |
+| ------------------- | -------------------------------------------------------------------------- |
+| **Ether**           | Tecido invisível que preenche o vazio da tela (zero espaço desperdiçado).  |
+| **Bit**             | Órbita (equilíbrio automático) + unidade de computação (performance pura). |
+| **Ether Flow**      | Algoritmo agnóstico de divisão de tela (crate `core/`).                    |
+| **Tiling Dinâmico** | Organização automática de janelas ao abrir/fechar apps.                    |

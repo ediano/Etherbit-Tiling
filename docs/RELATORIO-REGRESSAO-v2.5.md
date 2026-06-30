@@ -8,13 +8,13 @@
 
 ## Linha do tempo (tags reais do repositório)
 
-| Tag | Estado | Marco |
-| --- | --- | --- |
-| `v2.1.0`, `v2.2.0` | ✅ operacional | pipeline do daemon enxuto; pouca superfície de falha |
-| `v2.3.0` (`3f7db85`) | ⚠️ fragilidade cresce | tamanhos mínimos + auto-floating |
-| `v2.4.0` (`5263bbc`) | ⚠️ fragilidade cresce | `Node::Stack` + estado de maximização |
-| `v2.5.0` (`a4c5910`) | ❌ **falha total** | maior superfície de cálculo **sem rede de proteção** |
-| `v2.5.1` (`0b03e24`) | ✅ **conserto** | `de_index` + `guard`/`catch_unwind` + `obs.rs` |
+| Tag                  | Estado                | Marco                                                |
+| -------------------- | --------------------- | ---------------------------------------------------- |
+| `v2.1.0`, `v2.2.0`   | ✅ operacional        | pipeline do daemon enxuto; pouca superfície de falha |
+| `v2.3.0` (`3f7db85`) | ⚠️ fragilidade cresce | tamanhos mínimos + auto-floating                     |
+| `v2.4.0` (`5263bbc`) | ⚠️ fragilidade cresce | `Node::Stack` + estado de maximização                |
+| `v2.5.0` (`a4c5910`) | ❌ **falha total**    | maior superfície de cálculo **sem rede de proteção** |
+| `v2.5.1` (`0b03e24`) | ✅ **conserto**       | `de_index` + `guard`/`catch_unwind` + `obs.rs`       |
 
 ## O que quebrou (v2.2.0 → v2.5.0)
 

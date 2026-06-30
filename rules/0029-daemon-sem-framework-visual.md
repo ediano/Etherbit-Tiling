@@ -54,7 +54,7 @@ buscou vazamentos de escopo entre o **core/daemon** e a **interface**. Resultado
 ### Agrupamento como contrato universal e stateless (blindagem para KDE/macOS)
 
 - O estado de agrupamento ("abas") viaja como a estrutura **universal e agnóstica** `StackDto { members,
-  active }` (no `state_json`/`tab_bars`), que é o equivalente de dados a `GroupWindow(id)`/`ActiveTab(id)`.
+active }` (no `state_json`/`tab_bars`), que é o equivalente de dados a `GroupWindow(id)`/`ActiveTab(id)`.
   O **daemon permanece sem estado**: recebe o snapshot da ponte e devolve geometria.
 - Qualquer nova camada visual (reintrodução de abas no KDE, ou um port macOS) consome **essa mesma API
   matemática** para desenhar a interface, **sem alterar uma linha do core**. A apresentação (criar abas,

@@ -4,7 +4,7 @@
 
 **O tecido invisível que coloca suas janelas em órbita perfeita.**
 
-Gerenciador automático de janelas (*tiling window manager*) com algoritmo agnóstico em Rust,
+Gerenciador automático de janelas (_tiling window manager_) com algoritmo agnóstico em Rust,
 foco principal em **macOS** (Swift nativo) e suporte a **Linux / GNOME 45+ (Wayland)** e
 **KDE Plasma 6 (Wayland)**. Inspirado no ambiente **COSMIC** do Pop!_OS.
 
@@ -25,6 +25,7 @@ eventos de janela e aplica as decisões do core.
 > 📖 A história e a filosofia do nome estão em [docs/NOMENCLATURA.md](docs/NOMENCLATURA.md).
 
 ### O que entrega
+
 - **Tiling Dinâmico** — janelas organizadas automaticamente ao abrir/fechar apps, sem mouse.
 - **Ether Flow** — preenchimento inteligente que elimina espaços mortos e se adapta em tempo real.
 - **Arquitetura nativa e resiliente** — camada macOS em Swift sobre as APIs estáveis da Apple

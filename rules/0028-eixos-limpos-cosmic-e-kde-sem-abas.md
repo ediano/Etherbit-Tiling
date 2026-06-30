@@ -23,7 +23,7 @@ e foco no KWin; o escopo do KDE passa a ser **100% tiling dinâmico puro**.
 
 ### Mecânica de arraste (universal: GNOME e KDE)
 
-**Zonas globais** — cursor nas faixas de borda da **TELA** (em *gap*, ou sobre janela colada à borda):
+**Zonas globais** — cursor nas faixas de borda da **TELA** (em _gap_, ou sobre janela colada à borda):
 esquerda/direita → **50% vertical**; topo/base → **50% horizontal**; miolo central da tela vazia →
 **maximizar** (100%). **Sem os 4 cantos.**
 

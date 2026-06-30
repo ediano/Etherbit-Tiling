@@ -67,7 +67,7 @@ estado persistente** (topologia + `ratio` por nó) — impossível com a funçã
   `SetRoundedCorners(enabled, radius)`. **GNOME** anexa um `Clutter.ShaderEffect` (SDF de retângulo
   arredondado) ao `Meta.WindowActor` — a extensão roda **dentro** do Mutter (pode), ao contrário do
   daemon (processo externo: Wayland proíbe overlay alheio, ver 0016); é **defensivo** (se o shader
-  falhar, a janela renderiza normal). **KDE:** um KWin *Script* não instancia shaders → depende do
+  falhar, a janela renderiza normal). **KDE:** um KWin _Script_ não instancia shaders → depende do
   efeito **nativo** de cantos do KWin; o script só propaga a config (mesma família de "diferença de
   apresentação aceita" do 0016/0018).
 

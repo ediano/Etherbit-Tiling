@@ -41,12 +41,15 @@ off-by-one parecia um bug do motor quando às vezes é só uma janela de desktop
 ## Decisão
 
 ### A) Corrigir a assinatura de `unmaximize` (a causa)
+
 `_spawnUnmaximizeIfBorn` passa a chamar `window.unmaximize()` **sem argumento** (Mutter ≥ 46). Elimina o
 `JS WARNING` recorrente e faz o spawn-unmaximize **efetivamente** desmaximizar → a janela ganha folha e
 sai de `maximized_ids`, encaixando no grid já na 1ª. A robustez de 0034 (3 instantes + guard `everTiled`
-+ Unmaximize Recovery) permanece — agora com um gatilho que funciona.
+
+- Unmaximize Recovery) permanece — agora com um gatilho que funciona.
 
 ### B) Log de relayout FIEL À TELA (ponte) + diagnóstico do daemon
+
 - **Daemon devolve `dropped: [{ id, reason }]`** no `LayoutResultDto`: para cada janela RECEBIDA e não
   posicionada, o motivo — `non_normal`/`non_resizable`/`non_maximizable`/`ignored` (reprovou em
   `is_tileable`) ou `excluded_maximized` (`retain_tileable_when_maximized`). É **puramente diagnóstico**:

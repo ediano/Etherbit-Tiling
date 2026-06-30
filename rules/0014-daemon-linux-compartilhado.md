@@ -3,6 +3,7 @@
 **Status:** ✅ Aceita
 
 ## Contexto
+
 O ADR [0003](0003-monorepo-poliglota.md) estabelece workspaces Cargo isolados por plataforma. Ao
 adicionar a camada KDE (ADR [0013](0013-camada-kde-kwin-script.md)) surgiu a questão: o daemon
 (`etherbit-tiling-daemon`) deve ser **duplicado** num novo workspace `platform-linux-kde/daemon`, ou
@@ -14,6 +15,7 @@ autostart via `.desktop` + serviço `systemd --user`. Nada nele é específico d
 significaria manter duas cópias quase idênticas (código, `Cargo.lock`, testes) em sincronia.
 
 ## Decisão
+
 - **O daemon é único e compartilhado entre GNOME e KDE.** A camada KDE **não** tem workspace Cargo
   próprio nem cópia do daemon: entrega apenas o KWin Script. O isolamento por plataforma do ADR 0003
   passa a valer para a **camada nativa de UI/eventos** (extension vs. KWin Script), não para o daemon,
@@ -26,6 +28,7 @@ significaria manter duas cópias quase idênticas (código, `Cargo.lock`, testes
   `etherbit-tiling-daemon.service`. Se o usuário tem as duas camadas, o daemon é o mesmo serviço.
 
 ## Consequências
+
 - **Nomenclatura honesta:** o diretório foi renomeado de `platform-linux-daemon/` para
   `etherbit-tiling-daemon/`, espelhando o nome do crate/binário compartilhado (agnóstico de DE). As
   camadas de UI seguem `platform-linux-gnome/` (extension) e `platform-linux-kde/` (KWin Script). Isso

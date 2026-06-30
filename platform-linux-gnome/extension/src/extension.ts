@@ -276,8 +276,7 @@ export default class EtherbitTilingExtension extends Extension {
       onGap: (gap) => this._call((p) => p.SetGapSync(gap)),
       // O raio é a única fonte de verdade do arredondamento: `> 0` liga, `0` desliga. Derivamos o
       // `rounded_corners` do contrato a partir disso (não há mais toggle separado).
-      onCornerRadius: (radius) =>
-        this._call((p) => p.SetRoundedCornersSync(radius > 0, radius)),
+      onCornerRadius: (radius) => this._call((p) => p.SetRoundedCornersSync(radius > 0, radius)),
     });
     Main.panel.addToStatusArea(this.uuid, this._indicator);
 
@@ -296,9 +295,7 @@ export default class EtherbitTilingExtension extends Extension {
 
     // 5) Eventos nativos do Mutter que motivam um novo layout.
     this._displayIds.push(
-      global.display.connect('window-created', (_display, window) =>
-        this._onWindowCreated(window),
-      ),
+      global.display.connect('window-created', (_display, window) => this._onWindowCreated(window)),
     );
     this._displayIds.push(
       global.display.connect('notify::focus-window', () => this._scheduleRelayout()),
@@ -828,7 +825,9 @@ export default class EtherbitTilingExtension extends Extension {
             }
           }
         } catch (error) {
-          console.error(`Etherbit Tiling: falha ao aplicar geometria na janela ${command.id}: ${error}`);
+          console.error(
+            `Etherbit Tiling: falha ao aplicar geometria na janela ${command.id}: ${error}`,
+          );
         }
       }
       // Oculta as abas inativas recém-empilhadas. `minimize()` mexe no stack do Mutter: numa janela

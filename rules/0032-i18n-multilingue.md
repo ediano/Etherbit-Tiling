@@ -26,8 +26,8 @@ forma consistente:
   (são distribuídos isolados via `curl … | bash`, não podem `source` arquivos vizinhos). Catálogo de
   referência humano em `packaging/i18n-reference.sh`.
 - **Web (Vite vanilla):** dicionário próprio **zero-dependência** — `web/src/locales/{en,pt-BR}.json`
-  + runtime `web/src/i18n.js` com atributos `data-i18n` no HTML, detecção por `navigator.language` e
-  persistência em `localStorage`. **A URL não muda** (sem rotas por idioma).
+  - runtime `web/src/i18n.js` com atributos `data-i18n` no HTML, detecção por `navigator.language` e
+    persistência em `localStorage`. **A URL não muda** (sem rotas por idioma).
 - **GNOME (extensão TS → GJS):** objeto literal `en`/`pt-BR` em `src/i18n.ts`, detecção via
   `GLib.get_language_names()` (a extensão é bundlada num único `extension.js`; gettext/`.mo` seria
   desproporcional).

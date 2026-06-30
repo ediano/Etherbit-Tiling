@@ -9,6 +9,7 @@ O Etherbit Tiling tem um core agnóstico em Rust (`core`) + um daemon compartilh
 vazamentos de escopo: lógica de UI (abas, tags, render, widgets) acoplada ao core.
 
 **Resultado da auditoria (Entregável 1):** a arquitetura já está ~90% limpa.
+
 - O `core` é matemática pura (sem deps, sem I/O, sem D-Bus): calcula retângulos e a
   geometria de slots agrupados (`StackDescriptor`, `Node::Stack`, `TabBarRect`). **Tudo legítimo.**
 - O `protocol.rs` é uma fronteira JSON de DTOs. **Limpo**, salvo campos vestigiais (ver abaixo).
@@ -21,6 +22,7 @@ vazamentos de escopo: lógica de UI (abas, tags, render, widgets) acoplada ao co
   pega o título localmente via `window.get_title()` em [extension.ts:1117](../../platform-linux-gnome/extension/src/extension.ts#L1117).
 
 **Decisões aprovadas pelo usuário:**
+
 1. **HUD wgpu → remover totalmente.** KDE passa a usar o `workspace.showOutline()` nativo (já existe
    como fallback). GNOME desenha em `St.Widget` (não afetado).
 2. **Contrato → limpeza completa.** Remover `title`/`titles`; renomear `tab_bar_height` para nome
@@ -43,7 +45,7 @@ Apagar/limpar todo o pipeline wgpu + layer-shell. Arquivos:
 - `etherbit-tiling-daemon/daemon/Cargo.toml`: remover a feature `wgpu-ui` (linhas 6–17) e as
   5 deps opcionais: `wgpu`, `smithay-client-toolkit`, `raw-window-handle`, `bytemuck`, `wayland-client`.
 - `etherbit-tiling-daemon/daemon/src/main.rs`: remover os `#[cfg(feature = "wgpu-ui")] mod
-  layer/render`, o bloco `render::init_render()`, o spawn de `layer::run_event_loop`, e o uso de `shared`
+layer/render`, o bloco `render::init_render()`, o spawn de `layer::run_event_loop`, e o uso de `shared`
   (linhas 10–16, 35–53, 56–59, 72–85). O `serve` passa a devolver só a conexão.
 - `etherbit-tiling-daemon/daemon/src/service.rs`: remover o campo `hud_tx` (L30–33), os
   métodos `show_drop_hud`/`hide_drop_hud` (L243–266), o `import use tokio::sync::watch` (L16–17), a struct
@@ -93,7 +95,7 @@ Apagar/limpar todo o pipeline wgpu + layer-shell. Arquivos:
 
 1. **Daemon:** `cargo build` e `cargo test` na raiz e em `etherbit-tiling-daemon/` — sem a feature
    `wgpu-ui` não deve existir mais; o binário não linka wgpu/wayland. `cargo tree -p
-   etherbit-tiling-daemon | grep -E 'wgpu|wayland|smithay'` deve vir **vazio**.
+etherbit-tiling-daemon | grep -E 'wgpu|wayland|smithay'` deve vir **vazio**.
 2. **Contrato:** `busctl --user introspect dev.ediano.etherbit.Tiling /dev/ediano/etherbit/Tiling` não
    deve listar `ShowDropHud`/`HideDropHud`.
 3. **Plataformas:** `pnpm test` em `platform-linux-gnome/extension/` e

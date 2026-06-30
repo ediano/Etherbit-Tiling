@@ -3,6 +3,7 @@
 **Status:** ✅ Aceita
 
 ## Contexto
+
 As notas de cada release (corpo publicado por `release.yml` no repo público de releases) citavam
 comandos de instalação com URLs do tipo `releases/latest/download/install-gnome.sh`. O problema:
 `latest` **sempre aponta para a versão mais nova**. Assim, ao abrir as notas de uma release
@@ -14,6 +15,7 @@ mais simples e robusto: os artefatos já ficam **anexados àquela release espec�
 são, por natureza, da versão exata. Não é preciso citar URL alguma.
 
 ## Decisão
+
 - **As notas de release não citam nenhuma URL de download.** Elas instruem o **download manual** dos
   assets anexados àquela release e a execução local do instalador (baixar o tarball → extrair →
   rodar `./install-*.sh`). Como o instalador roda a partir do tarball extraído, o payload está
@@ -26,6 +28,7 @@ são, por natureza, da versão exata. Não é preciso citar URL alguma.
   `latest`); os instaladores **não** mudam.
 
 ## Consequências
+
 - Notas de releases antigas permanecem coerentes para sempre: apontam para os próprios assets, nunca
   para "o mais novo".
 - Sem maquinaria de injeção de versão em URL ou nos scripts — menos pontos de falha.

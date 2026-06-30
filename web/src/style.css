@@ -24,12 +24,8 @@
   --shadow-lg: 0 24px 60px -20px rgba(0, 0, 0, 0.8);
   --ring: 0 0 0 3px rgba(94, 129, 172, 0.35);
 
-  --font:
-    system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell,
-    "Noto Sans", sans-serif;
-  --mono:
-    ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas,
-    monospace;
+  --font: system-ui, -apple-system, 'Segoe UI', Roboto, Ubuntu, Cantarell, 'Noto Sans', sans-serif;
+  --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace;
 }
 
 * {
@@ -54,16 +50,8 @@ body {
 
   /* Brilho ambiente sutil no topo. */
   background-image:
-    radial-gradient(
-      900px 500px at 70% -10%,
-      rgba(94, 129, 172, 0.16),
-      transparent 60%
-    ),
-    radial-gradient(
-      700px 400px at 10% 0%,
-      rgba(136, 192, 208, 0.08),
-      transparent 55%
-    );
+    radial-gradient(900px 500px at 70% -10%, rgba(94, 129, 172, 0.16), transparent 60%),
+    radial-gradient(700px 400px at 10% 0%, rgba(136, 192, 208, 0.08), transparent 55%);
   background-repeat: no-repeat;
 }
 
@@ -332,12 +320,7 @@ h4 {
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-strong);
   background:
-    linear-gradient(
-      135deg,
-      rgba(94, 129, 172, 0.22),
-      rgba(136, 192, 208, 0.06)
-    ),
-    var(--surface);
+    linear-gradient(135deg, rgba(94, 129, 172, 0.22), rgba(136, 192, 208, 0.06)), var(--surface);
   transform-origin: center;
   animation: settle 7s ease-in-out infinite;
 }

@@ -58,15 +58,15 @@ Etherbit-Tiling/
 
 ## Papel de cada componente
 
-| Pasta | Linguagem / Stack | Responsabilidade |
-|-------|-------------------|------------------|
-| `core/` | Rust (lib) | **Ether Flow** — algoritmo agnóstico de divisão de tela e regras de filtragem de janelas. Sem dependências de SO. |
-| `platform-macos/` | Swift (AppKit / Accessibility API) | Captura eventos de janela no macOS e aplica o layout decidido pelo core. **Build no host macOS.** |
-| `etherbit-tiling-daemon/daemon/` | Rust (bin) | Roteador de eventos **D-Bus** compartilhado por GNOME e KDE; ponte entre a camada nativa e o core. Depende de `etherbit-tiling-core` por path. |
-| `platform-linux-gnome/extension/` | TypeScript + Vite (ESM) | Extensão-ponte do GNOME Shell que conversa com o daemon. |
-| `platform-linux-kde/kwin-script/` | TypeScript + Vite (IIFE) | KWin Script (Plasma 6 / Wayland) que aplica o tiling e conversa com o daemon. **Reusa o daemon compartilhado** (ver ADR 0014). |
-| `web/` | Vite + HTML5/CSS3 puro | Landing page global e agnóstica — hub oficial de distribuição (manifesto + downloads). Sem CDN. |
-| `.devcontainer/` + `docker/` | Docker | Ambiente de desenvolvimento isolado e reproduzível. |
+| Pasta                             | Linguagem / Stack                  | Responsabilidade                                                                                                                               |
+| --------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `core/`                           | Rust (lib)                         | **Ether Flow** — algoritmo agnóstico de divisão de tela e regras de filtragem de janelas. Sem dependências de SO.                              |
+| `platform-macos/`                 | Swift (AppKit / Accessibility API) | Captura eventos de janela no macOS e aplica o layout decidido pelo core. **Build no host macOS.**                                              |
+| `etherbit-tiling-daemon/daemon/`  | Rust (bin)                         | Roteador de eventos **D-Bus** compartilhado por GNOME e KDE; ponte entre a camada nativa e o core. Depende de `etherbit-tiling-core` por path. |
+| `platform-linux-gnome/extension/` | TypeScript + Vite (ESM)            | Extensão-ponte do GNOME Shell que conversa com o daemon.                                                                                       |
+| `platform-linux-kde/kwin-script/` | TypeScript + Vite (IIFE)           | KWin Script (Plasma 6 / Wayland) que aplica o tiling e conversa com o daemon. **Reusa o daemon compartilhado** (ver ADR 0014).                 |
+| `web/`                            | Vite + HTML5/CSS3 puro             | Landing page global e agnóstica — hub oficial de distribuição (manifesto + downloads). Sem CDN.                                                |
+| `.devcontainer/` + `docker/`      | Docker                             | Ambiente de desenvolvimento isolado e reproduzível.                                                                                            |
 
 ## Workspaces Rust (builds isolados)
 
