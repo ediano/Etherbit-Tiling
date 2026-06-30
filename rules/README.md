@@ -43,7 +43,8 @@ arqueologia de commits.
 | [0031](0031-cascata-sempre-spawn-unmaximize-e-preview-translucido.md) | Cascata sempre (sem floating), desmaximização no nascimento + histórico, e preview KDE translúcido | ✅ Aceita; floating reativado como sinal de overflow por #0033; spawn-unmaximize estendido a 3 instantes por #0034 |
 | [0032](0032-i18n-multilingue.md) | i18n multilíngue de UI e instalador (en default, pt-BR por locale) | ✅ Aceita |
 | [0033](0033-min-size-real-e-merge-em-abas-sob-overflow.md) | Min-size real, sinal de overflow e Merge Fallback em abas (paridade GNOME ⇄ KDE) | ✅ Aceita; first-frame vira gatilho primário com fallback de estabilização por #0034 |
-| [0034](0034-estabilizacao-spawn-gnome-wayland.md) | Estabilização de spawn no GNOME/Wayland: micro-delay + sinais reais (paridade com KDE) | ✅ Aceita |
+| [0034](0034-estabilizacao-spawn-gnome-wayland.md) | Estabilização de spawn no GNOME/Wayland: micro-delay + sinais reais (paridade com KDE) | ✅ Aceita; gatilho de unmaximize corrigido (assinatura Mutter 50) por #0035 |
+| [0035](0035-unmaximize-mutter50-e-log-fiel-a-tela.md) | `unmaximize()` 0-arg no Mutter 50 + log de relayout fiel à tela (campo `dropped` no daemon) | ✅ Aceita |
 
 ## Como adicionar uma nova decisão
 1. Copie o formato de um ADR existente.

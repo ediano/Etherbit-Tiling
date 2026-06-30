@@ -32,6 +32,7 @@ import {
   parseLayout,
   parseTabBars,
   parseFloating,
+  parseDropped,
   clampGeometry,
   parseLayoutTrees,
   resolveHotZone,
@@ -704,6 +705,10 @@ export default class EtherbitTilingExtension extends Extension {
 
     const commands = parseLayout(layoutJson);
     const tabBars = parseTabBars(layoutJson);
+    // Diagnóstico (ADR): janelas recebidas que o daemon NÃO tilou, com o motivo. Faz o log refletir
+    // a tela — `total > aplicadas` deixa de parecer bug quando é só uma janela não-tileável (ex.:
+    // desktop/DING) ou uma "nascida maximizada" ainda fora do grid (`excluded_maximized`).
+    const dropped = parseDropped(layoutJson);
     // Sinal de OVERFLOW (ADR 0033): janelas cujo slot ficou < o mínimo mesmo após a cascata. Alimenta
     // o Merge Fallback abaixo (colapsar em abas, onde cada aba recebe o slot inteiro) — o caminho que
     // resolve apps de min grande no Wayland (ex.: Ubuntu Store). O float-and-elevate legado (mais
@@ -765,9 +770,22 @@ export default class EtherbitTilingExtension extends Extension {
     }
     this._lastLayoutSig = layoutSig;
 
-    // Observabilidade (regressão do tiling): mostra o round-trip ponte→daemon→ponte no journal do
-    // gnome-shell. `N janelas` SEM `M rects` correspondente ⇒ daemon não respondeu / erro no sync.
-    console.log(`[etherbit] relayout: ${snapshots.length} janelas → ${commands.length} rects, ${floating.length} flutuantes`);
+    // Observabilidade FIEL À TELA (regressão do tiling): mostra o round-trip ponte→daemon→ponte no
+    // journal do gnome-shell. `total` = janelas recebidas; `aplicadas` = quantas ganharam slot;
+    // `descartadas` lista id:motivo (por que `total` > `aplicadas`, sem parecer off-by-one). A linha
+    // `grid:` traz a geometria final de cada janela aplicada (x,y wxh) — casa com o que está na tela.
+    const droppedDesc =
+      dropped.length > 0
+        ? ` descartadas=[${dropped.map((d) => `${d.id}:${d.reason}`).join(', ')}]`
+        : '';
+    console.log(
+      `[etherbit] relayout: total=${snapshots.length} aplicadas=${commands.length} flutuantes=${floating.length}${droppedDesc}`,
+    );
+    if (commands.length > 0) {
+      console.log(
+        `[etherbit] grid: ${commands.map((c) => `${c.id}@${c.x},${c.y} ${c.width}x${c.height}`).join(' | ')}`,
+      );
+    }
 
     this._suppressRelayout = true;
     try {
@@ -1593,7 +1611,19 @@ export default class EtherbitTilingExtension extends Extension {
       return;
     }
     try {
-      window.unmaximize(Meta.MaximizeFlags.BOTH);
+      // Mutter >= 46 (GNOME 46+/Mutter 50) mudou a assinatura de `Meta.Window.unmaximize()` para ZERO
+      // argumentos — sempre desmaximiza em ambos os eixos. Passar `MaximizeFlags.BOTH` dispara
+      // `JS WARNING: Too many arguments to method Meta.Window.unmaximize: expected 0, got 1` e a
+      // desmaximização NÃO acontece: a janela "nascida maximizada" fica presa em `maximized`, o core a
+      // exclui do grid (retain_tileable_when_maximized) e ela flutua em tela cheia (regressão do spawn).
+      // Os tipos @girs ainda declaram 1 arg (GNOME 45); cast cirúrgico + fallback à assinatura legada
+      // mantêm a compat 45→50 (ADR 0023): tenta 0-arg (Mutter >= 46) e cai p/ 1-arg só se lançar.
+      const unmaximize = window.unmaximize as unknown as (flags?: Meta.MaximizeFlags) => void;
+      try {
+        unmaximize.call(window);
+      } catch {
+        unmaximize.call(window, Meta.MaximizeFlags.BOTH);
+      }
     } catch (error) {
       console.error(`Etherbit Tiling: spawn-unmaximize falhou na janela ${id}: ${error}`);
     }

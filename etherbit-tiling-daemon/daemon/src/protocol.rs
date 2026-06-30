@@ -215,6 +215,21 @@ pub struct LayoutResultDto {
     /// (retrocompat com ponte/daemon antigos).
     #[serde(default)]
     pub floating: Vec<RectDto>,
+    /// DIAGNÓSTICO: janelas RECEBIDAS que NÃO viraram rect, com o motivo. Permite à ponte logar fiel
+    /// à tela (por que `recebidas` > `tiladas`) em vez de o off-by-one parecer bug. Ausente = vazio
+    /// (retrocompat). Não afeta o layout.
+    #[serde(default)]
+    pub dropped: Vec<DroppedDto>,
+}
+
+/// Uma janela recebida que o daemon NÃO posicionou, com o motivo. Motivos: `ignored` (lista de
+/// exclusão), `non_resizable`, `non_maximizable`, `non_normal` (reprovada em `is_tileable`), ou
+/// `excluded_maximized` (tileável, mas "nasceu maximizada" e ainda sem folha →
+/// `retain_tileable_when_maximized` a mantém fora do grid até desmaximizar).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DroppedDto {
+    pub id: u64,
+    pub reason: String,
 }
 
 /// Inverso de `zone_label`: rótulo snake_case → zona do core (desconhecido → `None`).
@@ -461,6 +476,26 @@ pub fn sync_windows(
     serde_json::to_string(&dto).context("falha ao serializar layout_json")
 }
 
+/// Motivo do descarte de uma janela NÃO tileável — espelha a ordem de `is_tileable` (core). Só é
+/// chamada quando `is_tileable` já retornou `false`, então sempre acha um motivo (`unknown` é só uma
+/// rede defensiva caso as regras divirjam). Puramente diagnóstica.
+fn drop_reason(w: &WindowInfo, ignore_list: &[String]) -> String {
+    let app = w.app_id.to_lowercase();
+    if !app.is_empty() && ignore_list.iter().any(|e| e.to_lowercase() == app) {
+        return "ignored".to_string();
+    }
+    if !w.resizable {
+        return "non_resizable".to_string();
+    }
+    if !w.maximizable {
+        return "non_maximizable".to_string();
+    }
+    if !w.normal {
+        return "non_normal".to_string();
+    }
+    "unknown".to_string()
+}
+
 /// Núcleo do `SyncWindows` que devolve o DTO (sem serializar). O `service` usa esta variante e
 /// serializa ela mesmo; o `sync_windows` acima é o wrapper que serializa direto (usado por testes e
 /// diagnóstico). É puro/sem estado.
@@ -479,10 +514,18 @@ pub fn sync_windows_dto(
 
     let areas: Vec<WorkArea> = monitors.iter().map(WorkArea::from).collect();
 
-    // Filtro cirúrgico centralizado no core; a ponte é burra e pode enviar tudo.
+    // Filtro cirúrgico centralizado no core; a ponte é burra e pode enviar tudo. `dropped` registra
+    // quem foi descartado e por quê (diagnóstico fiel à tela) — não altera o layout.
     let n_windows = windows.len();
-    let tileable: Vec<WindowInfo> =
-        windows.into_iter().map(WindowInfo::from).filter(|w| is_tileable(w, ignore_list)).collect();
+    let mut dropped: Vec<DroppedDto> = Vec::new();
+    let mut tileable: Vec<WindowInfo> = Vec::new();
+    for w in windows.into_iter().map(WindowInfo::from) {
+        if is_tileable(&w, ignore_list) {
+            tileable.push(w);
+        } else {
+            dropped.push(DroppedDto { id: w.id, reason: drop_reason(&w, ignore_list) });
+        }
+    }
 
     // Ordem dos grupos `(monitor, workspace)` conforme a primeira janela descoberta em cada um.
     let mut group_order: Vec<(u32, u32)> = Vec::new();
@@ -521,7 +564,15 @@ pub fn sync_windows_dto(
             .filter(|w| w.monitor == monitor && w.workspace == workspace && w.maximized)
             .map(|w| w.id)
             .collect();
-        let group_ids = retain_tileable_when_maximized(&prev, &group_ids, &maximized_ids);
+        let kept_ids = retain_tileable_when_maximized(&prev, &group_ids, &maximized_ids);
+        // Tileáveis que ficaram FORA do grid por terem nascido maximizadas sem folha prévia: registra
+        // o motivo para a ponte logar (a janela "some" do relayout até desmaximizar).
+        for id in &group_ids {
+            if !kept_ids.contains(id) {
+                dropped.push(DroppedDto { id: *id, reason: "excluded_maximized".to_string() });
+            }
+        }
+        let group_ids = kept_ids;
         let focused_opt =
             if focused != 0 && group_ids.contains(&focused) { Some(focused) } else { None };
 
@@ -557,15 +608,16 @@ pub fn sync_windows_dto(
     }
 
     crate::dlog!(
-        "sync_windows: {n_windows} recebida(s) → {} tileável(is) → {} rect(s), {} barra(s), {} flutuante(s), {} grupo(s)",
+        "sync_windows: {n_windows} recebida(s) → {} tileável(is) → {} rect(s), {} barra(s), {} flutuante(s), {} descartada(s), {} grupo(s)",
         tileable.len(),
         rects.len(),
         tab_bars.len(),
         floating.len(),
+        dropped.len(),
         out_trees.len()
     );
 
-    Ok(LayoutResultDto { rects, tab_bars, trees: out_trees, floating })
+    Ok(LayoutResultDto { rects, tab_bars, trees: out_trees, floating, dropped })
 }
 
 /// Resolve o destino de um drop sob o ponto `(x, y)`. Escolhe a área útil que CONTÉM o ponto e

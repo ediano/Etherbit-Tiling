@@ -410,7 +410,8 @@ h4 {
 }
 
 .manifesto,
-.downloads {
+.downloads,
+.diagnostics {
   padding-block: clamp(56px, 9vw, 110px);
 }
 
@@ -638,6 +639,74 @@ h4 {
   }
 }
 
+/* ───────────────── Diagnóstico & reporte de bugs ───────────────── */
+.diagnostics {
+  border-top: 1px solid var(--border);
+}
+
+/* Card de ambiente (GNOME/KDE) com as duas variantes empilhadas. O hover de
+   elevação do `.card` é neutralizado: estes cards são longos (2 blocos cada). */
+.diag-card {
+  &:hover {
+    transform: none;
+    box-shadow: none;
+    border-color: var(--border);
+  }
+
+  /* Subtítulo da variante (tempo vs boot). */
+  & .diag-card__variant {
+    margin: 22px 0 6px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  & .diag-card__variant:first-of-type {
+    margin-top: 4px;
+  }
+
+  & .diag-card__hint {
+    margin: 0 0 12px;
+    font-size: 0.9rem;
+    color: var(--muted);
+  }
+}
+
+/* Call to action: passos numerados + botão de reporte. */
+.diag-send {
+  max-width: 720px;
+  margin: 44px auto 0;
+  padding: 30px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  text-align: center;
+}
+
+.diag-send__title {
+  font-size: 1.3rem;
+  margin-bottom: 18px;
+}
+
+.diag-steps {
+  margin: 0 0 24px;
+  padding-left: 1.3em;
+  text-align: left;
+  color: var(--muted);
+
+  & li {
+    margin-bottom: 10px;
+  }
+  & strong {
+    color: var(--text);
+  }
+}
+
+.diag-send__cta {
+  display: inline-flex;
+}
+
 /* ───────────────── Página de desinstalação ───────────────── */
 .uninstall {
   padding-block: clamp(56px, 9vw, 110px);
@@ -806,6 +875,14 @@ h4 {
   .uninstall__body > h2 {
     font-size: 1.3rem;
   }
+
+  /* Bloco de envio (passos + "Reportar Bug") compacta no celular. */
+  .diag-send {
+    padding: 24px;
+  }
+  .diag-send__title {
+    font-size: 1.15rem;
+  }
 }
 
 /* Celular estreito: CTAs do hero empilham em largura total (alvos de toque). */
@@ -837,6 +914,9 @@ h4 {
   }
   .btn {
     padding: 10px 16px;
+  }
+  .diag-send {
+    padding: 18px;
   }
 }
 
