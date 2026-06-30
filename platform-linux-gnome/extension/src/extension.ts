@@ -66,6 +66,12 @@ const KEY_TOGGLE_TABBING = 'toggle-tabbing';
 /// Período do loop que amostra o cursor durante o arrasto (~60 FPS).
 const DRAG_TICK_MS = 16;
 
+/// Micro-atrasos (ms) de estabilização do spawn no Wayland: o Mutter popula actor/maximização/min-size
+/// DEPOIS do `window-created` (ao contrário do KWin, síncrono). Escalonado para cobrir a variância de
+/// hardware sem fixar um valor frágil — a 1ª passada pega geometria/maximização, a última o min-size
+/// negociado tardiamente (apps de min grande, ex.: Ubuntu Store). Ver ADR 0034.
+const SPAWN_SETTLE_MS = [50, 150, 400];
+
 /// Janela rastreada: guardamos o id do handler `unmanaged` para desconectar no fechamento.
 interface Tracked {
   window: Meta.Window;
@@ -76,6 +82,10 @@ interface Tracked {
   /// sinal já disparou (one-shot) ou não pôde ser conectado (ator ainda inexistente em `window-created`).
   actor: Meta.WindowActor | null;
   firstFrameId: number;
+  /// Timers de estabilização do spawn (`GLib.timeout_add`). Auto-removidos ao disparar; cancelados no
+  /// `unmanaged`/`disable`. Multi-disparo (ver `SPAWN_SETTLE_MS`): a rede para o caso "ator ainda
+  /// inexistente em `window-created`" (Wayland), em que o `first-frame` nunca arma.
+  spawnSettleIds: number[];
 }
 
 export default class EtherbitTilingExtension extends Extension {
@@ -412,6 +422,10 @@ export default class EtherbitTilingExtension extends Extension {
           // ator já destruído — ignora.
         }
       }
+      // Cancela timers de estabilização do spawn ainda pendentes (evita timeout vivo após o teardown).
+      for (const sid of tracked.spawnSettleIds) {
+        GLib.source_remove(sid);
+      }
       // Remove o efeito de cantos arredondados para deixar as janelas no estado original.
       const actor = window.get_compositor_private() as Clutter.Actor | null;
       if (actor) {
@@ -451,6 +465,10 @@ export default class EtherbitTilingExtension extends Extension {
               // ator já destruído — ignora.
             }
           }
+          // Timers de estabilização do spawn ainda pendentes (janela fechada em <400ms): cancela.
+          for (const sid of tracked.spawnSettleIds) {
+            GLib.source_remove(sid);
+          }
           this._tracked.delete(id);
         }
         removeFromOrder(this._order, id);
@@ -474,18 +492,26 @@ export default class EtherbitTilingExtension extends Extension {
       ];
       // Re-tila quando a janela "assenta" (o `window-created` chega antes de
       // `resizable`/`maximizable`/tipo estarem prontos; o snapshot precoce a classifica como
-      // não-tileável). O one-shot `settled` SÓ trava quando a janela JÁ é tileável — um `size-changed`
-      // que chega antes disso (apps que assentam o TAMANHO antes do tipo/flags, ex.: a Loja) re-tila
-      // mas NÃO queima o gatilho. Sem isso, com apps MISTOS (Nautilus + Loja) a 1ª/2ª janela podia
-      // perder o único disparo e nunca entrar no grid. Limpo em massa no `unmanaged` via `notifyIds`.
+      // não-tileável). O one-shot `settled` só trava quando a janela JÁ é tileável E o min-size já
+      // negociou (ver abaixo) — um `size-changed` que chega antes disso (apps que assentam o TAMANHO
+      // antes do tipo/flags, ex.: a Loja) re-tila mas NÃO queima o gatilho. Sem isso, com apps MISTOS
+      // (Nautilus + Loja) a 1ª/2ª janela podia perder o único disparo e nunca entrar no grid. Limpo em
+      // massa no `unmanaged` via `notifyIds`.
       let settled = false;
       notifyIds.push(
         window.connect('size-changed', () => {
           if (settled) {
             return;
           }
+          // Só "assenta" o gatilho quando a janela é tileável E o min-size XDG já negociou. No Wayland
+          // a janela pode virar tileável (tipo/flags) ANTES de o min-size popular; travar com min [0,0]
+          // queima o disparo antes de o overflow ser detectável — a janela de min grande só encaixaria
+          // via 3ª janela (ADR 0033/0034). Min [0,0] = ainda não negociado → mantém o gatilho armado.
           if (this._isTileable(window)) {
-            settled = true;
+            const [minWidth, minHeight] = this._minSize(window);
+            if (minWidth > 0 || minHeight > 0) {
+              settled = true;
+            }
           }
           this._scheduleRelayout();
         }),
@@ -514,7 +540,19 @@ export default class EtherbitTilingExtension extends Extension {
           this._scheduleRelayout();
         });
       }
-      this._tracked.set(id, { window, unmanagedId, notifyIds, actor, firstFrameId });
+      this._tracked.set(id, {
+        window,
+        unmanagedId,
+        notifyIds,
+        actor,
+        firstFrameId,
+        spawnSettleIds: [],
+      });
+      // Estabilização do spawn (Wayland): arma SEMPRE, inclusive quando `firstFrameId === 0` (ator
+      // ainda inexistente no `window-created`). Re-lê maximização/min-size já populados e re-tila — a
+      // rede determinística que o `first-frame` (gatilho primário, quando o ator existe) não cobre. É
+      // o que dá paridade com o KWin (síncrono) sem o síncrono que o Mutter não permite. Ver ADR 0034.
+      this._scheduleSpawnSettle(window, id);
     }
     // Nascimento: com o Tiling ativo, nenhuma janela inicia maximizada (mesmo que o app peça).
     this._spawnUnmaximizeIfBorn(window, id);
@@ -555,6 +593,42 @@ export default class EtherbitTilingExtension extends Extension {
       }
       return GLib.SOURCE_REMOVE;
     });
+  }
+
+  /// Estabilização do spawn no Wayland: agenda micro-relayouts escalonados (`SPAWN_SETTLE_MS`) para
+  /// quando o Mutter já populou actor/maximização/min-size — que NÃO estão prontos no `window-created`
+  /// (diferente do KWin, síncrono). Cada disparo revalida a janela, reaplica o spawn-unmaximize (lendo
+  /// o estado agora confirmado) e re-tila: o re-snapshot lê o `min_size` já negociado, então o core
+  /// sinaliza overflow e o Merge Fallback encaixa a janela como aba JÁ no nascimento (sem depender de
+  /// uma 3ª janela). Idempotente: usa `_scheduleRelayout` (respeita debounce/supressão) e o dedup por
+  /// `_lastLayoutSig` torna no-op os disparos após a convergência — sem loop. Ver ADR 0034.
+  private _scheduleSpawnSettle(window: Meta.Window, id: number): void {
+    const tracked = this._tracked.get(id);
+    if (!tracked) {
+      return;
+    }
+    for (const delay of SPAWN_SETTLE_MS) {
+      let source = 0;
+      source = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delay, () => {
+        // Auto-limpeza: remove o próprio id da lista (o callback é one-shot — `SOURCE_REMOVE`).
+        const current = this._tracked.get(id);
+        if (current) {
+          const idx = current.spawnSettleIds.indexOf(source);
+          if (idx !== -1) {
+            current.spawnSettleIds.splice(idx, 1);
+          }
+        }
+        // Janela fechada/destruída no intervalo: não toca em referência morta (espelha `_relayout`).
+        if (!current || !this._isWindowLive(window)) {
+          return GLib.SOURCE_REMOVE;
+        }
+        // Estado já populado: desmaximiza se "nasceu maximizada" e re-tila com o min-size negociado.
+        this._spawnUnmaximizeIfBorn(window, id);
+        this._scheduleRelayout();
+        return GLib.SOURCE_REMOVE;
+      });
+      tracked.spawnSettleIds.push(source);
+    }
   }
 
   /// Coleta janelas+monitores, pede o layout ao daemon e aplica os retângulos.

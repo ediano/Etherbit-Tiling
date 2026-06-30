@@ -40,9 +40,10 @@ arqueologia de commits.
 | [0028](0028-eixos-limpos-cosmic-e-kde-sem-abas.md) | Mecânica de arraste em eixos limpos (estilo Cosmic) e KDE sem abas | ✅ Aceita; estendida por #0030 (Merge Fallback GNOME-only); abas reintroduzidas no KDE sob overflow por #0033 |
 | [0029](0029-daemon-sem-framework-visual.md) | Daemon sem framework visual: HUD nativo e core puramente geométrico | ✅ Aceita; emendada por #0031 (preview translúcido num helper nativo separado) |
 | [0030](0030-distribuicao-ciclica-quadrantes-e-merge-fallback.md) | Distribuição cíclica em quadrantes (anti-horária) e Merge Fallback | ✅ Aceita; Merge Fallback dormente por #0031, reativado por #0033 |
-| [0031](0031-cascata-sempre-spawn-unmaximize-e-preview-translucido.md) | Cascata sempre (sem floating), desmaximização no nascimento + histórico, e preview KDE translúcido | ✅ Aceita; floating reativado como sinal de overflow por #0033 |
+| [0031](0031-cascata-sempre-spawn-unmaximize-e-preview-translucido.md) | Cascata sempre (sem floating), desmaximização no nascimento + histórico, e preview KDE translúcido | ✅ Aceita; floating reativado como sinal de overflow por #0033; spawn-unmaximize estendido a 3 instantes por #0034 |
 | [0032](0032-i18n-multilingue.md) | i18n multilíngue de UI e instalador (en default, pt-BR por locale) | ✅ Aceita |
-| [0033](0033-min-size-real-e-merge-em-abas-sob-overflow.md) | Min-size real, sinal de overflow e Merge Fallback em abas (paridade GNOME ⇄ KDE) | ✅ Aceita |
+| [0033](0033-min-size-real-e-merge-em-abas-sob-overflow.md) | Min-size real, sinal de overflow e Merge Fallback em abas (paridade GNOME ⇄ KDE) | ✅ Aceita; first-frame vira gatilho primário com fallback de estabilização por #0034 |
+| [0034](0034-estabilizacao-spawn-gnome-wayland.md) | Estabilização de spawn no GNOME/Wayland: micro-delay + sinais reais (paridade com KDE) | ✅ Aceita |
 
 ## Como adicionar uma nova decisão
 1. Copie o formato de um ADR existente.
