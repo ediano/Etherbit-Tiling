@@ -5,7 +5,6 @@
 // chama `compute_layout` e devolve os retângulos-alvo (também JSON). Manter os DTOs serde aqui
 // preserva o core sem dependências (ver ADR 0002/0003) — o core não conhece serde nem D-Bus.
 
-
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 

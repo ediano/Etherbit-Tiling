@@ -19,6 +19,7 @@ import {
   removeIdFromStacks,
   toggleStackGroup,
   addToStack,
+  mergeFallback,
   setActiveMember,
   toggleGroupDisabled,
   parseOrderKey,
@@ -189,6 +190,55 @@ describe('estado de abas (stacks) e tiling por grupo', () => {
     expect(setActiveMember(stacks, 3)).toBe(true);
     expect(stacks.get(orderKey(0, 0))?.[0]?.active).toBe(3);
     expect(setActiveMember(stacks, 3)).toBe(false); // já ativa
+  });
+});
+
+describe('Merge Fallback (ADR 0030)', () => {
+  const snaps = (...ids: number[]) => ids.map((id) => ({ id, monitor: 0, workspace: 0 }));
+  const vis = (...ids: number[]) =>
+    ids.map((id) => ({ id, width: 400, height: 400 }));
+
+  it('agrupa a janela colapsada como aba na janela focada do grupo', () => {
+    const stacks = new Map<string, Stack[]>();
+    const merged = mergeFallback(stacks, [3], new Set(), snaps(1, 2, 3), vis(1, 2), 2);
+    expect(merged).toEqual([3]);
+    // 3 (colapsada) vira aba da focada (2), de forma linear.
+    expect(stacks.get(orderKey(0, 0))).toEqual([{ members: [2, 3], active: 3 }]);
+  });
+
+  it('sem foco válido, agrupa na MAIOR janela visível do grupo', () => {
+    const stacks = new Map<string, Stack[]>();
+    const visible = [
+      { id: 1, width: 200, height: 200 },
+      { id: 2, width: 800, height: 600 },
+    ];
+    // focado=0 (nenhum) → alvo = maior visível (2).
+    const merged = mergeFallback(stacks, [3], new Set(), snaps(1, 2, 3), visible, 0);
+    expect(merged).toEqual([3]);
+    expect(stacks.get(orderKey(0, 0))).toEqual([{ members: [2, 3], active: 3 }]);
+  });
+
+  it('guard anti-loop: id já tentado é ignorado (cai no floating legado)', () => {
+    const stacks = new Map<string, Stack[]>();
+    const merged = mergeFallback(stacks, [3], new Set([3]), snaps(1, 2, 3), vis(1, 2), 2);
+    expect(merged).toEqual([]);
+    expect(stacks.size).toBe(0);
+  });
+
+  it('sem outra janela tilada no grupo → não agrupa', () => {
+    const stacks = new Map<string, Stack[]>();
+    // 3 é a única do grupo (nenhuma visível) → sem alvo.
+    const merged = mergeFallback(stacks, [3], new Set(), snaps(3), [], 0);
+    expect(merged).toEqual([]);
+    expect(stacks.size).toBe(0);
+  });
+
+  it('não cria sub-abas: empilha linearmente num stack já existente', () => {
+    const stacks = new Map<string, Stack[]>([[orderKey(0, 0), [{ members: [1, 2], active: 1 }]]]);
+    // 4 colapsa; foco em 1 (membro do stack) → 4 entra no MESMO stack, plano.
+    const merged = mergeFallback(stacks, [4], new Set(), snaps(1, 2, 4), vis(1), 1);
+    expect(merged).toEqual([4]);
+    expect(stacks.get(orderKey(0, 0))).toEqual([{ members: [1, 2, 4], active: 4 }]);
   });
 
   it('removeIdFromStacks dissolve stack que fica com 1 membro', () => {

@@ -1,7 +1,9 @@
 # 0019 — Árvore BSP persistente, resize elástico, gap único e cantos arredondados
 
 **Status:** 🔄 Topologia substituída por [#0026](0026-grid-fractal-3x3-elastico-e-hud.md) (o `Node::Split`
-binário deu lugar ao `Node::Grid` elástico 3×3). Permanecem válidos: estado leve na ponte, daemon sem
+binário deu lugar ao `Node::Grid` elástico 3×3); a **regra de inserção** (rachar a folha focada/maior) foi
+substituída por [#0030](0030-distribuicao-ciclica-quadrantes-e-merge-fallback.md) (Distribuição Cíclica em
+Quadrantes). Permanecem válidos: estado leve na ponte, daemon sem
 estado, core puro, gap único, cantos arredondados, resize elástico (agora por track) e o contrato
 espelhado.
 

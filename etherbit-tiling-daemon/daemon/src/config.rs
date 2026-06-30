@@ -168,7 +168,8 @@ mod tests {
     #[test]
     fn loads_legacy_tab_bar_height_alias() {
         // Configs antigas no disco usam a chave `tab_bar_height`; o alias serde a aceita.
-        let cfg: Config = toml::from_str("tab_bar_height = 40\n").expect("desserializa TOML legado");
+        let cfg: Config =
+            toml::from_str("tab_bar_height = 40\n").expect("desserializa TOML legado");
         assert_eq!(cfg.group_header_px, 40);
     }
 

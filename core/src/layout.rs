@@ -1378,12 +1378,85 @@ fn largest_leaf_id(root: &Node, area: &WorkArea, opts: &LayoutOptions) -> Option
         .map(|(id, _)| id)
 }
 
-/// Insere `new_id` rachando a folha-alvo: a do `focused` (se presente) ou a maior folha. O eixo do
-/// novo split é aspect-aware (folha mais larga → corte vertical/lado a lado; mais alta → horizontal).
-fn insert_one(
+/// Quadrante da área interna, para a Distribuição Cíclica em Quadrantes (ADR 0030).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Quadrant {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+/// Maior folha (por área-alvo) cujo CENTRO satisfaz `region`, dado o centro `(cx, cy)` da área
+/// interna. `region(center_x, center_y, cx, cy) -> bool`. Fallback p/ a maior folha GLOBAL se
+/// nenhuma folha cair na região (ex.: árvore rearranjada onde o quadrante ficou vazio). Reaproveita
+/// `geom_leaves` (a mesma geometria que a renderização), então sobrevive a qualquer topologia.
+fn leaf_in_region(
+    root: &Node,
+    area: &WorkArea,
+    opts: &LayoutOptions,
+    region: impl Fn(f64, f64, f64, f64) -> bool,
+) -> Option<u64> {
+    let inner = inner_rect(area, opts.outer_gap as f64);
+    let mut leaves = Vec::new();
+    geom_leaves(root, inner, opts.inner_gap as f64, &mut leaves);
+    let cx = inner.x + inner.w / 2.0;
+    let cy = inner.y + inner.h / 2.0;
+    leaves
+        .iter()
+        .filter(|(_, r)| region(r.x + r.w / 2.0, r.y + r.h / 2.0, cx, cy))
+        .max_by(|(_, a), (_, b)| {
+            (a.w * a.h).partial_cmp(&(b.w * b.h)).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(id, _)| *id)
+        .or_else(|| largest_leaf_id(root, area, opts))
+}
+
+/// Maior folha cujo centro cai no quadrante `q` (convenção de borda `>=` p/ direita/baixo, determinística).
+/// Fallback p/ a maior folha global se o quadrante estiver vazio.
+fn leaf_in_quadrant(
+    root: &Node,
+    area: &WorkArea,
+    opts: &LayoutOptions,
+    q: Quadrant,
+) -> Option<u64> {
+    leaf_in_region(root, area, opts, |x, y, cx, cy| match q {
+        Quadrant::TopLeft => x < cx && y < cy,
+        Quadrant::TopRight => x >= cx && y < cy,
+        Quadrant::BottomLeft => x < cx && y >= cy,
+        Quadrant::BottomRight => x >= cx && y >= cy,
+    })
+}
+
+/// Eixo aspect-aware do split sobre a folha `target` (mais larga que alta → `Horizontal`/lado a lado;
+/// mais alta → `Vertical`/empilhado). Default `Horizontal` se a folha não for encontrada.
+fn leaf_split_axis(root: &Node, target: u64, area: &WorkArea, opts: &LayoutOptions) -> Axis {
+    let inner = inner_rect(area, opts.outer_gap as f64);
+    let mut leaves = Vec::new();
+    geom_leaves(root, inner, opts.inner_gap as f64, &mut leaves);
+    leaves
+        .iter()
+        .find(|(id, _)| *id == target)
+        .map(|(_, r)| if r.w >= r.h { Axis::Horizontal } else { Axis::Vertical })
+        .unwrap_or(Axis::Horizontal)
+}
+
+/// Insere `new_id` por DISTRIBUIÇÃO CÍCLICA EM QUADRANTES (ADR 0030, substitui o antigo `insert_one`).
+/// O slot que ENTRA (`count_before + 1`) define a posição, resolvida GEOMETRICAMENTE (centro da folha
+/// vs. centro da área interna) para sobreviver a rearranjos persistentes. O `focused` NÃO governa mais
+/// a inserção (segue só protegendo do auto-float em `enforce_min_sizes`). Sequência:
+///  - W1 (`count_before == 0`): folha única (100%).
+///  - W2 (`== 1`): split horizontal (lado a lado), nova à DIREITA.
+///  - W3 (`== 2`): divide a metade DIREITA na vertical (nova embaixo).
+///  - W4 (`== 3`): divide a metade ESQUERDA na vertical → 4 quadrantes (TL=W1, TR=W2, BR=W3, BL=W4).
+///  - W5+ (`>= 4`): ciclo anti-horário `CYCLE = [BR, BL, TR, TL]`; divide ao meio (aspect-aware, 50/50)
+///    a MAIOR folha do quadrante da vez. W9 reinicia em BR (rodada 2), e assim por diante.
+///
+/// Racha SEMPRE uma única folha (via `split_leaf_into`), preservando as demais (estabilidade).
+fn insert_cyclic(
     tree: LayoutTree,
     new_id: u64,
-    focused: Option<u64>,
+    count_before: usize,
     area: &WorkArea,
     opts: &LayoutOptions,
 ) -> LayoutTree {
@@ -1391,20 +1464,30 @@ fn insert_one(
         None => return LayoutTree { root: Some(Node::Leaf(new_id)) },
         Some(r) => r,
     };
-    let target =
-        focused.filter(|f| node_contains(&root, *f)).or_else(|| largest_leaf_id(&root, area, opts));
+    // Alvo (folha a rachar) e, quando fixo, o eixo do corte conforme a fase do ciclo.
+    let (target, fixed_axis) = match count_before {
+        // W2: racha a folha única na horizontal (lado a lado), nova à direita.
+        1 => (largest_leaf_id(&root, area, opts), Some(Axis::Horizontal)),
+        // W3: metade DIREITA, split vertical (nova embaixo).
+        2 => (leaf_in_region(&root, area, opts, |x, _, cx, _| x >= cx), Some(Axis::Vertical)),
+        // W4: metade ESQUERDA, split vertical → 4 quadrantes.
+        3 => (leaf_in_region(&root, area, opts, |x, _, cx, _| x < cx), Some(Axis::Vertical)),
+        // W5+: ciclo anti-horário em quadrantes; eixo aspect-aware (decidido abaixo).
+        n => {
+            const CYCLE: [Quadrant; 4] = [
+                Quadrant::BottomRight,
+                Quadrant::BottomLeft,
+                Quadrant::TopRight,
+                Quadrant::TopLeft,
+            ];
+            let q = CYCLE[(n.saturating_sub(4)) % 4];
+            (leaf_in_quadrant(&root, area, opts, q), None)
+        }
+    };
     let Some(target) = target else {
         return LayoutTree { root: Some(root) };
     };
-    // Aspecto da folha-alvo para escolher o eixo do corte.
-    let inner = inner_rect(area, opts.outer_gap as f64);
-    let mut leaves = Vec::new();
-    geom_leaves(&root, inner, opts.inner_gap as f64, &mut leaves);
-    let axis = leaves
-        .iter()
-        .find(|(id, _)| *id == target)
-        .map(|(_, r)| if r.w >= r.h { Axis::Horizontal } else { Axis::Vertical })
-        .unwrap_or(Axis::Horizontal);
+    let axis = fixed_axis.unwrap_or_else(|| leaf_split_axis(&root, target, area, opts));
     LayoutTree { root: Some(split_leaf_into(root, target, new_id, axis, false, 0.5)) }
 }
 
@@ -1522,43 +1605,17 @@ fn swap_leaves(tree: &LayoutTree, a: u64, b: u64) -> LayoutTree {
     }
 }
 
-/// Dois subretângulos iguais (ratio 0.5) de `rect` no `axis`, separados por `gap` — equivalente ao
-/// antigo `split_axis`. Usado pelo bootstrap balanceado para recorrer aspect-aware.
-fn half_rects(rect: Rectf, gap: f64, axis: Axis) -> (Rectf, Rectf) {
-    match axis {
-        Axis::Horizontal => {
-            let xb = track_bounds(rect.x, rect.w, &[0.5, 0.5], gap);
-            (
-                Rectf { x: xb[0].0, y: rect.y, w: xb[0].1, h: rect.h },
-                Rectf { x: xb[1].0, y: rect.y, w: xb[1].1, h: rect.h },
-            )
-        }
-        Axis::Vertical => {
-            let yb = track_bounds(rect.y, rect.h, &[0.5, 0.5], gap);
-            (
-                Rectf { x: rect.x, y: yb[0].0, w: rect.w, h: yb[0].1 },
-                Rectf { x: rect.x, y: yb[1].0, w: rect.w, h: yb[1].1 },
-            )
-        }
+/// Constrói a árvore de bootstrap (árvore vazia) por DISTRIBUIÇÃO CÍCLICA EM QUADRANTES: aplica
+/// `insert_cyclic` sobre `ids` em ordem, partindo do vazio. Garante a invariante do ADR 0030 — o
+/// bootstrap de N ids é IDÊNTICO a inserir as N janelas uma a uma — então abrir 1→N e reconciliar N
+/// de uma vez convergem para a mesma árvore.
+fn cyclic_bootstrap(ids: &[u64], area: &WorkArea, opts: &LayoutOptions) -> Option<Node> {
+    let mut tree = LayoutTree::default();
+    for &id in ids {
+        let count_before = collect_leaf_ids(&tree).len();
+        tree = insert_cyclic(tree, id, count_before, area, opts);
     }
-}
-
-/// Constrói uma árvore BALANCEADA a partir de `ids` (ordem preservada), aspect-aware e com ratio
-/// 0.5 — geometria idêntica ao BSP de `bsp_rects` (grids binários aninhados). Usada no bootstrap
-/// (árvore vazia) para um layout inicial simétrico antes de o usuário rearranjar.
-fn balanced_node(ids: &[u64], rect: Rectf, gap: f64) -> Option<Node> {
-    match ids.len() {
-        0 => None,
-        1 => Some(Node::Leaf(ids[0])),
-        n => {
-            let left_count = n.div_ceil(2);
-            let axis = if rect.w >= rect.h { Axis::Horizontal } else { Axis::Vertical };
-            let (a, b) = half_rects(rect, gap, axis);
-            let first = balanced_node(&ids[..left_count], a, gap)?;
-            let second = balanced_node(&ids[left_count..], b, gap)?;
-            Some(Node::split_on(axis, 0.5, first, second))
-        }
-    }
+    tree.root
 }
 
 /// Converte cada `Node::Stack` na sua `Node::Leaf(âncora)` — a forma "desmaterializada" sobre a qual a
@@ -1622,21 +1679,21 @@ fn materialize_stacks(node: Node, stacks: &[StackDescriptor], current_ids: &[u64
 }
 
 /// Topologia pura do `reconcile` sobre folhas/splits (sem `Node::Stack`): remove as folhas que não são
-/// mais alvo e insere as novas (bootstrap balanceado se vazio; senão racha o nó focado/maior).
+/// mais alvo e insere as novas pela DISTRIBUIÇÃO CÍCLICA EM QUADRANTES (ADR 0030). Bootstrap (árvore
+/// vazia) e inserção incremental usam a MESMA `insert_cyclic`, garantindo formas idênticas. O `focused`
+/// não governa mais a inserção (só protege do auto-float, fora daqui).
 fn reconcile_topology(
     prev: &LayoutTree,
     target_leaves: &[u64],
-    focused: Option<u64>,
     area: &WorkArea,
     opts: &LayoutOptions,
 ) -> LayoutTree {
     if target_leaves.is_empty() {
         return LayoutTree::default();
     }
-    // Bootstrap: sem árvore anterior → layout balanceado (simétrico) a partir das folhas-alvo.
+    // Bootstrap: sem árvore anterior → distribuição cíclica a partir das folhas-alvo.
     if prev.root.is_none() {
-        let inner = inner_rect(area, opts.outer_gap as f64);
-        return LayoutTree { root: balanced_node(target_leaves, inner, opts.inner_gap as f64) };
+        return LayoutTree { root: cyclic_bootstrap(target_leaves, area, opts) };
     }
     // Remoções: folhas que não são mais alvo.
     let mut tree = prev.clone();
@@ -1645,15 +1702,16 @@ fn reconcile_topology(
             tree = collapse_leaf(tree, id);
         }
     }
-    // Se sobrou vazio mas há alvos (todas as folhas trocaram) → bootstrap balanceado.
+    // Se sobrou vazio mas há alvos (todas as folhas trocaram) → bootstrap cíclico.
     if tree.root.is_none() {
-        let inner = inner_rect(area, opts.outer_gap as f64);
-        return LayoutTree { root: balanced_node(target_leaves, inner, opts.inner_gap as f64) };
+        return LayoutTree { root: cyclic_bootstrap(target_leaves, area, opts) };
     }
-    // Inserções: cada nova folha racha o nó focado (ou a maior), na ordem de `current_ids`.
+    // Inserções: cada nova folha entra pelo próximo quadrante do ciclo (contagem do estado atual da
+    // árvore — recomputada por inserção, não monotônica), na ordem de `current_ids`.
     for &id in target_leaves {
         if !tree.root.as_ref().map(|r| node_contains(r, id)).unwrap_or(false) {
-            tree = insert_one(tree, id, focused, area, opts);
+            let count_before = collect_leaf_ids(&tree).len();
+            tree = insert_cyclic(tree, id, count_before, area, opts);
         }
     }
     tree
@@ -1663,10 +1721,13 @@ fn reconcile_topology(
 ///  - calcula as folhas-alvo = `current_ids` menos os membros de stack não-âncora (cada stack ocupa
 ///    uma folha, a do seu primeiro membro presente);
 ///  - remove (colapsando) as folhas que não são mais alvo;
-///  - insere as novas folhas: árvore vazia → BALANCEADA (bootstrap simétrico); árvore existente →
-///    cada nova folha racha o nó FOCADO (ou a maior folha), preservando as demais (estabilidade);
+///  - insere as novas folhas pela DISTRIBUIÇÃO CÍCLICA EM QUADRANTES (ADR 0030): árvore vazia →
+///    bootstrap cíclico; árvore existente → cada nova folha entra no próximo quadrante do ciclo,
+///    preservando as demais (estabilidade);
 ///  - MATERIALIZA os stacks do comando da ponte como `Node::Stack` na árvore resultante.
-/// Determinístico: depende só das entradas.
+///
+/// Determinístico: depende só das entradas. `focused` é mantido na assinatura (contrato com o daemon)
+/// mas NÃO governa mais a inserção (ADR 0030) — só protege do auto-float, fora daqui.
 pub fn reconcile(
     prev: &LayoutTree,
     current_ids: &[u64],
@@ -1675,6 +1736,7 @@ pub fn reconcile(
     area: &WorkArea,
     opts: &LayoutOptions,
 ) -> LayoutTree {
+    let _ = focused;
     // A topologia opera sobre a forma DESMATERIALIZADA (stack → folha-âncora); os `Node::Stack` são
     // remontados no fim conforme o comando.
     let prev = LayoutTree { root: prev.root.clone().map(dematerialize_stacks) };
@@ -1689,7 +1751,7 @@ pub fn reconcile(
     let target_leaves: Vec<u64> =
         current_ids.iter().copied().filter(|id| !non_anchor.contains(id)).collect();
 
-    let demat = reconcile_topology(&prev, &target_leaves, focused, area, opts);
+    let demat = reconcile_topology(&prev, &target_leaves, area, opts);
     LayoutTree { root: demat.root.map(|r| materialize_stacks(r, stacks, current_ids)) }
 }
 
@@ -2385,16 +2447,19 @@ mod tests {
     // ---- Árvore BSP persistente ----
 
     #[test]
-    fn reconcile_bootstrap_matches_legacy_bsp() {
-        // Árvore vazia → balanceada: geometria IDÊNTICA ao BSP legado para 1..=6 janelas.
+    fn reconcile_bootstrap_matches_cyclic_incremental() {
+        // Invariante do ADR 0030: o bootstrap (reconcile de N ids de uma vez sobre árvore vazia) é
+        // IDÊNTICO a inserir as N janelas uma a uma. Garante que abrir 1→N e reconciliar N convergem.
         let area = area_1000x800();
-        for n in 1..=6u64 {
+        for n in 1..=9u64 {
             let ids: Vec<u64> = (1..=n).collect();
-            let windows: Vec<WindowInfo> = ids.iter().map(|&id| win(id, 0)).collect();
-            let legacy = compute_layout(&windows, &[area_1000x800()], &opts());
-            let tree = reconcile(&LayoutTree::default(), &ids, &[], None, &area, &opts());
-            let geo = compute_geometry(&tree, &area, &opts(), &[], &ids);
-            assert_eq!(geo.rects, legacy, "n={n}");
+            let bootstrap = reconcile(&LayoutTree::default(), &ids, &[], None, &area, &opts());
+            let mut incremental = LayoutTree::default();
+            for k in 1..=n {
+                let so_far: Vec<u64> = (1..=k).collect();
+                incremental = reconcile(&incremental, &so_far, &[], None, &area, &opts());
+            }
+            assert_eq!(bootstrap, incremental, "n={n}");
         }
     }
 
@@ -2452,6 +2517,116 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---- Distribuição Cíclica em Quadrantes (ADR 0030) ----
+
+    /// Classifica um `WindowRect` num quadrante da área interna pelo seu CENTRO (helper de teste do
+    /// ciclo; convenção de borda `>=` p/ direita/baixo, igual ao core).
+    fn quad_of(r: &WindowRect, area: &WorkArea, o: &LayoutOptions) -> Quadrant {
+        let outer = o.outer_gap as f64;
+        let cx = area.x as f64 + outer + (area.width as f64 - 2.0 * outer) / 2.0;
+        let cy = area.y as f64 + outer + (area.height as f64 - 2.0 * outer) / 2.0;
+        let x = r.x as f64 + r.width as f64 / 2.0;
+        let y = r.y as f64 + r.height as f64 / 2.0;
+        match (x >= cx, y >= cy) {
+            (false, false) => Quadrant::TopLeft,
+            (true, false) => Quadrant::TopRight,
+            (false, true) => Quadrant::BottomLeft,
+            (true, true) => Quadrant::BottomRight,
+        }
+    }
+
+    #[test]
+    fn cyclic_w1_w4_form_2x2() {
+        // 4 janelas → 4 quadrantes simétricos: TL=1, TR=2, BR=3, BL=4 (ordem da especificação).
+        let area = area_1000x800();
+        let ids = vec![1, 2, 3, 4];
+        let tree = reconcile(&LayoutTree::default(), &ids, &[], None, &area, &opts());
+        let geo = compute_geometry(&tree, &area, &opts(), &[], &ids);
+        let q = |id: u64| quad_of(geo.rects.iter().find(|r| r.id == id).unwrap(), &area, &opts());
+        assert_eq!(q(1), Quadrant::TopLeft);
+        assert_eq!(q(2), Quadrant::TopRight);
+        assert_eq!(q(3), Quadrant::BottomRight);
+        assert_eq!(q(4), Quadrant::BottomLeft);
+    }
+
+    #[test]
+    fn cyclic_w5_w8_anticlockwise() {
+        // A partir dos 4 quadrantes, o ciclo anti-horário: W5→BR, W6→BL, W7→TR, W8→TL.
+        let area = area_1000x800();
+        let mut ids = vec![1, 2, 3, 4];
+        let mut tree = reconcile(&LayoutTree::default(), &ids, &[], None, &area, &opts());
+        let expected = [
+            (5u64, Quadrant::BottomRight),
+            (6, Quadrant::BottomLeft),
+            (7, Quadrant::TopRight),
+            (8, Quadrant::TopLeft),
+        ];
+        for (id, q) in expected {
+            ids.push(id);
+            tree = reconcile(&tree, &ids, &[], None, &area, &opts());
+            let geo = compute_geometry(&tree, &area, &opts(), &[], &ids);
+            let r = geo.rects.iter().find(|r| r.id == id).unwrap();
+            assert_eq!(quad_of(r, &area, &opts()), q, "W{id} deve entrar em {q:?}");
+        }
+    }
+
+    #[test]
+    fn cyclic_w9_round2_returns_to_br() {
+        // 9ª janela reinicia o ciclo no quadrante INFERIOR DIREITO (rodada 2).
+        let area = area_1000x800();
+        let ids: Vec<u64> = (1..=9).collect();
+        let tree = reconcile(&LayoutTree::default(), &ids, &[], None, &area, &opts());
+        let geo = compute_geometry(&tree, &area, &opts(), &[], &ids);
+        let r9 = geo.rects.iter().find(|r| r.id == 9).unwrap();
+        assert_eq!(quad_of(r9, &area, &opts()), Quadrant::BottomRight);
+    }
+
+    #[test]
+    fn cyclic_quadrant_resolved_by_geometry_after_rearrange() {
+        // O quadrante é resolvido GEOMETRICAMENTE, não pela estrutura: após permutar TL(1)↔BR(3) (swap
+        // do centro), a 5ª janela ainda cai no BR geométrico, independente de quais ids ocupam o quê.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2, 3, 4], &[], None, &area, &opts());
+        let swapped = move_window(&tree, 1, 3, DropZone::Center, DropScope::Local);
+        let ids = vec![1, 2, 3, 4, 5];
+        let tree5 = reconcile(&swapped, &ids, &[], None, &area, &opts());
+        let geo = compute_geometry(&tree5, &area, &opts(), &[], &ids);
+        let r5 = geo.rects.iter().find(|r| r.id == 5).unwrap();
+        assert_eq!(quad_of(r5, &area, &opts()), Quadrant::BottomRight);
+    }
+
+    #[test]
+    fn cyclic_quadrant_empty_falls_back_to_largest() {
+        // Quadrante-alvo vazio (árvore rearranjada: 2 folhas full-height, topo vazio) → fallback p/ a
+        // maior folha global; insere sem panicar.
+        let area = area_1000x800();
+        let tree = LayoutTree { root: Some(Node::split_h(0.5, Node::Leaf(1), Node::Leaf(2))) };
+        // count_before=6 → ciclo aponta TR (vazio nesta árvore) → cai na maior folha.
+        let out = insert_cyclic(tree, 99, 6, &area, &opts());
+        let leaves = collect_leaf_ids(&out);
+        assert!(leaves.contains(&99), "99 deve ter sido inserida via fallback");
+        assert_eq!(leaves.len(), 3);
+    }
+
+    #[test]
+    fn cyclic_count_after_removal() {
+        // A fase do ciclo é recomputada do ESTADO ATUAL (não monotônica): fechar uma janela e abrir
+        // outra trata a nova como "entrando o slot N+1" do estado colapsado.
+        let area = area_1000x800();
+        let t5 = reconcile(&LayoutTree::default(), &[1, 2, 3, 4, 5], &[], None, &area, &opts());
+        let t4 = reconcile(&t5, &[1, 2, 4, 5], &[], None, &area, &opts());
+        assert_eq!(collect_leaf_ids(&t4).len(), 4, "colapsou para 4 slots");
+        let ids = vec![1, 2, 4, 5, 6];
+        let t6 = reconcile(&t4, &ids, &[], None, &area, &opts());
+        let geo = compute_geometry(&t6, &area, &opts(), &[], &ids);
+        let r6 = geo.rects.iter().find(|r| r.id == 6).unwrap();
+        assert_eq!(
+            quad_of(r6, &area, &opts()),
+            Quadrant::BottomRight,
+            "6ª entra em BR (ciclo reinicia)"
+        );
     }
 
     #[test]
@@ -2663,17 +2838,18 @@ mod tests {
 
     #[test]
     fn resize_window_vertical_axis() {
-        // Bootstrap [1,2,3]: 1 e 2 EMPILHADOS na metade esquerda (split vertical), 3 na direita.
-        // Arrastar a borda INFERIOR de 1 (a costura 1↔2) em +50 → 1 cresce, 2 encolhe.
+        // Bootstrap cíclico [1,2,3] (ADR 0030): 1 ocupa a metade ESQUERDA cheia; 2 e 3 EMPILHADOS na
+        // metade direita (split vertical). Arrastar a borda INFERIOR de 2 (costura 2↔3) em +50 → 2
+        // cresce, 3 encolhe.
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], None, &area, &opts());
         let before = compute_geometry(&tree, &area, &opts(), &[], &[1, 2, 3]);
-        let b1 = before.rects.iter().find(|r| r.id == 1).unwrap().height;
         let b2 = before.rects.iter().find(|r| r.id == 2).unwrap().height;
-        let resized = resize_window(&tree, &area, &opts(), 1, Edge::Bottom, 50);
+        let b3 = before.rects.iter().find(|r| r.id == 3).unwrap().height;
+        let resized = resize_window(&tree, &area, &opts(), 2, Edge::Bottom, 50);
         let after = compute_geometry(&resized, &area, &opts(), &[], &[1, 2, 3]);
-        assert_eq!(after.rects.iter().find(|r| r.id == 1).unwrap().height, b1 + 50);
-        assert_eq!(after.rects.iter().find(|r| r.id == 2).unwrap().height, b2 - 50);
+        assert_eq!(after.rects.iter().find(|r| r.id == 2).unwrap().height, b2 + 50);
+        assert_eq!(after.rects.iter().find(|r| r.id == 3).unwrap().height, b3 - 50);
     }
 
     #[test]
