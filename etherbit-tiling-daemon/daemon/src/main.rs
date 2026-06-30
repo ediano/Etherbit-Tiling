@@ -15,9 +15,6 @@ mod protocol;
 #[cfg(feature = "wgpu-ui")]
 mod render;
 mod service;
-// Modelo + hit-testing da barra de abas (puro, sem GPU). Compilado com a UI wgpu ou em testes.
-#[cfg(any(feature = "wgpu-ui", test))]
-mod tabbar;
 
 use anyhow::Result;
 use config::Config;
@@ -56,8 +53,8 @@ async fn main() -> Result<()> {
     };
 
     let (connection, shared) = service::serve(config).await?;
-    // `shared` (fila de ações de aba + receptor de barras) só é consumido pela UI wgpu; sem a feature
-    // ele é intencionalmente ocioso.
+    // `shared` (receptor de células do HUD) só é consumido pela UI wgpu; sem a feature ele é
+    // intencionalmente ocioso.
     #[cfg(not(feature = "wgpu-ui"))]
     let _ = shared;
 
@@ -72,19 +69,17 @@ async fn main() -> Result<()> {
     // re-sincronizarem; se o canal de sessão tiver morrido, sai para a ativação D-Bus subir um novo.
     powermon::spawn(connection.clone());
 
-    // Barra de abas via overlay wgpu (KDE/wlr-layer-shell): monta a orquestração quando o wgpu
+    // HUD de preview via overlay wgpu (KDE/wlr-layer-shell): monta a orquestração quando o wgpu
     // inicializou e sobe o event loop layer-shell em background. Fora de uma sessão com layer-shell
-    // (CI/headless/GNOME) o loop encerra graciosamente — a barra do GNOME segue na extensão.
+    // (CI/headless/GNOME) o loop encerra graciosamente — a ponte degrada para o `showOutline` nativo.
     #[cfg(feature = "wgpu-ui")]
     if let Some(ctx) = render_ctx {
-        let overlay =
-            layer::TabBarOverlay::new(ctx, connection.clone(), shared.pending_actions.clone());
-        println!("Etherbit daemon — overlay de abas pronto (formato {:?}).", overlay.format());
-        let bars_rx = shared.bars_rx.clone();
+        let overlay = layer::HudOverlay::new(ctx);
+        println!("Etherbit daemon — overlay de HUD pronto (formato {:?}).", overlay.format());
         let hud_rx = shared.hud_rx.clone();
         tokio::spawn(async move {
-            if let Err(err) = layer::run_event_loop(overlay, bars_rx, hud_rx).await {
-                eprintln!("Etherbit daemon — overlay de abas indisponível: {err:#}");
+            if let Err(err) = layer::run_event_loop(overlay, hud_rx).await {
+                eprintln!("Etherbit daemon — overlay de HUD indisponível: {err:#}");
             }
         });
     }

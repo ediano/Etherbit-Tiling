@@ -4,9 +4,6 @@
 // Toda mutação persiste no disco e emite `ConfigChanged` para que múltiplos clientes fiquem
 // sincronizados. O contrato trafega a config como JSON string (ver ADR de nomenclatura D-Bus).
 
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
-
 use anyhow::Result;
 use etherbit_tiling_core::LayoutOptions;
 use zbus::object_server::SignalEmitter;
@@ -16,8 +13,6 @@ use crate::autostart;
 use crate::config::Config;
 use crate::protocol;
 
-#[cfg(feature = "wgpu-ui")]
-use crate::tabbar::BarInput;
 #[cfg(feature = "wgpu-ui")]
 use tokio::sync::watch;
 
@@ -32,15 +27,6 @@ const CORNER_RADIUS_MAX: u32 = 50;
 /// Objeto servido no barramento de sessão.
 pub struct Tiling {
     config: Config,
-    /// Fila efêmera de ações de aba (cliques na barra wgpu do KDE) pendentes de entrega à ponte por
-    /// PULL. É a ÚNICA exceção ao "daemon sem estado": estado de UI TRANSITÓRIO, não estado de
-    /// janelas/layout (que continua na ponte). Drenada na resposta de cada `SyncWindows`. Sem a
-    /// feature `wgpu-ui` não há produtor — fica sempre vazia. Ver ADR 0022/0025.
-    pending_actions: Arc<Mutex<VecDeque<protocol::TabActionDto>>>,
-    /// Publica as barras de abas do último layout para o overlay wgpu (KDE) redesenhar. Só existe com
-    /// a UI wgpu; `send_replace` mantém apenas o estado mais recente (sem backpressure).
-    #[cfg(feature = "wgpu-ui")]
-    bars_tx: watch::Sender<Vec<BarInput>>,
     /// Publica as células do HUD do jogo da velha para o overlay wgpu (KDE) desenhar durante o
     /// arrasto. `None` = HUD escondido. UI transitória (não estado de janelas/layout). Só com wgpu-ui.
     #[cfg(feature = "wgpu-ui")]
@@ -211,9 +197,9 @@ impl Tiling {
         state_json: String,
     ) -> fdo::Result<String> {
         let opts = self.layout_options();
-        // Computa o layout sob o guard de pânico, devolvendo o DTO (e não a string) para podermos
-        // alimentar o overlay e injetar as ações pendentes antes de serializar.
-        let mut dto = guard("sync_windows", || {
+        // Computa o layout sob o guard de pânico e serializa o DTO de volta à ponte. O daemon segue
+        // sem estado de janelas/layout: request/response puro (as `tab_bars` ainda viajam para o GNOME).
+        let dto = guard("sync_windows", || {
             protocol::sync_windows_dto(
                 &windows_json,
                 &monitors_json,
@@ -223,23 +209,6 @@ impl Tiling {
             )
         })?;
 
-        // Alimenta o overlay wgpu (KDE) com as barras do layout atual (só com a UI ligada). Fora de
-        // uma sessão com layer-shell o receptor fica ocioso — `send_replace` nunca falha.
-        #[cfg(feature = "wgpu-ui")]
-        {
-            let bars = protocol::bars_from_tab_bars(&dto.tab_bars);
-            crate::dlog!("sync_windows: publicando {} barra(s) de abas ao overlay", bars.len());
-            let _ = self.bars_tx.send_replace(bars);
-        }
-
-        // Entrega por PULL: drena as ações de aba pendentes na PRÓPRIA resposta (a ponte já consome
-        // este callback a cada evento de janela). Evita um método/gatilho novo. Ver ADR 0022/0025.
-        if let Ok(mut queue) = self.pending_actions.lock() {
-            if !queue.is_empty() {
-                dto.pending_actions = queue.drain(..).collect();
-            }
-        }
-
         serde_json::to_string(&dto)
             .map_err(|e| fdo::Error::Failed(format!("sync_windows: serialização: {e}")))
     }
@@ -247,17 +216,27 @@ impl Tiling {
     /// Resolve o destino de um drop sob o ponto `(x, y)`. A ponte chama isto em alta frequência
     /// durante o arrasto e desenha o indicador com o retângulo devolvido. `target_json` é o retângulo
     /// da janela sob o cursor (ou `""`), usado para detectar empilhamento (zona `stack`).
-    /// Request/response puro (daemon sem estado): a ponte envia monitores e alvo na chamada.
+    /// `dragged_min_w`/`dragged_min_h` são os mínimos (px) da janela ARRASTADA: o preview da metade
+    /// local é esticado se exigirem (ADR 0028); `0`/`0` = metade pura. Request/response puro (sem estado).
     async fn resolve_drop_zone(
         &self,
         x: i32,
         y: i32,
         monitors_json: String,
         target_json: String,
+        dragged_min_w: i32,
+        dragged_min_h: i32,
     ) -> fdo::Result<String> {
         let opts = self.layout_options();
         guard("resolve_drop_zone", || {
-            protocol::resolve_drop_zone(&monitors_json, x, y, &target_json, opts)
+            protocol::resolve_drop_zone(
+                &monitors_json,
+                x,
+                y,
+                &target_json,
+                (dragged_min_w, dragged_min_h),
+                opts,
+            )
         })
     }
 
@@ -331,72 +310,24 @@ impl Tiling {
     /// Sinal emitido sempre que a configuração muda. Carrega a config completa em JSON.
     #[zbus(signal)]
     async fn config_changed(emitter: &SignalEmitter<'_>, config_json: String) -> zbus::Result<()>;
-
-    /// Sinal emitido quando o usuário interage com a barra de abas RENDERIZADA PELO DAEMON (wgpu, no
-    /// KDE): clique na guia (`action = "activate"`), no ícone "x" (`"close"`) ou no menu de contexto
-    /// (`"ungroup"`). A ponte assina, aplica a ação (ativar/fechar/desagrupar) e re-tila. No GNOME a
-    /// barra é desenhada pela extensão, que trata esses cliques localmente — então este sinal só é
-    /// emitido pela UI wgpu. `stack_id` é o id do stack (primeiro membro); `member_id` a janela alvo.
-    #[zbus(signal)]
-    async fn tab_action(
-        emitter: &SignalEmitter<'_>,
-        stack_id: u64,
-        member_id: u64,
-        action: String,
-    ) -> zbus::Result<()>;
-}
-
-/// Emite o sinal `TabAction` pela connection de sessão (usado pela UI wgpu da barra de abas, que roda
-/// fora do contexto de um método D-Bus). `action` ∈ {`"activate"`, `"close"`, `"ungroup"`}.
-#[cfg(feature = "wgpu-ui")]
-pub async fn emit_tab_action(
-    connection: &zbus::Connection,
-    stack_id: u64,
-    member_id: u64,
-    action: &str,
-) -> zbus::Result<()> {
-    connection
-        .emit_signal(
-            Option::<&str>::None,
-            OBJECT_PATH,
-            BUS_NAME,
-            "TabAction",
-            &(stack_id, member_id, action.to_string()),
-        )
-        .await
 }
 
 /// Handles compartilhados entre o serviço D-Bus e o overlay wgpu (KDE), devolvidos por `serve` para o
-/// `main` fiar o event loop layer-shell. Sem a feature `wgpu-ui` carrega só a fila (ociosa).
+/// `main` fiar o event loop layer-shell. Sem a feature `wgpu-ui` fica vazio.
 pub struct Shared {
-    /// A mesma fila do `Tiling`: o overlay enfileira cliques, o `SyncWindows` drena. Só é consumida
-    /// pelo overlay wgpu — sem a feature `wgpu-ui` o campo fica ocioso (mas a fila do `Tiling` segue
-    /// sendo drenada normalmente).
-    #[cfg_attr(not(feature = "wgpu-ui"), allow(dead_code))]
-    pub pending_actions: Arc<Mutex<VecDeque<protocol::TabActionDto>>>,
-    /// Receptor das barras atuais para o event loop redesenhar.
-    #[cfg(feature = "wgpu-ui")]
-    pub bars_rx: watch::Receiver<Vec<BarInput>>,
     /// Receptor das células do HUD do jogo da velha (`None` = escondido) para o event loop desenhar.
     #[cfg(feature = "wgpu-ui")]
     pub hud_rx: watch::Receiver<Option<Vec<protocol::HudCellDto>>>,
 }
 
-/// Sobe o serviço no barramento de sessão e o mantém vivo. Devolve a conexão e os `Shared` (fila de
-/// ações + receptor de barras) para o overlay wgpu (quando habilitado).
+/// Sobe o serviço no barramento de sessão e o mantém vivo. Devolve a conexão e os `Shared` (receptor
+/// de células do HUD) para o overlay wgpu (quando habilitado).
 pub async fn serve(config: Config) -> Result<(zbus::Connection, Shared)> {
-    let pending_actions: Arc<Mutex<VecDeque<protocol::TabActionDto>>> =
-        Arc::new(Mutex::new(VecDeque::new()));
-    #[cfg(feature = "wgpu-ui")]
-    let (bars_tx, bars_rx) = watch::channel(Vec::new());
     #[cfg(feature = "wgpu-ui")]
     let (hud_tx, hud_rx) = watch::channel(None);
 
     let tiling = Tiling {
         config,
-        pending_actions: pending_actions.clone(),
-        #[cfg(feature = "wgpu-ui")]
-        bars_tx,
         #[cfg(feature = "wgpu-ui")]
         hud_tx,
     };
@@ -406,9 +337,6 @@ pub async fn serve(config: Config) -> Result<(zbus::Connection, Shared)> {
         .build()
         .await?;
     let shared = Shared {
-        pending_actions,
-        #[cfg(feature = "wgpu-ui")]
-        bars_rx,
         #[cfg(feature = "wgpu-ui")]
         hud_rx,
     };

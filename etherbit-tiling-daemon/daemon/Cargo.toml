@@ -4,18 +4,16 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-# UI própria do daemon via wgpu (barra de abas no KDE + futuro painel de config), com fallback por
+# UI própria do daemon via wgpu (HUD de preview no KDE + futuro painel de config), com fallback por
 # software. Desligada por padrão: mantém o daemon leve e o CI sem necessidade de GPU. Ver src/render.rs.
 # Sob KWin (que suporta wlr-layer-shell) o daemon cria SUAS PRÓPRIAS superfícies de overlay e desenha
-# a barra de abas com wgpu — sem violar o ADR 0016 (não há overlay sobre janelas alheias; é surface
-# própria). No GNOME (Mutter sem layer-shell) a barra segue na extensão.
+# o HUD com wgpu — sem violar o ADR 0016 (não há overlay sobre janelas alheias; é surface própria).
 wgpu-ui = [
     "dep:wgpu",
     "dep:smithay-client-toolkit",
     "dep:raw-window-handle",
     "dep:bytemuck",
     "dep:wayland-client",
-    "dep:glyphon",
 ]
 
 [dependencies]
@@ -43,6 +41,3 @@ bytemuck = { version = "1", features = ["derive"], optional = true }
 # build — assim o CI/devcontainer compila SEM a `libwayland-client` de sistema, e no KDE (que sempre a
 # tem) o overlay funciona. Não é usado diretamente no código; entra só pela unificação de features.
 wayland-client = { version = "0.31", optional = true, features = ["system", "dlopen"] }
-# Renderização de texto (título das abas) sobre wgpu: glyphon 0.6 casa com o wgpu 22 (atlas de
-# glifos via cosmic-text). Só no caminho da barra (KDE/wgpu-ui).
-glyphon = { version = "0.6", optional = true }
