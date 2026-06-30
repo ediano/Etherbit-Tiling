@@ -374,15 +374,14 @@ export interface TransportGridCell {
 }
 
 /// Árvore persistente com ids INTERNOS (internalId string) — a forma canônica guardada na ponte.
-/// ADR 0028: tiling PURO; a árvore só tem `win`/`grid`. A variante `stack` permanece nos TIPOS apenas
-/// para PARSEAR árvores antigas (migração) — a conversão a COLAPSA para a folha do 1º membro.
+/// ADR 0033 (paridade com GNOME): a árvore pode conter `stack` (abas do Merge Fallback), preservado na
+/// tradução (membros sem transporte são podados; stack que esvazia colapsa na folha sobrevivente).
 export type TreeNode =
   | { win: string }
   | { stack: { members: string[]; active: string } }
   | { grid: { cols: number[]; rows: number[]; cells: TreeGridCell[] } };
 
-/// Árvore com ids de TRANSPORTE (números), como trafega no contrato D-Bus (igual ao GNOME). A variante
-/// `stack` só existe para parsear payloads legados — a conversão produz `{ win }`.
+/// Árvore com ids de TRANSPORTE (números), como trafega no contrato D-Bus (igual ao GNOME).
 export type TransportNode =
   | { win: number }
   | { stack: { members: number[]; active: number } }
@@ -399,15 +398,25 @@ export function treeToTransport(
     return t === undefined ? null : { win: t };
   }
   if ('stack' in node) {
-    // Migração para tiling puro (ADR 0028): COLAPSA o stack legado na FOLHA do 1º membro traduzível
-    // (em vez de reconstruir o stack). Sem membro traduzível → cai (colapso).
+    // PRESERVA o stack (ADR 0033): traduz os membros, podando os sem transporte. 0 → colapsa (null);
+    // 1 → achata na folha do sobrevivente; ≥2 → mantém o stack, com `active` válido (1º membro se o
+    // ativo caiu).
+    const members: number[] = [];
     for (const m of node.stack.members) {
       const t = transportOf.get(m);
       if (t !== undefined) {
-        return { win: t };
+        members.push(t);
       }
     }
-    return null;
+    if (members.length === 0) {
+      return null;
+    }
+    if (members.length === 1) {
+      return { win: members[0] as number };
+    }
+    const at = transportOf.get(node.stack.active);
+    const active = at !== undefined && members.includes(at) ? at : (members[0] as number);
+    return { stack: { members, active } };
   }
   // grid: traduz cada célula; as intraduzíveis caem. 0 → null; 1 → achata no sobrevivente.
   const cells: TransportGridCell[] = [];
@@ -436,14 +445,23 @@ export function treeFromTransport(
     return s === undefined ? null : { win: s };
   }
   if ('stack' in node) {
-    // Migração para tiling puro (ADR 0028): COLAPSA o stack legado na FOLHA do 1º membro traduzível.
+    // PRESERVA o stack (ADR 0033): traduz os membros de volta para internalId, podando os desconhecidos.
+    const members: string[] = [];
     for (const m of node.stack.members) {
       const s = toStable.get(m);
       if (s !== undefined) {
-        return { win: s };
+        members.push(s);
       }
     }
-    return null;
+    if (members.length === 0) {
+      return null;
+    }
+    if (members.length === 1) {
+      return { win: members[0] as string };
+    }
+    const as = toStable.get(node.stack.active);
+    const active = as !== undefined && members.includes(as) ? as : (members[0] as string);
+    return { stack: { members, active } };
   }
   const cells: TreeGridCell[] = [];
   for (const c of node.grid.cells) {
@@ -467,15 +485,54 @@ export function parseOrderKey(key: string): [number, number] {
   return [Number(m) || 0, Number(w) || 0];
 }
 
-/// Serializa o estado leve para o `state_json`, traduzindo as folhas das árvores (internalId) para ids
-/// de transporte via `transportOf`. Tiling PURO (ADR 0028): sem stacks — só grupos com tiling desligado
-/// + árvores + foco. O campo `stacks: []` segue no JSON por compat (o daemon tem `#[serde(default)]`).
+/// Um stack: membros na ordem das abas + a aba ativa (visível). Estado leve da ponte (internalId string).
+export interface Stack {
+  members: string[];
+  active: string;
+}
+
+/// Espelha o `TabBarDto` do daemon: a faixa da barra de abas de um stack + o conteúdo da aba ativa. No
+/// KDE (ADR 0033, mínimo viável) a barra clicável ainda NÃO é desenhada — a ponte usa `members`/`active`
+/// só para OCULTAR (minimizar) as abas inativas e manter a ativa no slot `content`.
+export interface TabBar {
+  stack_id: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  content: { x: number; y: number; width: number; height: number };
+  members: number[];
+  active: number;
+}
+
+/// Serializa o estado leve para o `state_json`, traduzindo as folhas das árvores e os membros dos stacks
+/// (internalId) para ids de TRANSPORTE via `transportOf`. ADR 0033 (paridade com GNOME): os stacks reais
+/// (≥ 2 membros traduzíveis) viajam para o core materializar `Node::Stack` e devolver as `tab_bars`.
 export function serializeState(
+  stacks: Map<string, Stack[]>,
   disabled: Set<string>,
   transportOf: Map<string, number>,
   trees: Map<string, TreeNode | null>,
   focusedStable: string,
 ): string {
+  const stackDtos: Array<{ monitor: number; workspace: number; members: number[]; active: number }> = [];
+  for (const [key, list] of stacks) {
+    const [monitor, workspace] = parseOrderKey(key);
+    for (const s of list) {
+      const members: number[] = [];
+      for (const m of s.members) {
+        const t = transportOf.get(m);
+        if (t !== undefined) {
+          members.push(t);
+        }
+      }
+      if (members.length >= 2) {
+        const at = transportOf.get(s.active);
+        const active = at !== undefined && members.includes(at) ? at : (members[0] as number);
+        stackDtos.push({ monitor, workspace, members, active });
+      }
+    }
+  }
   const disabledDtos: Array<[number, number]> = [];
   for (const key of disabled) {
     disabledDtos.push(parseOrderKey(key));
@@ -488,11 +545,73 @@ export function serializeState(
   }
   const focused_id = transportOf.get(focusedStable) ?? 0;
   return JSON.stringify({
-    stacks: [],
+    stacks: stackDtos,
     disabled_groups: disabledDtos,
     trees: treeDtos,
     focused_id,
   });
+}
+
+/// Parse defensivo das barras de abas do `layout_json` (objeto `{ rects, tab_bars }`). Formato legado
+/// (array) → sem barras. Descarta entradas malformadas. Espelha o `parseTabBars` da ponte GNOME.
+export function parseTabBars(json: string): TabBar[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  if (Array.isArray(parsed) || typeof parsed !== 'object' || parsed === null) {
+    return [];
+  }
+  const raw = (parsed as Record<string, unknown>).tab_bars;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const bars: TabBar[] = [];
+  for (const entry of raw) {
+    const bar = toTabBar(entry);
+    if (bar) {
+      bars.push(bar);
+    }
+  }
+  return bars;
+}
+
+function toTabBar(value: unknown): TabBar | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const v = value as Record<string, unknown>;
+  const c = v.content as Record<string, unknown> | undefined;
+  if (
+    !isFiniteNumber(v.stack_id) ||
+    !isFiniteNumber(v.x) ||
+    !isFiniteNumber(v.y) ||
+    !isFiniteNumber(v.width) ||
+    !isFiniteNumber(v.height) ||
+    !isFiniteNumber(v.active) ||
+    !Array.isArray(v.members) ||
+    !v.members.every(isFiniteNumber) ||
+    typeof c !== 'object' ||
+    c === null ||
+    !isFiniteNumber(c.x) ||
+    !isFiniteNumber(c.y) ||
+    !isFiniteNumber(c.width) ||
+    !isFiniteNumber(c.height)
+  ) {
+    return null;
+  }
+  return {
+    stack_id: v.stack_id,
+    x: v.x,
+    y: v.y,
+    width: v.width,
+    height: v.height,
+    content: { x: c.x, y: c.y, width: c.width, height: c.height },
+    members: v.members as number[],
+    active: v.active,
+  };
 }
 
 /// Lê as árvores devolvidas pelo daemon (transporte) e as traduz para internalId para a ponte
@@ -577,6 +696,145 @@ export function toggleGroupDisabled(disabled: Set<string>, key: string): boolean
     disabled.add(key);
   }
   return true;
+}
+
+// ---- Merge Fallback / abas (ADR 0030/0033, paridade com GNOME) ----
+//
+// Quando o core sinaliza overflow (`floating`: o slot ficou < o mínimo do app), a ponte AGRUPA a janela
+// numa aba do quadrante focado em vez de deixá-la transbordar/flutuar. Cada aba recebe o slot inteiro;
+// as inativas são ocultadas (minimizadas). Helpers PUROS (testáveis sem KWin), com ids `string`.
+
+/// Remove `id` de qualquer stack (de qualquer grupo), dissolvendo stacks que ficarem com < 2 membros e
+/// limpando grupos vazios. Usado ao fechar uma janela. Retorna `true` se algo mudou.
+export function removeIdFromStacks(stacks: Map<string, Stack[]>, id: string): boolean {
+  let changed = false;
+  for (const [key, list] of stacks) {
+    for (const s of list) {
+      const idx = s.members.indexOf(id);
+      if (idx !== -1) {
+        s.members.splice(idx, 1);
+        if (s.active === id) {
+          s.active = s.members[0] ?? '';
+        }
+        changed = true;
+      }
+    }
+    const kept = list.filter((s) => s.members.length >= 2);
+    if (kept.length !== list.length) {
+      changed = true;
+    }
+    if (kept.length === 0) {
+      stacks.delete(key);
+    } else {
+      stacks.set(key, kept);
+    }
+  }
+  return changed;
+}
+
+/// Empilha o `draggedId` na janela-alvo do grupo `key`. Se o alvo já está num stack, adiciona-o a ele;
+/// senão cria `[targetId, draggedId]`. O recém-agrupado vira a aba ativa. Remove-o de stacks anteriores.
+export function addToStack(
+  stacks: Map<string, Stack[]>,
+  key: string,
+  targetId: string,
+  draggedId: string,
+): boolean {
+  if (targetId === draggedId) {
+    return false;
+  }
+  removeIdFromStacks(stacks, draggedId);
+  let list = stacks.get(key);
+  if (!list) {
+    list = [];
+    stacks.set(key, list);
+  }
+  const target = list.find((s) => s.members.includes(targetId));
+  if (target) {
+    if (!target.members.includes(draggedId)) {
+      target.members.push(draggedId);
+    }
+    target.active = draggedId;
+  } else {
+    list.push({ members: [targetId, draggedId], active: draggedId });
+  }
+  return true;
+}
+
+/// Define a aba ativa do stack que contém `member`. Retorna `true` se mudou.
+export function setActiveMember(stacks: Map<string, Stack[]>, member: string): boolean {
+  for (const list of stacks.values()) {
+    for (const s of list) {
+      if (s.members.includes(member)) {
+        if (s.active !== member) {
+          s.active = member;
+          return true;
+        }
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
+/// Escolhe o alvo do Merge Fallback para a janela colapsada `floatedId` no grupo `key`: preferência pela
+/// janela FOCADA (se for outro id, do mesmo grupo e visível); senão a MAIOR janela visível do grupo.
+function pickMergeTarget(
+  key: string,
+  floatedId: string,
+  focusedId: string,
+  snapshots: { id: string; monitor: number; workspace: number }[],
+  visible: { id: string; width: number; height: number }[],
+): string | undefined {
+  const groupOf = new Map(snapshots.map((s) => [s.id, orderKey(s.monitor, s.workspace)]));
+  const sameGroup = (id: string) => groupOf.get(id) === key;
+  const visibleIds = new Set(visible.map((v) => v.id));
+  if (focusedId && focusedId !== floatedId && sameGroup(focusedId) && visibleIds.has(focusedId)) {
+    return focusedId;
+  }
+  let best: string | undefined;
+  let bestArea = -1;
+  for (const v of visible) {
+    if (v.id === floatedId || !sameGroup(v.id)) {
+      continue;
+    }
+    const area = v.width * v.height;
+    if (area > bestArea) {
+      bestArea = area;
+      best = v.id;
+    }
+  }
+  return best;
+}
+
+/// Merge Fallback (ADR 0030/0033): para cada janela colapsada (em `floatingIds`) que AINDA não foi
+/// tentada (`attempted`), agrupa-a como aba no quadrante focado via `addToStack`. Muta `stacks` e devolve
+/// os ids efetivamente agrupados (para o guard anti-loop do chamador). Espelha a ponte GNOME.
+export function mergeFallback(
+  stacks: Map<string, Stack[]>,
+  floatingIds: string[],
+  attempted: Set<string>,
+  snapshots: { id: string; monitor: number; workspace: number }[],
+  visible: { id: string; width: number; height: number }[],
+  focusedId: string,
+): string[] {
+  const snapById = new Map(snapshots.map((s) => [s.id, s]));
+  const merged: string[] = [];
+  for (const fid of floatingIds) {
+    if (attempted.has(fid)) {
+      continue;
+    }
+    const snap = snapById.get(fid);
+    if (!snap) {
+      continue;
+    }
+    const key = orderKey(snap.monitor, snap.workspace);
+    const target = pickMergeTarget(key, fid, focusedId, snapshots, visible);
+    if (target !== undefined && addToStack(stacks, key, target, fid)) {
+      merged.push(fid);
+    }
+  }
+  return merged;
 }
 
 function isFiniteNumber(value: unknown): value is number {

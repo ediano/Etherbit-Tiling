@@ -72,6 +72,10 @@ interface Tracked {
   unmanagedId: number;
   /// Sinais `notify::maximized-*` da janela — reagem ao (des)maximizar disparando relayout.
   notifyIds: number[];
+  /// Ator e id do sinal `first-frame` (gating de encaixe no spawn). `firstFrameId === 0` quando o
+  /// sinal já disparou (one-shot) ou não pôde ser conectado (ator ainda inexistente em `window-created`).
+  actor: Meta.WindowActor | null;
+  firstFrameId: number;
 }
 
 export default class EtherbitTilingExtension extends Extension {
@@ -394,10 +398,19 @@ export default class EtherbitTilingExtension extends Extension {
       this._monitorsId = 0;
     }
 
-    for (const { window, unmanagedId, notifyIds } of this._tracked.values()) {
+    for (const tracked of this._tracked.values()) {
+      const { window, unmanagedId, notifyIds } = tracked;
       window.disconnect(unmanagedId);
       for (const sigId of notifyIds) {
         window.disconnect(sigId);
+      }
+      // Desconecta o gating de `first-frame` ainda pendente (janela rastreada que nunca renderizou).
+      if (tracked.firstFrameId && tracked.actor) {
+        try {
+          tracked.actor.disconnect(tracked.firstFrameId);
+        } catch {
+          // ator já destruído — ignora.
+        }
       }
       // Remove o efeito de cantos arredondados para deixar as janelas no estado original.
       const actor = window.get_compositor_private() as Clutter.Actor | null;
@@ -429,6 +442,14 @@ export default class EtherbitTilingExtension extends Extension {
           tracked.window.disconnect(tracked.unmanagedId);
           for (const sigId of tracked.notifyIds) {
             tracked.window.disconnect(sigId);
+          }
+          // Gating de `first-frame` ainda pendente (janela fechada antes de renderizar): desconecta.
+          if (tracked.firstFrameId && tracked.actor) {
+            try {
+              tracked.actor.disconnect(tracked.firstFrameId);
+            } catch {
+              // ator já destruído — ignora.
+            }
           }
           this._tracked.delete(id);
         }
@@ -469,7 +490,31 @@ export default class EtherbitTilingExtension extends Extension {
           this._scheduleRelayout();
         }),
       );
-      this._tracked.set(id, { window, unmanagedId, notifyIds });
+      // Encaixe determinístico no spawn (conceito pop-shell): o `window-created` chega ANTES de o ator
+      // estar mapeado — aplicar geometria agora faz o Mutter REJEITAR o encaixe (a 1ª janela "nasce
+      // flutuante" no meio da tela; a 2ª "funciona" só porque dispara um relayout posterior). O sinal
+      // `first-frame` do `Meta.WindowActor` dispara no 1º quadro renderizado — janela já mapeada e com
+      // tamanho real no Wayland. Esse é o gatilho PRIMÁRIO do encaixe: desmaximiza atômico (se nasceu
+      // maximizada) ANTES do 1º `move_resize_frame` e relayouta. One-shot (desconecta ao disparar); o
+      // `size-changed` acima fica como rede. Se o ator ainda não existe aqui, `firstFrameId` fica 0.
+      let firstFrameId = 0;
+      const actor = window.get_compositor_private() as Meta.WindowActor | null;
+      if (actor) {
+        firstFrameId = actor.connect('first-frame', () => {
+          const tracked = this._tracked.get(id);
+          if (tracked) {
+            tracked.firstFrameId = 0;
+          }
+          try {
+            actor.disconnect(firstFrameId);
+          } catch {
+            // ator já destruído — ignora.
+          }
+          this._spawnUnmaximizeIfBorn(window, id);
+          this._scheduleRelayout();
+        });
+      }
+      this._tracked.set(id, { window, unmanagedId, notifyIds, actor, firstFrameId });
     }
     // Nascimento: com o Tiling ativo, nenhuma janela inicia maximizada (mesmo que o app peça).
     this._spawnUnmaximizeIfBorn(window, id);
@@ -585,11 +630,10 @@ export default class EtherbitTilingExtension extends Extension {
 
     const commands = parseLayout(layoutJson);
     const tabBars = parseTabBars(layoutJson);
-    // Janelas isoladas por auto-floating (mínimo não cabe): aplicar e ELEVAR acima do grid.
-    // ADR 0031 ("cascata sempre, nunca flutua"): o daemon novo NUNCA emite `floating` — a cascata
-    // elástica comprime os vizinhos em vez de jogar a janela fora. Este caminho (parseFloating +
-    // Merge Fallback abaixo) fica DORMENTE como rede defensiva: só dispara se um daemon ANTIGO ainda
-    // mandar flutuantes (retrocompat). Com o daemon atual, `floating` chega sempre vazio.
+    // Sinal de OVERFLOW (ADR 0033): janelas cujo slot ficou < o mínimo mesmo após a cascata. Alimenta
+    // o Merge Fallback abaixo (colapsar em abas, onde cada aba recebe o slot inteiro) — o caminho que
+    // resolve apps de min grande no Wayland (ex.: Ubuntu Store). O float-and-elevate legado (mais
+    // abaixo) fica como REDE: só age se um id ainda estourar após o merge (tela minúscula).
     const floating = parseFloating(layoutJson);
     const floatingIds = new Set<number>(floating.map((c) => c.id));
 
@@ -1314,14 +1358,12 @@ export default class EtherbitTilingExtension extends Extension {
     const normal = window.get_window_type() === Meta.WindowType.NORMAL;
     const resizable = window.resizeable;
     const maximizable = window.can_maximize();
-    // "Forçar frame, ignorar hints" (ADR 0021/0028): para janelas que SERÃO tiladas (normal +
-    // resizable + maximizable) NÃO enviamos os geometry hints. Apps com travas geométricas rígidas
-    // (ex.: gnome-terminal, com incrementos de célula de texto) seriam AUTO-FLUTUADOS/"perdidos" pelo
-    // core quando o mínimo não cabe no slot tilado. Zerando o mínimo, o app é FIXADO no slot
-    // (conteúdo recortado se preciso) em vez de fugir do grid. As demais janelas (diálogos
-    // rígidos etc., que o core nem tila) mantêm o piso defensivo do `get_min_size()`.
-    const [minWidth, minHeight] =
-      normal && resizable && maximizable ? [0, 0] : this._minSize(window);
+    // Min-size REAL (ADR 0033, inverte o "força frame, ignora hints" do 0021/0028): no Wayland o
+    // cliente RECUSA encolher abaixo do seu `xdg min_size` — zerar o hint não fixa o app no slot,
+    // só o faz transbordar/ser ejetado para flutuante. Enviamos o mínimo real e deixamos o core
+    // sinalizar "não cabe" (overflow → `floating`) quando o quadrante for menor que o app; a ponte
+    // resolve via Merge Fallback (abas), onde cada aba recebe o slot inteiro.
+    const [minWidth, minHeight] = this._minSize(window);
     return {
       id: window.get_stable_sequence(),
       app_id: wmClass,

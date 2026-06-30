@@ -210,8 +210,9 @@ pub struct LayoutResultDto {
     pub tab_bars: Vec<TabBarDto>,
     #[serde(default)]
     pub trees: Vec<TreeDto>,
-    /// Janelas isoladas por auto-floating (mínimo não cabe no grid). A ponte aplica e ELEVA.
-    /// Ausente = vazio (retrocompat com ponte/daemon antigos).
+    /// Sinal de OVERFLOW ("não cabe", ADR 0033): janelas cujo slot final ficou abaixo do mínimo
+    /// mesmo após a cascata. A ponte usa para disparar o Merge Fallback (abas). Ausente = vazio
+    /// (retrocompat com ponte/daemon antigos).
     #[serde(default)]
     pub floating: Vec<RectDto>,
 }
@@ -972,13 +973,14 @@ mod tests {
     }
 
     #[test]
-    fn sync_oversized_min_comprime_sem_floatar() {
-        // ADR 0031 (cascata sempre, nunca flutua): janela com min_width maior que a área NÃO é mais
-        // isolada — a cascata comprime e ela segue tilada. `floating` vazio; as duas no grid.
+    fn sync_oversized_min_comprime_e_sinaliza_overflow() {
+        // ADR 0033: janela com min_width maior que a área. A cascata comprime e ela segue tilada, mas
+        // como o slot ficou < o mínimo, ela é SINALIZADA em `floating` (overflow) — a ponte resolve via
+        // Merge Fallback. As duas seguem no grid.
         let windows = format!("[{},{}]", win_json_min(1, "store", 2000, 0), win_json(2, "b"));
         let out = sync_windows(&windows, AREAS, "", &[], OPTS).expect("ok");
         let res = layout_of(&out);
-        assert!(res.floating.is_empty(), "ADR 0031: nunca flutua");
+        assert!(res.floating.iter().any(|r| r.id == 1), "slot < min → overflow propagado ao DTO");
         assert_eq!(res.rects.iter().filter(|r| r.id == 1).count(), 1, "a restrita segue tilada");
         assert_eq!(res.rects.iter().filter(|r| r.id == 2).count(), 1);
     }
@@ -996,15 +998,19 @@ mod tests {
     // REGRESSÃO genuína (árvore reconciliada vazia apesar de haver janelas tileáveis). ---
 
     #[test]
-    fn sync_all_oversized_min_comprime_sem_floatar() {
-        // ADR 0031: TODAS as janelas com min maior que a área. NÃO há mais auto-floating — a cascata
-        // comprime as duas proporcionalmente e elas seguem tiladas. `floating` vazio; 2 rects.
+    fn sync_all_oversized_min_comprime_e_sinaliza_overflow() {
+        // ADR 0033: TODAS as janelas com min maior que a área. A cascata comprime as duas
+        // proporcionalmente e elas seguem tiladas (2 rects), mas ambas estouram o próprio mínimo →
+        // ambas em `floating` (overflow), propagado ao DTO.
         let windows =
             format!("[{},{}]", win_json_min(1, "a", 2000, 0), win_json_min(2, "b", 2000, 0));
         let out = sync_windows(&windows, AREAS, "", &[], OPTS).expect("ok");
         let res = layout_of(&out);
         assert_eq!(res.rects.len(), 2, "min gigante comprime, não some do grid");
-        assert!(res.floating.is_empty(), "ADR 0031: nunca flutua");
+        assert!(
+            res.floating.iter().any(|r| r.id == 1) && res.floating.iter().any(|r| r.id == 2),
+            "ambas estouram → overflow no DTO"
+        );
     }
 
     #[test]
