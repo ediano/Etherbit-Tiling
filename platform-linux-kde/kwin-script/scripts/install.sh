@@ -33,6 +33,14 @@ command -v kpackagetool6 >/dev/null || {
   exit 1
 }
 
+# Recompila o catálogo pt-BR (ADR 0032) para o .mo embarcado no pacote, se o fonte
+# .po mudou. Sem msgfmt, a UI de config fica só no inglês (default global).
+if command -v msgfmt >/dev/null && [ -f "$HERE/contents/po/pt_BR.po" ]; then
+  mkdir -p "$HERE/contents/locale/pt_BR/LC_MESSAGES"
+  msgfmt "$HERE/contents/po/pt_BR.po" \
+    -o "$HERE/contents/locale/pt_BR/LC_MESSAGES/etherbit-tiling.mo" || true
+fi
+
 # Instala (ou atualiza, se já existir) o pacote no diretório local do usuário
 # (~/.local/share/kwin/scripts/$ID/).
 if kpackagetool6 --type=KWin/Script -s "$ID" >/dev/null 2>&1; then

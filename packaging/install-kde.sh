@@ -9,6 +9,93 @@
 # O daemon é o MESMO da camada GNOME (agnóstico de DE); se já estiver instalado, é só atualizado.
 set -euo pipefail
 
+# --- i18n (inline) -------------------------------------------------------------
+# Distribuído isolado via `curl ... | bash`: a i18n NÃO pode depender de arquivos
+# vizinhos — fica inline. Inglês é o default global; pt-BR só quando o locale for
+# pt_BR (ADR 0032). Catálogo de referência: packaging/i18n-reference.sh.
+case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
+  pt_BR*|pt-BR*|pt_br*) ETB_LANG=pt ;;
+  *)                    ETB_LANG=en ;;
+esac
+# t <chave> [args...] — imprime a string traduzida (printf-style). Fallback estrito ao inglês.
+t() {
+  local k="$1"; shift
+  local en="" pt=""
+  case "$k" in
+    skip_de_check)   en='>> ETHERBIT_SKIP_DE_CHECK=1 — environment guard disabled.\n'
+                     pt='>> ETHERBIT_SKIP_DE_CHECK=1 — trava de ambiente desativada.\n' ;;
+    err_wrong_env)   en='error: this is the KDE installer, but the current environment looks like GNOME.\n       Use install-gnome.sh. To force: ETHERBIT_SKIP_DE_CHECK=1 bash <this-script>.\n'
+                     pt='erro: este é o instalador do KDE, mas o ambiente atual parece ser o GNOME.\n       Use o install-gnome.sh. Para forçar: ETHERBIT_SKIP_DE_CHECK=1 bash <este-script>.\n' ;;
+    warn_env_unknown) en="warning: could not confirm the environment is KDE/Plasma (XDG_CURRENT_DESKTOP='%s').\n"
+                     pt="aviso: não foi possível confirmar que o ambiente é o KDE/Plasma (XDG_CURRENT_DESKTOP='%s').\n" ;;
+    prompt_continue) en='Continue the KDE install anyway? [y/N] '
+                     pt='Continuar a instalação do KDE mesmo assim? [s/N] ' ;;
+    proceed_user)    en='>> Proceeding at the user request.\n'
+                     pt='>> Prosseguindo a pedido do usuário.\n' ;;
+    cancelled)       en='Installation cancelled.\n'
+                     pt='Instalação cancelada.\n' ;;
+    abort_noninteractive) en='       Non-interactive session — aborting for safety. To force: ETHERBIT_SKIP_DE_CHECK=1 bash <this-script>.\n'
+                     pt='       Sessão não interativa — abortando por segurança. Para forçar: ETHERBIT_SKIP_DE_CHECK=1 bash <este-script>.\n' ;;
+    payload_missing) en='>> Local payload missing; downloading release from %s\n'
+                     pt='>> Payload local ausente; baixando release de %s\n' ;;
+    err_need_tar)    en="error: 'tar' is required.\n"
+                     pt="erro: 'tar' é necessário.\n" ;;
+    err_need_curl_wget) en="error: install 'curl' or 'wget' to download the release.\n"
+                     pt="erro: instale 'curl' ou 'wget' para baixar o release.\n" ;;
+    install_clean)   en='>> Clean installation%s.\n'
+                     pt='>> Instalação limpa%s.\n' ;;
+    version_missing) en='>> VERSION missing in package — forced reinstall over v%s.\n'
+                     pt='>> VERSION ausente no pacote — reinstalação forçada sobre v%s.\n' ;;
+    same_version)    en='>> Same version (v%s) — reapplying files (idempotent).\n'
+                     pt='>> Mesma versão (v%s) — reaplicando arquivos (idempotente).\n' ;;
+    upgrading)       en='>> Upgrading v%s → v%s.\n'
+                     pt='>> Atualizando v%s → v%s.\n' ;;
+    downgrade_forced) en='>> ETHERBIT_FORCE=1 — downgrade v%s → v%s.\n'
+                     pt='>> ETHERBIT_FORCE=1 — downgrade v%s → v%s.\n' ;;
+    warn_older_pkg)  en='warning: the package (v%s) is older than the installed one (v%s); keeping the current one.\n       To force the downgrade: ETHERBIT_FORCE=1 bash <this-script>\n'
+                     pt='aviso: o pacote (v%s) é mais antigo que o instalado (v%s); mantendo o atual.\n       Para forçar o downgrade: ETHERBIT_FORCE=1 bash <este-script>\n' ;;
+    err_daemon_missing) en='error: %s/bin/etherbit-tiling-daemon missing.\n'
+                     pt='erro: %s/bin/etherbit-tiling-daemon ausente.\n' ;;
+    err_kwin_incomplete) en='error: KWin Script package incomplete in %s/kwin-script/.\n'
+                     pt='erro: pacote do KWin Script incompleto em %s/kwin-script/.\n' ;;
+    err_no_kpackagetool) en='error: kpackagetool6 not found (KDE Plasma 6 required).\n'
+                     pt='erro: kpackagetool6 não encontrado (precisa de KDE Plasma 6).\n' ;;
+    bin_install)     en='>> Installing daemon in %s\n'
+                     pt='>> Instalando daemon em %s\n' ;;
+    preview_install) en='>> Installing preview helper in %s\n'
+                     pt='>> Instalando helper de preview em %s\n' ;;
+    warn_no_preview) en='warning: bin/etherbit-tiling-preview missing — preview will fall back to the native outline (no alpha).\n'
+                     pt='aviso: bin/etherbit-tiling-preview ausente — preview ficará só com o outline nativo (sem alpha).\n' ;;
+    kwin_install)    en='>> Installing KWin Script %s\n'
+                     pt='>> Instalando KWin Script %s\n' ;;
+    warn_no_qdbus)   en='warning: qdbus6/qdbus-qt6 not found — reload KWin manually (requires Plasma 6/Qt 6).\n'
+                     pt='aviso: qdbus6/qdbus-qt6 não encontrado — recarregue o KWin manualmente (requer Plasma 6/Qt 6).\n' ;;
+    service_install) en='>> Installing systemd --user service (%s)\n'
+                     pt='>> Instalando serviço systemd --user (%s)\n' ;;
+    warn_no_start)   en='warning: could not start now (session without systemd --user?). It will start on next login.\n'
+                     pt='aviso: não foi possível iniciar agora (sessão sem systemd --user?). Será iniciado no próximo login.\n' ;;
+    warn_no_systemctl) en='warning: systemctl unavailable — service installed but not enabled.\n'
+                     pt='aviso: systemctl indisponível — serviço instalado, mas não habilitado.\n' ;;
+    ping_ok)         en='>> Daemon ACTIVE and responding (Ping ok).\n'
+                     pt='>> Daemon ATIVO e respondendo (Ping ok).\n' ;;
+    warn_ping_fail)  en='WARNING: the daemon did not respond to Ping — tiling may stay inert. Diagnose with:\n         systemctl --user status %s\n         journalctl --user -u %s -b 0\n'
+                     pt='AVISO: o daemon não respondeu ao Ping — o tiling pode ficar inerte. Diagnostique com:\n         systemctl --user status %s\n         journalctl --user -u %s -b 0\n' ;;
+    done_title)      en='\nInstallation complete.\n'
+                     pt='\nInstalação concluída.\n' ;;
+    done_daemon)     en='  • Daemon:      %s/etherbit-tiling-daemon\n'
+                     pt='  • Daemon:      %s/etherbit-tiling-daemon\n' ;;
+    done_preview)    en='  • Preview:     %s/etherbit-tiling-preview (translucent, D-Bus-activated on drag)\n'
+                     pt='  • Preview:     %s/etherbit-tiling-preview (translúcido, ativado por D-Bus no drag)\n' ;;
+    done_kwin)       en='  • KWin Script: %s (enabled in kwinrc)\n'
+                     pt='  • KWin Script: %s (habilitado no kwinrc)\n' ;;
+    done_service)    en='  • Service:     %s\n'
+                     pt='  • Serviço:     %s\n' ;;
+    done_config)     en='\nConfig: System Settings → KWin Scripts → Etherbit Tiling (⚙).\nIf tiling does not start, check in KWin Scripts that it is enabled.\n'
+                     pt='\nConfig: Configurações do Sistema → KWin Scripts → Etherbit Tiling (⚙).\nSe o tiling não iniciar, verifique em KWin Scripts se está habilitado.\n' ;;
+  esac
+  if [ "$ETB_LANG" = pt ] && [ -n "$pt" ]; then printf -- "$pt" "$@"; else printf -- "$en" "$@"; fi
+}
+
 # --- Trava de ambiente gráfico (fail-safe) -------------------------------------
 # Impede execução cruzada: rodar o instalador do KDE sob GNOME (ou vice-versa)
 # embaralharia configs/serviços de DEs distintos. Detecção via sinais freedesktop
@@ -19,7 +106,7 @@ set -euo pipefail
 # Bypass total: ETHERBIT_SKIP_DE_CHECK=1.
 guard_desktop() {
   if [ "${ETHERBIT_SKIP_DE_CHECK:-0}" = "1" ]; then
-    echo ">> ETHERBIT_SKIP_DE_CHECK=1 — trava de ambiente desativada."
+    t skip_de_check
     return 0
   fi
   local signals
@@ -31,22 +118,21 @@ guard_desktop() {
   esac
   case "$signals" in
     *gnome*)
-      echo "erro: este é o instalador do KDE, mas o ambiente atual parece ser o GNOME." >&2
-      echo "       Use o install-gnome.sh. Para forçar: ETHERBIT_SKIP_DE_CHECK=1 bash <este-script>." >&2
+      t err_wrong_env >&2
       exit 1
       ;;
   esac
-  echo "aviso: não foi possível confirmar que o ambiente é o KDE/Plasma (XDG_CURRENT_DESKTOP='${XDG_CURRENT_DESKTOP:-vazio}')." >&2
+  t warn_env_unknown "${XDG_CURRENT_DESKTOP:-}" >&2
   if [ -t 0 ]; then
-    printf 'Continuar a instalação do KDE mesmo assim? [s/N] ' >&2
+    t prompt_continue >&2
     local resp=""
     read -r resp || resp=""
     case "$resp" in
-      [sSyY]*) echo ">> Prosseguindo a pedido do usuário."; return 0 ;;
-      *) echo "Instalação cancelada." >&2; exit 1 ;;
+      [sSyY]*) t proceed_user; return 0 ;;
+      *) t cancelled >&2; exit 1 ;;
     esac
   fi
-  echo "       Sessão não interativa — abortando por segurança. Para forçar: ETHERBIT_SKIP_DE_CHECK=1 bash <este-script>." >&2
+  t abort_noninteractive >&2
   exit 1
 }
 guard_desktop
@@ -66,8 +152,8 @@ fi
 
 # Bootstrap: se o payload não está ao lado do script (caso do `curl | bash`), baixa o tarball.
 if [ -z "$HERE" ] || [ ! -f "$HERE/bin/etherbit-tiling-daemon" ]; then
-  echo ">> Payload local ausente; baixando release de $REPO"
-  command -v tar >/dev/null || { echo "erro: 'tar' é necessário." >&2; exit 1; }
+  t payload_missing "$REPO"
+  command -v tar >/dev/null || { t err_need_tar >&2; exit 1; }
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT
   if command -v curl >/dev/null; then
@@ -75,7 +161,7 @@ if [ -z "$HERE" ] || [ ! -f "$HERE/bin/etherbit-tiling-daemon" ]; then
   elif command -v wget >/dev/null; then
     wget -qO "$TMP/$TARBALL" "$ASSET_URL"
   else
-    echo "erro: instale 'curl' ou 'wget' para baixar o release." >&2
+    t err_need_curl_wget >&2
     exit 1
   fi
   tar -xzf "$TMP/$TARBALL" -C "$TMP"
@@ -88,15 +174,15 @@ SERVICE="etherbit-tiling-daemon.service"
 
 # --- Validação -----------------------------------------------------------------
 if [ ! -f "$HERE/bin/etherbit-tiling-daemon" ]; then
-  echo "erro: $HERE/bin/etherbit-tiling-daemon ausente." >&2
+  t err_daemon_missing "$HERE" >&2
   exit 1
 fi
 if [ ! -f "$HERE/kwin-script/metadata.json" ] || [ ! -f "$HERE/kwin-script/contents/code/main.js" ]; then
-  echo "erro: pacote do KWin Script incompleto em $HERE/kwin-script/." >&2
+  t err_kwin_incomplete "$HERE" >&2
   exit 1
 fi
 command -v kpackagetool6 >/dev/null || {
-  echo "erro: kpackagetool6 não encontrado (precisa de KDE Plasma 6)." >&2
+  t err_no_kpackagetool >&2
   exit 1
 }
 
@@ -113,18 +199,17 @@ OLD_VERSION="$([ -f "$VERSION_FILE" ] && tr -d '[:space:]' < "$VERSION_FILE" || 
 version_gt() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]; }
 
 if [ -z "$OLD_VERSION" ]; then
-  echo ">> Instalação limpa${NEW_VERSION:+ (v$NEW_VERSION)}."
+  t install_clean "${NEW_VERSION:+ (v$NEW_VERSION)}"
 elif [ -z "$NEW_VERSION" ]; then
-  echo ">> VERSION ausente no pacote — reinstalação forçada sobre v$OLD_VERSION."
+  t version_missing "$OLD_VERSION"
 elif [ "$NEW_VERSION" = "$OLD_VERSION" ]; then
-  echo ">> Mesma versão (v$OLD_VERSION) — reaplicando arquivos (idempotente)."
+  t same_version "$OLD_VERSION"
 elif version_gt "$NEW_VERSION" "$OLD_VERSION"; then
-  echo ">> Atualizando v$OLD_VERSION → v$NEW_VERSION."
+  t upgrading "$OLD_VERSION" "$NEW_VERSION"
 elif [ "${ETHERBIT_FORCE:-0}" = "1" ]; then
-  echo ">> ETHERBIT_FORCE=1 — downgrade v$OLD_VERSION → v$NEW_VERSION."
+  t downgrade_forced "$OLD_VERSION" "$NEW_VERSION"
 else
-  echo "aviso: o pacote (v$NEW_VERSION) é mais antigo que o instalado (v$OLD_VERSION); mantendo o atual." >&2
-  echo "       Para forçar o downgrade: ETHERBIT_FORCE=1 bash <este-script>" >&2
+  t warn_older_pkg "$NEW_VERSION" "$OLD_VERSION" >&2
   exit 0
 fi
 
@@ -138,7 +223,7 @@ if command -v systemctl >/dev/null; then
 fi
 
 # --- Daemon (reuso; mesmo binário/serviço da camada GNOME) ---------------------
-echo ">> Instalando daemon em $BIN_DIR"
+t bin_install "$BIN_DIR"
 mkdir -p "$BIN_DIR"
 install -m 755 "$HERE/bin/etherbit-tiling-daemon" "$BIN_DIR/etherbit-tiling-daemon"
 
@@ -148,7 +233,7 @@ install -m 755 "$HERE/bin/etherbit-tiling-daemon" "$BIN_DIR/etherbit-tiling-daem
 # nativo (contorno opaco) — o tiling não depende dele. Lazy-start por ATIVAÇÃO D-Bus: o primeiro
 # `ShowPreview` (no drag) sobe o helper; ele fica vivo e ocioso fora do arrasto.
 if [ -f "$HERE/bin/etherbit-tiling-preview" ]; then
-  echo ">> Instalando helper de preview em $BIN_DIR"
+  t preview_install "$BIN_DIR"
   install -m 755 "$HERE/bin/etherbit-tiling-preview" "$BIN_DIR/etherbit-tiling-preview"
   DBUS_SERVICES_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/dbus-1/services"
   mkdir -p "$DBUS_SERVICES_DIR"
@@ -158,11 +243,11 @@ Name=dev.ediano.etherbit.Preview
 Exec=${BIN_DIR}/etherbit-tiling-preview
 PREVIEW
 else
-  echo "aviso: bin/etherbit-tiling-preview ausente — preview ficará só com o outline nativo (sem alpha)."
+  t warn_no_preview
 fi
 
 # --- KWin Script ---------------------------------------------------------------
-echo ">> Instalando KWin Script $ID"
+t kwin_install "$ID"
 if kpackagetool6 --type=KWin/Script -s "$ID" >/dev/null 2>&1; then
   kpackagetool6 --type=KWin/Script -u "$HERE/kwin-script"
 else
@@ -178,11 +263,11 @@ QDBUS="$(command -v qdbus6 || command -v qdbus-qt6 || true)"
 if [ -n "$QDBUS" ]; then
   "$QDBUS" org.kde.KWin /KWin reconfigure || true
 else
-  echo "aviso: qdbus6/qdbus-qt6 não encontrado — recarregue o KWin manualmente (requer Plasma 6/Qt 6)."
+  t warn_no_qdbus
 fi
 
 # --- Serviço systemd (--user) --------------------------------------------------
-echo ">> Instalando serviço systemd --user ($SERVICE)"
+t service_install "$SERVICE"
 mkdir -p "$SYSTEMD_DIR"
 # `ExecStart` usa o $BIN_DIR REAL (não o hardcode %h/.local/bin): respeita XDG_BIN_HOME e evita um
 # serviço que aponta para um binário inexistente — daemon que não sobe = tiling inerte.
@@ -205,9 +290,9 @@ UNIT
 if command -v systemctl >/dev/null; then
   systemctl --user daemon-reload || true
   systemctl --user enable --now "$SERVICE" || \
-    echo "aviso: não foi possível iniciar agora (sessão sem systemd --user?). Será iniciado no próximo login."
+    t warn_no_start
 else
-  echo "aviso: systemctl indisponível — serviço instalado, mas não habilitado."
+  t warn_no_systemctl
 fi
 
 # Health-check: o KWin Script é só o CLIENTE; sem o daemon respondendo, o tiling fica INERTE. Confirma
@@ -215,11 +300,9 @@ fi
 if command -v busctl >/dev/null; then
   if busctl --user call dev.ediano.etherbit.Tiling /dev/ediano/etherbit/Tiling \
        dev.ediano.etherbit.Tiling Ping >/dev/null 2>&1; then
-    echo ">> Daemon ATIVO e respondendo (Ping ok)."
+    t ping_ok
   else
-    echo "AVISO: o daemon não respondeu ao Ping — o tiling pode ficar inerte. Diagnostique com:"
-    echo "         systemctl --user status $SERVICE"
-    echo "         journalctl --user -u $SERVICE -b 0"
+    t warn_ping_fail "$SERVICE" "$SERVICE"
   fi
 fi
 
@@ -231,14 +314,11 @@ if [ -n "$NEW_VERSION" ]; then
 fi
 
 # --- Fim -----------------------------------------------------------------------
-echo
-echo "Instalação concluída."
-echo "  • Daemon:      $BIN_DIR/etherbit-tiling-daemon"
+t done_title
+t done_daemon "$BIN_DIR"
 if [ -f "$BIN_DIR/etherbit-tiling-preview" ]; then
-  echo "  • Preview:     $BIN_DIR/etherbit-tiling-preview (translúcido, ativado por D-Bus no drag)"
+  t done_preview "$BIN_DIR"
 fi
-echo "  • KWin Script: $ID (habilitado no kwinrc)"
-echo "  • Serviço:     $SYSTEMD_DIR/$SERVICE"
-echo
-echo "Config: Configurações do Sistema → KWin Scripts → Etherbit Tiling (⚙)."
-echo "Se o tiling não iniciar, verifique em KWin Scripts se está habilitado."
+t done_kwin "$ID"
+t done_service "$SYSTEMD_DIR/$SERVICE"
+t done_config

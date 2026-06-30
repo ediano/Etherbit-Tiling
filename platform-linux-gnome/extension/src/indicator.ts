@@ -19,6 +19,7 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import type { TilingConfig } from './dbus.js';
+import { _ } from './i18n.js';
 
 /// Travas rígidas (px) dos inputs — espelham os limites do daemon e dos ADRs.
 const GAP_MIN = 0;
@@ -64,7 +65,7 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
 
     // Chave geral: liga/desliga o tiling em tempo real. Desligado, a ponte libera as janelas para
     // flutuar (o daemon segue vivo); ligado, reorganiza as janelas no grid. Fica no TOPO do menu.
-    this._enabledSwitch = new PopupMenu.PopupSwitchMenuItem('Ativar tiling', true);
+    this._enabledSwitch = new PopupMenu.PopupSwitchMenuItem(_('toggle.enable'), true);
     this._keepOpenOnToggle(this._enabledSwitch);
     this._enabledSwitch.connect('toggled', (_item, state) => {
       if (!this._syncing) this._handlers.onEnabled(state);
@@ -73,12 +74,12 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
 
     this._menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-    this._gapSpin = this._addSpinRow('Espaçamento (px)', GAP_MIN, GAP_MAX, (v) =>
+    this._gapSpin = this._addSpinRow(_('gap.label'), GAP_MIN, GAP_MAX, (v) =>
       this._handlers.onGap(v),
     );
     // Raio dos cantos: `0` desativa o arredondamento; qualquer valor `> 0` o ativa (não há mais um
     // toggle separado — o valor é a única fonte de verdade do comportamento).
-    this._radiusSpin = this._addSpinRow('Raio dos cantos (px)', RADIUS_MIN, RADIUS_MAX, (v) =>
+    this._radiusSpin = this._addSpinRow(_('radius.label'), RADIUS_MIN, RADIUS_MAX, (v) =>
       this._handlers.onCornerRadius(v),
     );
   }

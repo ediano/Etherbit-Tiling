@@ -1,7 +1,7 @@
 {
   "uuid": "etherbit.tiling@ediano.dev",
   "name": "Etherbit Tiling",
-  "description": "O tecido invisível que coloca suas janelas em órbita perfeita. Gerenciador automático de janelas (tiling) para GNOME 45+ sob Wayland.",
+  "description": "The invisible fabric that puts your windows in perfect orbit. Automatic window manager (tiling) for GNOME 45+ under Wayland.",
   "shell-version": ["45", "46", "47", "48", "49", "50"],
   "url": "https://github.com/ediano/etherbit-tiling-releases",
   "settings-schema": "org.gnome.shell.extensions.etherbit-tiling",

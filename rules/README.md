@@ -10,7 +10,7 @@ arqueologia de commits.
 
 | # | Decisão | Status |
 |---|---------|--------|
-| [0001](0001-idioma-portugues.md) | Comunicação e documentação em português | ✅ Aceita |
+| [0001](0001-idioma-portugues.md) | Comunicação e documentação em português | ✅ Aceita; emendada por #0032 (UI/instalador bilíngues) |
 | [0002](0002-arquitetura-core-agnostico.md) | Core agnóstico em Rust + camadas nativas por plataforma | ✅ Aceita |
 | [0003](0003-monorepo-poliglota.md) | Monorepo poliglota com workspace Cargo | ✅ Aceita |
 | [0004](0004-docker-centralizado.md) | Docker centralizado em `docker/Dockerfile.core` | ✅ Aceita |
@@ -41,6 +41,7 @@ arqueologia de commits.
 | [0029](0029-daemon-sem-framework-visual.md) | Daemon sem framework visual: HUD nativo e core puramente geométrico | ✅ Aceita; emendada por #0031 (preview translúcido num helper nativo separado) |
 | [0030](0030-distribuicao-ciclica-quadrantes-e-merge-fallback.md) | Distribuição cíclica em quadrantes (anti-horária) e Merge Fallback | ✅ Aceita; Merge Fallback dormente por #0031 |
 | [0031](0031-cascata-sempre-spawn-unmaximize-e-preview-translucido.md) | Cascata sempre (sem floating), desmaximização no nascimento + histórico, e preview KDE translúcido | ✅ Aceita |
+| [0032](0032-i18n-multilingue.md) | i18n multilíngue de UI e instalador (en default, pt-BR por locale) | ✅ Aceita |
 
 ## Como adicionar uma nova decisão
 1. Copie o formato de um ADR existente.

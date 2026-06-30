@@ -16,7 +16,8 @@ STAGE="$ROOT/dist-release/$STAGE_NAME"
 echo ">> Limpando staging"
 rm -rf "$ROOT/dist-release" "$ROOT/$STAGE_NAME.tar.gz"
 mkdir -p "$STAGE/bin" "$STAGE/kwin-script/contents/code" \
-         "$STAGE/kwin-script/contents/config" "$STAGE/kwin-script/contents/ui"
+         "$STAGE/kwin-script/contents/config" "$STAGE/kwin-script/contents/ui" \
+         "$STAGE/kwin-script/contents/locale/pt_BR/LC_MESSAGES"
 
 # --- Daemon + helper de preview (workspace compartilhado) ----------------------
 # O daemon é PURO geometria (sem framework visual, ADR 0029). A camada visual do preview do KDE vive
@@ -44,6 +45,17 @@ install -m 644 "$KS/metadata.json"                "$STAGE/kwin-script/metadata.j
 install -m 644 "$KS/contents/code/main.js"        "$STAGE/kwin-script/contents/code/main.js"
 install -m 644 "$KS/contents/config/main.xml"     "$STAGE/kwin-script/contents/config/main.xml"
 install -m 644 "$KS/contents/ui/config.ui"        "$STAGE/kwin-script/contents/ui/config.ui"
+
+# --- Tradução (gettext) da UI de config — ADR 0032 -----------------------------
+# Strings-fonte em inglês (default global); catálogo pt_BR compilado para .mo e
+# embarcado no pacote (contents/locale/). Sem msgfmt, segue só com o inglês.
+if command -v msgfmt >/dev/null; then
+  echo ">> Compilando catálogo pt-BR (msgfmt)"
+  msgfmt "$KS/contents/po/pt_BR.po" \
+    -o "$STAGE/kwin-script/contents/locale/pt_BR/LC_MESSAGES/etherbit-tiling.mo"
+else
+  echo "aviso: msgfmt ausente — pacote sem tradução pt-BR (UI ficará em inglês)."
+fi
 
 # --- Installer / uninstaller / VERSION -----------------------------------------
 echo ">> Adicionando installer, uninstaller e VERSION"

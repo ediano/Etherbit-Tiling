@@ -1,5 +1,10 @@
 // main.js — interatividade mínima e local (sem dependências de runtime).
 import './style.css';
+import { initI18n, t } from './i18n.js';
+
+// i18n primeiro: troca o conteúdo dos elementos anotados e (re)cria o <span id="year">
+// dentro do rodapé traduzido. O preenchimento do ano abaixo roda DEPOIS, por isso.
+initI18n();
 
 // Ano dinâmico no rodapé.
 const yearEl = document.getElementById('year');
@@ -36,7 +41,7 @@ document.querySelectorAll('.code[data-copy]').forEach((box) => {
     }
 
     const original = btn.textContent;
-    btn.textContent = 'Copiado!';
+    btn.textContent = t('copy.done');
     btn.classList.add('is-copied');
     window.setTimeout(() => {
       btn.textContent = original;
