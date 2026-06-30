@@ -25,6 +25,43 @@ export interface WindowSnapshot {
   maximized: boolean;
 }
 
+/// `true` sse a janela tem tamanho GENUINAMENTE FIXO: `min == max` em AMBOS os eixos, com `max > 0`
+/// (os dois travados). Um `max` ausente/0 = "sem teto" → não-fixo. Travar só um eixo não basta — o
+/// outro ainda redimensiona. Hints em px de frame (`Meta.Window.get_min_size`/`get_max_size`).
+export function isFixedSize(opts: {
+  minWidth: number;
+  minHeight: number;
+  maxWidth: number;
+  maxHeight: number;
+}): boolean {
+  return (
+    opts.maxWidth > 0 &&
+    opts.maxHeight > 0 &&
+    opts.minWidth === opts.maxWidth &&
+    opts.minHeight === opts.maxHeight
+  );
+}
+
+/// Decide se a janela é redimensionável de forma INDEPENDENTE DO ESTADO (ADR 0037). A propriedade
+/// `Meta.Window.resizeable` do Mutter é estado-dependente — retorna `false` enquanto a janela está
+/// maximizada/fullscreen —, o que fazia a 1ª janela (que nasce preenchendo a tela) ser descartada
+/// como `non_resizable`, preemptando o portão `is_tileable` do core. Confiamos no `resizeable === true`
+/// (caminho rápido); quando ele é `false`, derivamos dos hints de tamanho: a janela só é realmente
+/// não-redimensionável se for `isFixedSize`. Sem teto / min ≠ max → redimensionável (paridade Cosmic).
+/// Diálogos de tamanho fixo reais (`min == max > 0`) seguem corretamente classificados como não.
+export function isResizable(opts: {
+  rawResizeable: boolean;
+  minWidth: number;
+  minHeight: number;
+  maxWidth: number;
+  maxHeight: number;
+}): boolean {
+  if (opts.rawResizeable === true) {
+    return true;
+  }
+  return !isFixedSize(opts);
+}
+
 /// Espelha o `MonitorDto` do daemon (área útil de um monitor).
 export interface MonitorSnapshot {
   index: number;
