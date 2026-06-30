@@ -1498,8 +1498,7 @@ fn place_in_grid_cell(tree: &LayoutTree, dragged: u64, col: u8, row: u8) -> Layo
     let target_idx = (row as usize) * 3 + (col as usize);
     let free: Vec<usize> = (0..9usize).filter(|i| *i != target_idx).collect();
 
-    let mut cells: Vec<GridChild> =
-        vec![Node::cell(Node::Leaf(dragged), col, row)];
+    let mut cells: Vec<GridChild> = vec![Node::cell(Node::Leaf(dragged), col, row)];
     let n = others.len();
     for (k, &idx) in free.iter().enumerate() {
         if k >= n {
