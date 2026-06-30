@@ -347,58 +347,68 @@ describe('clampGeometry', () => {
     expect(clampGeometry(ok)).toEqual(ok);
   });
 
-  // ---- HUD do jogo da velha (resolveHotZone — ADR 0026, célula 3×3 estrita) ----
-  const MON = { x: 0, y: 0, width: 900, height: 900 }; // células de 300×300
+  // ---- HUD de "eixos limpos" (resolveHotZone — ADR 0028: merge/split 50-50/maximizar) ----
+  const MON = { x: 0, y: 0, width: 900, height: 900 };
   const FULL = { x: 0, y: 0, width: 900, height: 900 }; // janela cobrindo o monitor
+  const NO_MIN = { width: 0, height: 0 }; // janela arrastada sem min-size → split 50/50 puro
 
-  it('terço central de uma janela → fusão em abas (center local)', () => {
-    const hz = resolveHotZone({ x: 450, y: 450 }, FULL, MON);
+  it('miolo central de uma janela → fusão em abas (center local, MANTÉM merge)', () => {
+    const hz = resolveHotZone({ x: 450, y: 450 }, FULL, MON, NO_MIN);
     expect(hz.scope).toBe('local');
     expect(hz.dropZone).toBe('center');
     expect(hz.outline).toEqual(FULL);
   });
 
-  it('canto superior-esquerdo sobre janela → célula 3×3 (grid, top_left)', () => {
-    const hz = resolveHotZone({ x: 150, y: 150 }, FULL, MON);
-    expect(hz.scope).toBe('grid');
-    expect(hz.dropZone).toBe('top_left');
-    expect(hz.cells).toHaveLength(9);
+  it('lado esquerdo de uma janela (fora do centro) → split 50/50 do corpo (local, left)', () => {
+    const hz = resolveHotZone({ x: 100, y: 450 }, FULL, MON, NO_MIN);
+    expect(hz.scope).toBe('local');
+    expect(hz.dropZone).toBe('left');
+    expect(hz.cells).toHaveLength(1);
     expect(hz.hot).toEqual([0]);
-    expect(hz.outline).toEqual({ x: 0, y: 0, width: 300, height: 300 });
+    expect(hz.outline).toEqual({ x: 0, y: 0, width: 450, height: 900 });
   });
 
-  it('canto superior-direito sobre janela → célula 3×3 (grid, top_right)', () => {
-    const hz = resolveHotZone({ x: 750, y: 150 }, FULL, MON);
-    expect(hz.scope).toBe('grid');
-    expect(hz.dropZone).toBe('top_right');
-    expect(hz.outline).toEqual({ x: 600, y: 0, width: 300, height: 300 });
+  it('lado direito de uma janela → split 50/50 do corpo (local, right)', () => {
+    const hz = resolveHotZone({ x: 800, y: 450 }, FULL, MON, NO_MIN);
+    expect(hz.scope).toBe('local');
+    expect(hz.dropZone).toBe('right');
+    expect(hz.outline).toEqual({ x: 450, y: 0, width: 450, height: 900 });
   });
 
-  it('eixo superior (fora do centro) sobre janela → célula central-superior (grid, top)', () => {
-    const hz = resolveHotZone({ x: 450, y: 150 }, FULL, MON);
-    expect(hz.scope).toBe('grid');
+  it('topo de uma janela (fora do centro) → split 50/50 do corpo (local, top)', () => {
+    const hz = resolveHotZone({ x: 450, y: 100 }, FULL, MON, NO_MIN);
+    expect(hz.scope).toBe('local');
     expect(hz.dropZone).toBe('top');
-    expect(hz.outline).toEqual({ x: 300, y: 0, width: 300, height: 300 });
+    expect(hz.outline).toEqual({ x: 0, y: 0, width: 900, height: 450 });
   });
 
-  it('densidade: célula de canto colada à borda NÃO vira 50% (continua grid)', () => {
-    // Janela cobrindo todo o monitor; cursor no canto extremo → célula top_left, não bloco de 50%.
-    const hz = resolveHotZone({ x: 5, y: 5 }, FULL, MON);
-    expect(hz.scope).toBe('grid');
-    expect(hz.dropZone).toBe('top_left');
-    expect(hz.outline).toEqual({ x: 0, y: 0, width: 300, height: 300 });
+  it('split local estica a metade pelo min-size da arrastada, com clamp a 95% do alvo', () => {
+    // Min da arrastada 700px > metade (450) → metade esticada; clamp a 0.95*900 = 855.
+    const hz = resolveHotZone({ x: 100, y: 450 }, FULL, MON, { width: 700, height: 0 });
+    expect(hz.scope).toBe('local');
+    expect(hz.dropZone).toBe('left');
+    expect(hz.outline).toEqual({ x: 0, y: 0, width: 700, height: 900 });
+    // Min absurdo (acima do alvo) é limitado a 95% do alvo no eixo.
+    const clamped = resolveHotZone({ x: 100, y: 450 }, FULL, MON, { width: 2000, height: 0 });
+    expect(clamped.outline.width).toBe(855);
   });
 
-  it('sem janela sob o cursor (gap) → escopo global 50% pela borda', () => {
-    const hz = resolveHotZone({ x: 10, y: 450 }, null, MON);
+  it('borda da tela num gap vazio → escopo global 50% pela borda', () => {
+    const hz = resolveHotZone({ x: 10, y: 450 }, null, MON, NO_MIN);
     expect(hz.scope).toBe('global');
     expect(hz.dropZone).toBe('left');
     expect(hz.outline).toEqual({ x: 0, y: 0, width: 450, height: 900 });
   });
 
-  it('serializeScope mapeia local/global/grid', () => {
+  it('miolo central de um gap vazio → escopo global "center" (maximizar = monitor inteiro)', () => {
+    const hz = resolveHotZone({ x: 450, y: 450 }, null, MON, NO_MIN);
+    expect(hz.scope).toBe('global');
+    expect(hz.dropZone).toBe('center');
+    expect(hz.outline).toEqual(FULL);
+  });
+
+  it('serializeScope mapeia só local/global', () => {
     expect(serializeScope('global')).toBe('global');
     expect(serializeScope('local')).toBe('local');
-    expect(serializeScope('grid')).toBe('grid');
   });
 });

@@ -138,10 +138,10 @@ export default class EtherbitTilingExtension extends Extension {
   private _tabMenu: PopupMenu.PopupMenu | null = null;
   private _tabMenuAnchor: St.Widget | null = null;
 
-  // Estado do arrasto + HUD do jogo da velha (9 células).
+  // Estado do arrasto + HUD de "eixos limpos" (1–2 células: split, bloco ou merge).
   private _dragSource = 0;
   private _draggedId = 0;
-  // Até 9 células St.Widget reusadas a cada tick (criadas sob demanda em uiGroup).
+  // Células St.Widget do HUD (1–2 por tick) reusadas e criadas sob demanda em uiGroup.
   private _hudCells: St.Widget[] = [];
   private _lastPointer: [number, number] | null = null;
   // Zona quente resolvida no último tick do arrasto (define o drop: stack/split + escopo).
@@ -785,12 +785,14 @@ export default class EtherbitTilingExtension extends Extension {
     this._lastPointer = [x, y];
     this._resolving = true;
     try {
-      // Cálculo 100% LOCAL (ADR 0026): sem D-Bus por tick. Lê a janela sob o cursor e o monitor,
-      // divide por 3 (local) ou usa as bordas do monitor (global). O core só é acionado no DROP.
+      // Cálculo 100% LOCAL (ADR 0028): sem D-Bus por tick. Lê a janela sob o cursor e o monitor e
+      // resolve o destino (merge no centro, split 50/50 no eixo, ou borda/maximizar no gap). O min-size
+      // da janela ARRASTADA estica a metade do preview se preciso. O core só é acionado no DROP.
       const target = this._windowUnderPointObj(x, y, this._draggedId);
       const targetRect = target ? this._frameRectOf(target) : null;
       const monitor = this._monitorRectUnder(x, y);
-      const hot = resolveHotZone({ x, y }, targetRect, monitor);
+      const draggedMin = this._draggedMinSize();
+      const hot = resolveHotZone({ x, y }, targetRect, monitor, draggedMin);
       if (hot.dropZone !== (this._lastHot?.dropZone ?? '')) {
         console.log(
           `[etherbit][drag] zona ${this._lastHot?.dropZone ?? 'none'} → ${hot.dropZone}` +
@@ -829,19 +831,40 @@ export default class EtherbitTilingExtension extends Extension {
     return { x: r.x, y: r.y, width: r.width, height: r.height };
   }
 
-  /// Desenha o HUD do jogo da velha (ADR 0026): posiciona/estiliza as células da zona quente e acende
-  /// as ativas. `null` ou vazio → esconde tudo. Centro (merge) em VERDE; eixos/cantos/global em AZUL
+  /// Tamanho mínimo (px) da janela em ARRASTO, para esticar a metade do preview do split local (ADR
+  /// 0028). Busca a janela por `_draggedId` na lista do workspace; `(0,0)` se não houver arrasto ou o
+  /// min for indisponível (split 50/50 puro).
+  private _draggedMinSize(): { width: number; height: number } {
+    if (!this._draggedId) {
+      return { width: 0, height: 0 };
+    }
+    const workspace = global.workspace_manager.get_active_workspace();
+    const windows = workspace ? workspace.list_windows() : [];
+    for (const window of windows) {
+      if (window.get_stable_sequence() === this._draggedId) {
+        const [w, h] = this._minSize(window);
+        return { width: w, height: h };
+      }
+    }
+    return { width: 0, height: 0 };
+  }
+
+  /// Desenha o HUD de "eixos limpos" (ADR 0028): posiciona/estiliza as células da zona quente e acende
+  /// as ativas. O novo modelo produz 1–2 células — split local (2 metades), bloco global/maximizar (1)
+  /// ou realce de merge (1). `null` ou vazio → esconde tudo. Centro/merge em VERDE; split/global em AZUL
   /// Nord; células não-acesas, um leve contorno. ESTÁTICO, sem animação (reafirma ADR 0016).
   private _updateHud(hot: HotZone | null): void {
-    const cells = this._ensureHud();
+    // Garante só o número de células presentes neste tick (1–2) e esconde o excedente do tick anterior.
+    const need = hot ? hot.cells.length : 0;
+    const cells = this._ensureHud(need);
     if (!hot || hot.cells.length === 0 || hot.dropZone === 'none') {
       for (const cell of cells) {
         cell.hide();
       }
       return;
     }
-    // Verde (merge) só na fusão em abas (centro de uma janela, escopo local). A célula central da
-    // matriz 3×3 (escopo grid) é um destino de tiling normal → azul.
+    // Verde (merge) só na fusão em abas (centro de uma janela, escopo local). O centro GLOBAL (gap
+    // vazio = maximizar) é um destino de tiling normal → azul.
     const merge = hot.dropZone === 'center' && hot.scope === 'local';
     const HOT_MERGE =
       'background-color: rgba(163, 190, 140, 0.34);' +
@@ -869,22 +892,21 @@ export default class EtherbitTilingExtension extends Extension {
     }
   }
 
-  /// Cria (uma vez) as 9 células do HUD: ESTÁTICAS, semi-transparentes, não reativas (não roubam o
-  /// ponteiro durante o grab). Em `uiGroup` (coords absolutas de stage, que casam com
-  /// `global.get_pointer()`). Sem animação (ver ADR 0016): atores reposicionados, custo desprezível.
-  private _ensureHud(): St.Widget[] {
-    if (this._hudCells.length === 0) {
-      for (let i = 0; i < 9; i += 1) {
-        const cell = new St.Widget({
-          style_class: 'etherbit-drop-preview',
-          reactive: false,
-          can_focus: false,
-          track_hover: false,
-        });
-        cell.hide();
-        Main.layoutManager.uiGroup.add_child(cell);
-        this._hudCells.push(cell);
-      }
+  /// Garante PELO MENOS `count` células do HUD (criando sob demanda), devolvendo todas as existentes.
+  /// As células são ESTÁTICAS, semi-transparentes e não reativas (não roubam o ponteiro durante o grab),
+  /// em `uiGroup` (coords absolutas de stage, que casam com `global.get_pointer()`). Reusadas entre
+  /// ticks; o `_updateHud` esconde as não-usadas. Sem animação (ver ADR 0016): custo desprezível.
+  private _ensureHud(count: number): St.Widget[] {
+    while (this._hudCells.length < count) {
+      const cell = new St.Widget({
+        style_class: 'etherbit-drop-preview',
+        reactive: false,
+        can_focus: false,
+        track_hover: false,
+      });
+      cell.hide();
+      Main.layoutManager.uiGroup.add_child(cell);
+      this._hudCells.push(cell);
     }
     return this._hudCells;
   }
@@ -896,9 +918,9 @@ export default class EtherbitTilingExtension extends Extension {
     this._hudCells = [];
   }
 
-  /// Fim do arrasto: consolida o drop (ADR 0026). Centro local → empilha em abas; eixo/canto local →
-  /// MoveWindow escopo `local` (faixa de 1/3 na submatriz do alvo); escopo global → MoveWindow `global`
-  /// (bloco de 50% como nó principal). O `_scheduleRelayout()` re-tila das árvores atualizadas.
+  /// Fim do arrasto: consolida o drop (ADR 0028). Centro local → empilha em abas (merge); eixo local →
+  /// MoveWindow escopo `local` (split 50/50 do slot do alvo, resolvido pelo core); escopo global →
+  /// MoveWindow `global` (bloco de 50% / maximizar no centro). O `_scheduleRelayout()` re-tila das árvores.
   private _onGrabEnd(window: Meta.Window | null): void {
     if (this._draggedId && window) {
       const [x, y] = global.get_pointer();
@@ -911,7 +933,7 @@ export default class EtherbitTilingExtension extends Extension {
         `[etherbit][drag] soltar: zona=${hot?.dropZone ?? 'none'} escopo=${hot?.scope ?? '-'}` +
           ` arrastada=${this._draggedId} alvo=${target ? targetId : 'nenhum'}`,
       );
-      const moveWindow = (zoneStr: string, scope: 'local' | 'global' | 'grid'): void => {
+      const moveWindow = (zoneStr: string, scope: 'local' | 'global'): void => {
         const res = this._call((p) =>
           p.MoveWindowSync(
             serializeState(this._stacks, this._disabledGroups, this._trees, this._draggedId),
@@ -925,16 +947,16 @@ export default class EtherbitTilingExtension extends Extension {
           this._trees = parseLayoutTrees(res[0]);
         }
       };
-      if (hot && hot.scope === 'grid' && hot.dropZone !== 'none') {
-        // Célula unitária da matriz 3×3 do workspace: o app se fixa na célula (sem esticar para 50%).
-        // O `target` é irrelevante — o core resolve a posição pela própria zona/célula.
-        moveWindow(hot.dropZone, 'grid');
-      } else if (hot && hot.scope === 'global' && hot.dropZone !== 'none') {
-        // Gap vazio: insere como nó principal do workspace (50%) — não exige janela-alvo.
-        moveWindow(hot.dropZone, 'global');
-      } else if (hot && hot.scope === 'local' && target && hot.dropZone === 'center') {
-        // Centro de uma janela-alvo → empilha em abas (estado de stacks; o core não muta a árvore).
+      if (hot && hot.scope === 'local' && target && hot.dropZone === 'center') {
+        // Centro de uma janela-alvo → empilha em abas (merge): estado de stacks local, o GNOME conserva
+        // abas e NÃO manda `center` como MoveWindow. O core não muta a árvore neste caso.
         addToStack(this._stacks, key, targetId, this._draggedId);
+      } else if (hot && hot.scope === 'global' && hot.dropZone !== 'none') {
+        // Gap vazio: 50% pela borda (ou maximizar no centro) como nó principal — não exige janela-alvo.
+        moveWindow(hot.dropZone, 'global');
+      } else if (hot && hot.scope === 'local' && hot.dropZone !== 'none') {
+        // Eixo de uma janela-alvo (fora do centro) → split 50/50 do slot do alvo (o core resolve).
+        moveWindow(hot.dropZone, 'local');
       }
     } else if (
       this._resizeStart &&
@@ -1228,11 +1250,11 @@ export default class EtherbitTilingExtension extends Extension {
     const normal = window.get_window_type() === Meta.WindowType.NORMAL;
     const resizable = window.resizeable;
     const maximizable = window.can_maximize();
-    // "Forçar frame, ignorar hints" (ADR 0021/0026): para janelas que SERÃO tiladas (normal +
+    // "Forçar frame, ignorar hints" (ADR 0021/0028): para janelas que SERÃO tiladas (normal +
     // resizable + maximizable) NÃO enviamos os geometry hints. Apps com travas geométricas rígidas
     // (ex.: gnome-terminal, com incrementos de célula de texto) seriam AUTO-FLUTUADOS/"perdidos" pelo
-    // core quando o mínimo não cabe na célula da matriz 3×3. Zerando o mínimo, o app é FIXADO na
-    // célula (conteúdo recortado se preciso) em vez de fugir do grid. As demais janelas (diálogos
+    // core quando o mínimo não cabe no slot tilado. Zerando o mínimo, o app é FIXADO no slot
+    // (conteúdo recortado se preciso) em vez de fugir do grid. As demais janelas (diálogos
     // rígidos etc., que o core nem tila) mantêm o piso defensivo do `get_min_size()`.
     const [minWidth, minHeight] =
       normal && resizable && maximizable ? [0, 0] : this._minSize(window);
