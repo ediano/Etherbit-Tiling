@@ -8,12 +8,13 @@ import { resolve } from 'node:path';
 // referenciados diretamente dentro do bundle.
 export default defineConfig({
   build: {
-    // QJSEngine (Qt 6) NÃO suporta o `optional catch binding` (`catch {` sem a variável de erro),
-    // que é justamente uma feature ES2019 — na prática o `kwin_scripting` rejeita o bundle com
-    // `Syntax error` já na primeira ocorrência. Por isso o alvo é `es2018`: o esbuild reescreve
-    // `catch {` → `catch (e) {` (e demais sintaxes ≥ES2019), mantendo o bundle interpretável pelo
-    // motor clássico do KWin. Ver ADR rules/0013 (emenda 2026-06).
-    target: 'es2018',
+    // O QJSEngine (Qt 6) do KWin é um motor clássico com lacunas de sintaxe moderna: além do
+    // `optional catch binding` (`catch {` sem variável, ES2019), também NÃO suporta `object spread`
+    // (`{ ...x }`, ES2018) — em ambos os casos o `kwin_scripting` aborta o bundle com
+    // `Unexpected token` na compilação. Por isso o alvo é `es2017`: o esbuild reescreve `catch {` →
+    // `catch (e) {` E transpila `{ ...x }` → `__spreadValues(...)`, mantendo array spread `[...]` e
+    // rest `(...args)` (ES2015, aceitos pelo motor). Ver ADR rules/0013 (emenda 2026-06).
+    target: 'es2017',
     // Não manglar nomes — facilita depurar via journalctl e mantém o bundle legível.
     minify: false,
     sourcemap: false,

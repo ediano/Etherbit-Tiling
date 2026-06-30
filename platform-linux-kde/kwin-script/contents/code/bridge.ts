@@ -377,7 +377,15 @@ function localHotZone(pointer: { x: number; y: number }, target: Rect): HotZone 
   const row = Math.min(2, Math.max(0, Math.floor(fy * 3)));
 
   if (col === 1 && row === 1) {
-    return { scope: 'local', dropZone: 'center', cells, hot: [idx(1, 1)], outline: { ...target } };
+    return {
+      scope: 'local',
+      dropZone: 'center',
+      cells,
+      hot: [idx(1, 1)],
+      // Literal explícito (NÃO object spread): o QJSEngine do KWin rejeita `{ ...x }` (ES2018) na
+      // compilação do bundle. Mesmo estilo dos ramos irmãos abaixo. Ver vite.config.ts / ADR 0013.
+      outline: { x: target.x, y: target.y, width: target.width, height: target.height },
+    };
   }
   if (col === 1 && row === 0) {
     return localAxis('top', cells, [idx(0, 0), idx(0, 1), idx(0, 2)], {

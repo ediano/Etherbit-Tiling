@@ -22,7 +22,7 @@ Decisões a fixar: **o que** a camada KDE entrega, **como** é compilada e **com
 - **Tooling espelha o GNOME (ADR [0010](0010-tooling-extensao-e-zbus.md)): TypeScript + Vite + pnpm + vitest.**
   Diferença crítica: o KWin avalia `main.js` num contexto de **script clássico** (QJSEngine do Qt), sem
   `import`/`export` em runtime. Por isso o Vite empacota em **IIFE** (bundle único auto-executável),
-  não ESM. `minify: false`; alvo `es2019` (**corrigido para `es2018`** — ver emenda 2026-06 abaixo).
+  não ESM. `minify: false`; alvo `es2019` (**corrigido para `es2017`** — ver emendas 2026-06 abaixo).
   Como não há `@girs/*` para o KWin, os globais são tipados
   à mão em `kwin-globals.d.ts`. Lógica pura (`config.ts`, `tiling.ts`) fica isolada e testável em Node
   (ver estratégia de testes por plataforma).
@@ -41,7 +41,8 @@ Decisões a fixar: **o que** a camada KDE entrega, **como** é compilada e **com
   mesmo estágio do GNOME (TODO marcado em `main.ts`).
 - Requer Plasma 6 (`kpackagetool6`/`kwriteconfig6`/`qdbus6`). Não há fallback X11.
 - A baseline de JS do QJSEngine é mais conservadora que a do GJS (ES2022); manter o alvo do Vite
-  baixo (**`es2018`** — ver emenda 2026-06; a hipótese inicial de `es2019` provou-se otimista demais).
+  baixo (**`es2017`** — ver emendas 2026-06; as hipóteses iniciais `es2019`/`es2018` provaram-se
+  otimistas demais).
 
 ## Emenda (2026-06): linha de corte explícita, daemon em dev e observabilidade da ponte
 
@@ -90,3 +91,21 @@ Decisões a fixar: **o que** a camada KDE entrega, **como** é compilada e **com
 - **Nota:** apenas null-guardar a iteração pararia o crash, mas a ponte enxergaria **zero** janelas
   (falha silenciosa, sem tiling) — por isso a correção é trocar a API, não blindar o `undefined`.
 - Referência: doc da API do KWin (Workspace) — `windowList()` vs. propriedade QML `windows`.
+
+## Emenda (2026-06): alvo do Vite `es2018` → `es2017` (object spread)
+
+- **Sintoma real (Plasma 6, após nova compilação das regras de UI):** `kwin_scripting:
+  .../main.js:199: error: Unexpected token '...'` já na carga — o KWin rejeita o script inteiro e o
+  tiling fica **completamente** inerte (nenhum handler é registrado).
+- **Causa:** a linha era `outline: { ...target }` (**object spread**, uma feature **ES2018**) no HUD
+  de drop-zone (`bridge.ts`, introduzido com o jogo-da-velha — ADR 0026). O QJSEngine do Qt 6 **não**
+  aceita `{ ...x }`. Como o alvo era `es2018`, o esbuild **preservava** o spread em vez de transpilá-lo.
+  (Array spread `[...]` e rest `(...args)`, ES2015, sempre foram aceitos — só o object spread quebra.)
+- **Correção (dupla, defensiva):**
+  1. **Fonte:** o `outline` passou a usar literal explícito `{ x, y, width, height }`, consistente com
+     os ramos irmãos da mesma função (que nunca usaram spread).
+  2. **Build:** alvo do Vite agora é **`es2017`**. O esbuild transpila qualquer `{ ...x }` futuro
+     (`__spreadValues`), **mantém** o downlevel do `optional catch binding` (ES2019, emenda anterior) e
+     preserva array spread/rest (ES2015). Validado: bundle gerado sem `{ ...` cru.
+- **Lição:** o alvo do Vite é a fronteira de sintaxe que o QJSEngine tolera; cada feature sintática
+  ≥ES2018 adicionada à fonte precisa ser coberta pelo downlevel do esbuild (manter o alvo conservador).
