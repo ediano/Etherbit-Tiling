@@ -88,8 +88,19 @@ export default class EtherbitTilingExtension extends Extension {
   // Janelas rastreadas (para reagir ao fechamento) e debounce do relayout.
   private _tracked = new Map<number, Tracked>();
   private _relayoutSource = 0;
-  // Suprime reentrância enquanto aplicamos geometria (evita laço de feedback).
-  private _applying = false;
+  // Supressão de reentrância do relayout. Cobre TODA a janela em que NÓS mexemos no foco/stack — a
+  // aplicação síncrona de geometria E os restacks adiados (minimize/make_above/raise) que rodam
+  // depois (BEFORE_REDRAW), mais um settle curto. Sem isso, esses restacks mudam o foco, o
+  // `notify::focus-window` re-dispara o relayout com outro `focused_id`, o auto-float escolhe outra
+  // vítima e o layout entra em flapping bistável. Liberada por `_releaseSuppression`.
+  private _suppressRelayout = false;
+  // Trigger legítimo (window-created/focus real) que chegou DURANTE a supressão: coalescido num
+  // único relayout disparado ao liberar (trailing-edge), para não perder o relayout necessário.
+  private _relayoutPending = false;
+  // Timeout do settle pós-aplicação (libera a supressão). 0 = inativo.
+  private _settleSource = 0;
+  // Assinatura do último layout APLICADO (dedup): se o novo é idêntico, pula reaplicação + log.
+  private _lastLayoutSig = '';
 
   // Operações de restack (make_above/raise/unmake_above/minimize) ADIADAS para um "later" do Mutter
   // (BEFORE_REDRAW): rodam quando o stack das janelas já está consistente, evitando o assertion
@@ -323,6 +334,15 @@ export default class EtherbitTilingExtension extends Extension {
     }
     this._restackQueue = [];
 
+    // Zera a supressão/settle do relayout (evita um timeout sobrevivente após o teardown).
+    if (this._settleSource) {
+      GLib.source_remove(this._settleSource);
+      this._settleSource = 0;
+    }
+    this._suppressRelayout = false;
+    this._relayoutPending = false;
+    this._lastLayoutSig = '';
+
     // Remove os atalhos globais.
     if (this._settings) {
       Main.wm.removeKeybinding(KEY_TOGGLE_TILING);
@@ -415,12 +435,36 @@ export default class EtherbitTilingExtension extends Extension {
 
   /// Coalesce rajadas de eventos (ex.: vários `window-created` no login) num único relayout.
   private _scheduleRelayout(): void {
-    if (this._applying || this._relayoutSource) {
+    // Durante a supressão (aplicação + restacks adiados + settle), NÃO relayoutar — mas registrar
+    // que houve um trigger, para disparar UM relayout coalescido ao liberar (não perde mudanças reais).
+    if (this._suppressRelayout) {
+      this._relayoutPending = true;
+      return;
+    }
+    if (this._relayoutSource) {
       return;
     }
     this._relayoutSource = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 80, () => {
       this._relayoutSource = 0;
       this._relayout();
+      return GLib.SOURCE_REMOVE;
+    });
+  }
+
+  /// Libera a supressão após um settle curto, deixando o Mutter assentar o foco/stack que NÓS
+  /// mexemos antes de reabrir o relayout. Idempotente: agenda no máximo um settle por vez. Se um
+  /// trigger legítimo chegou durante a supressão (`_relayoutPending`), dispara um relayout ao final.
+  private _releaseSuppression(): void {
+    if (this._settleSource) {
+      return;
+    }
+    this._settleSource = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
+      this._settleSource = 0;
+      this._suppressRelayout = false;
+      if (this._relayoutPending) {
+        this._relayoutPending = false;
+        this._scheduleRelayout();
+      }
       return GLib.SOURCE_REMOVE;
     });
   }
@@ -502,10 +546,6 @@ export default class EtherbitTilingExtension extends Extension {
     const floating = parseFloating(layoutJson);
     const floatingIds = new Set<number>(floating.map((c) => c.id));
 
-    // Observabilidade (regressão do tiling): mostra o round-trip ponte→daemon→ponte no journal do
-    // gnome-shell. `N janelas` SEM `M rects` correspondente ⇒ daemon não respondeu / erro no sync.
-    console.log(`[etherbit] relayout: ${snapshots.length} janelas → ${commands.length} rects, ${floating.length} flutuantes`);
-
     // Abas inativas a ocultar (minimizar): todo membro de stack que não é o ativo.
     const shouldHide = new Set<number>();
     for (const bar of tabBars) {
@@ -516,7 +556,27 @@ export default class EtherbitTilingExtension extends Extension {
       }
     }
 
-    this._applying = true;
+    // Dedup: se o layout calculado é idêntico ao último APLICADO, não reaplica nem loga — mata a
+    // inundação do journal e reescritas redundantes de geometria/efeito, e (com a supressão) faz o
+    // laço convergir num passo. `corner_radius` entra porque muda o efeito mesmo com a mesma
+    // geometria. Resetada em `_releaseToFloating` p/ a chave geral religar mesmo com layout igual.
+    const layoutSig = JSON.stringify([
+      commands,
+      floating,
+      tabBars,
+      [...shouldHide].sort((a, b) => a - b),
+      this._config.corner_radius,
+    ]);
+    if (layoutSig === this._lastLayoutSig) {
+      return;
+    }
+    this._lastLayoutSig = layoutSig;
+
+    // Observabilidade (regressão do tiling): mostra o round-trip ponte→daemon→ponte no journal do
+    // gnome-shell. `N janelas` SEM `M rects` correspondente ⇒ daemon não respondeu / erro no sync.
+    console.log(`[etherbit] relayout: ${snapshots.length} janelas → ${commands.length} rects, ${floating.length} flutuantes`);
+
+    this._suppressRelayout = true;
     try {
       // Restaura quem deixou de estar oculto (ex.: virou a aba ativa, ou o stack foi desfeito).
       for (const id of this._stackHidden) {
@@ -613,7 +673,11 @@ export default class EtherbitTilingExtension extends Extension {
         });
       }
     } finally {
-      this._applying = false;
+      // Se restacks foram ADIADOS (mexem foco/stack), a supressão segue até o drain deles
+      // (`_enqueueRestack`); só liberamos aqui quando NENHUM foi enfileirado neste ciclo.
+      if (!this._restackLaterId) {
+        this._releaseSuppression();
+      }
     }
     this._stackHidden = shouldHide;
     this._floatingAbove = floatingIds;
@@ -1104,6 +1168,9 @@ export default class EtherbitTilingExtension extends Extension {
   /// desminimiza abas, baixa as elevadas, descarta as barras de aba e remove o efeito de cantos. NÃO
   /// limpa o estado leve (ordem/stacks/árvores) — assim religar o tiling reorganiza tudo de volta.
   private _releaseToFloating(): void {
+    // Chave geral DESLIGADA libera as janelas: invalida a assinatura para que RELIGAR sempre reaplique
+    // o grid, mesmo que o layout calculado coincida com o último de antes do desligamento.
+    this._lastLayoutSig = '';
     this._restoreHiddenWindows();
     this._destroyTabBars();
     for (const { window } of this._tracked.values()) {
@@ -1235,6 +1302,9 @@ export default class EtherbitTilingExtension extends Extension {
           console.error(`Etherbit Tiling: restack adiado falhou: ${error}`);
         }
       }
+      // Restacks aplicados: o foco/stack que NÓS mexemos assentou. Libera a supressão (com settle),
+      // disparando o relayout pendente se um trigger legítimo chegou no intervalo.
+      this._releaseSuppression();
       return GLib.SOURCE_REMOVE;
     });
   }
