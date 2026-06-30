@@ -410,7 +410,8 @@ h4 {
 }
 
 .manifesto,
-.downloads {
+.downloads,
+.diagnostics {
   padding-block: clamp(56px, 9vw, 110px);
 }
 
@@ -874,6 +875,14 @@ h4 {
   .uninstall__body > h2 {
     font-size: 1.3rem;
   }
+
+  /* Bloco de envio (passos + "Reportar Bug") compacta no celular. */
+  .diag-send {
+    padding: 24px;
+  }
+  .diag-send__title {
+    font-size: 1.15rem;
+  }
 }
 
 /* Celular estreito: CTAs do hero empilham em largura total (alvos de toque). */
@@ -905,6 +914,9 @@ h4 {
   }
   .btn {
     padding: 10px 16px;
+  }
+  .diag-send {
+    padding: 18px;
   }
 }
 
