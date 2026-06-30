@@ -25,6 +25,8 @@ import {
   parseOrderKey,
   resolveHotZone,
   serializeScope,
+  isResizable,
+  isFixedSize,
   type Stack,
   type TreeNode,
   type WindowSnapshot,
@@ -57,6 +59,74 @@ describe('serializeWindows / serializeMonitors', () => {
   it('serializa monitores (áreas úteis)', () => {
     const mons: MonitorSnapshot[] = [{ index: 0, x: 0, y: 0, width: 1920, height: 1080 }];
     expect(JSON.parse(serializeMonitors(mons))).toEqual(mons);
+  });
+});
+
+describe('isResizable / isFixedSize (ADR 0037)', () => {
+  it('resizeable=true do Mutter é confiável (caminho rápido), mesmo com min==max', () => {
+    // Não derruba o caminho rápido: se o Mutter já diz "sim", tila — ainda que os hints pareçam fixos.
+    expect(
+      isResizable({
+        rawResizeable: true,
+        minWidth: 400,
+        minHeight: 300,
+        maxWidth: 400,
+        maxHeight: 300,
+      }),
+    ).toBe(true);
+  });
+
+  it('resizeable=false + min==max>0 em ambos os eixos → não-redimensionável (diálogo fixo real)', () => {
+    expect(
+      isResizable({
+        rawResizeable: false,
+        minWidth: 400,
+        minHeight: 300,
+        maxWidth: 400,
+        maxHeight: 300,
+      }),
+    ).toBe(false);
+  });
+
+  it('resizeable=false + min != max → redimensionável (estado-dependente: maximizada/fullscreen)', () => {
+    expect(
+      isResizable({
+        rawResizeable: false,
+        minWidth: 200,
+        minHeight: 100,
+        maxWidth: 1920,
+        maxHeight: 1080,
+      }),
+    ).toBe(true);
+  });
+
+  it('resizeable=false + sem teto (max==0) → redimensionável (paridade Cosmic)', () => {
+    // Caso típico da 1ª janela: nasce preenchendo a tela, get_max_size ausente/[0,0].
+    expect(
+      isResizable({ rawResizeable: false, minWidth: 0, minHeight: 0, maxWidth: 0, maxHeight: 0 }),
+    ).toBe(true);
+  });
+
+  it('travar só um eixo (min==max num eixo, livre no outro) → redimensionável', () => {
+    expect(
+      isResizable({
+        rawResizeable: false,
+        minWidth: 400,
+        minHeight: 100,
+        maxWidth: 400,
+        maxHeight: 800,
+      }),
+    ).toBe(true);
+    expect(isFixedSize({ minWidth: 400, minHeight: 100, maxWidth: 400, maxHeight: 800 })).toBe(
+      false,
+    );
+  });
+
+  it('isFixedSize: ambos os eixos travados com max>0 → fixo; max==0 → não-fixo', () => {
+    expect(isFixedSize({ minWidth: 500, minHeight: 400, maxWidth: 500, maxHeight: 400 })).toBe(
+      true,
+    );
+    expect(isFixedSize({ minWidth: 500, minHeight: 400, maxWidth: 0, maxHeight: 0 })).toBe(false);
   });
 });
 

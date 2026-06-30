@@ -33,6 +33,7 @@ import {
   parseTabBars,
   parseFloating,
   parseDropped,
+  isResizable,
   clampGeometry,
   parseLayoutTrees,
   resolveHotZone,
@@ -475,18 +476,22 @@ export default class EtherbitTilingExtension extends Extension {
         this._everTiled.delete(id);
         this._scheduleRelayout();
       });
-      // (Des)maximizar muda quais janelas entram no grid (Unmaximize Recovery): re-tila. O sinal só
-      // dispara na transição de estado (não em todo resize), então não há loop com a aplicação.
-      // Spawn-unmaximize: se a janela é maximizada e NUNCA foi tilada, ela "nasceu maximizada" (app
-      // pediu tela cheia ao nascer) — com o Tiling ativo, forçamos `unmaximize` para ela entrar na
-      // Distribuição Cíclica. Uma janela JÁ tilada que o usuário maximiza é preservada (só re-tila).
-      const onMaxChange = (): void => {
+      // (Des)maximizar/fullscreen muda quais janelas entram no grid (Recovery): re-tila. Os sinais só
+      // disparam na transição de estado (não em todo resize), então não há loop com a aplicação.
+      // Spawn-unmaximize/unfullscreen: se a janela é maximizada/fullscreen e NUNCA foi tilada, ela
+      // "nasceu preenchendo a tela" — com o Tiling ativo, forçamos `unmaximize`/`unmake_fullscreen` para
+      // ela entrar na Distribuição Cíclica (ADR 0034/0037). Uma janela JÁ tilada que o usuário maximiza
+      // ou põe em fullscreen é preservada (só re-tila). `notify::fullscreen` é necessário porque os
+      // `notify::maximized-*` NÃO disparam em transições de fullscreen.
+      const onStateChange = (): void => {
         this._spawnUnmaximizeIfBorn(window, id);
+        this._spawnUnfullscreenIfBorn(window, id);
         this._scheduleRelayout();
       };
       const notifyIds = [
-        window.connect('notify::maximized-horizontally', onMaxChange),
-        window.connect('notify::maximized-vertically', onMaxChange),
+        window.connect('notify::maximized-horizontally', onStateChange),
+        window.connect('notify::maximized-vertically', onStateChange),
+        window.connect('notify::fullscreen', onStateChange),
       ];
       // Re-tila quando a janela "assenta" (o `window-created` chega antes de
       // `resizable`/`maximizable`/tipo estarem prontos; o snapshot precoce a classifica como
@@ -535,6 +540,7 @@ export default class EtherbitTilingExtension extends Extension {
             // ator já destruído — ignora.
           }
           this._spawnUnmaximizeIfBorn(window, id);
+          this._spawnUnfullscreenIfBorn(window, id);
           this._scheduleRelayout();
         });
       }
@@ -552,8 +558,9 @@ export default class EtherbitTilingExtension extends Extension {
       // o que dá paridade com o KWin (síncrono) sem o síncrono que o Mutter não permite. Ver ADR 0034.
       this._scheduleSpawnSettle(window, id);
     }
-    // Nascimento: com o Tiling ativo, nenhuma janela inicia maximizada (mesmo que o app peça).
+    // Nascimento: com o Tiling ativo, nenhuma janela inicia maximizada nem fullscreen (mesmo que o app peça).
     this._spawnUnmaximizeIfBorn(window, id);
+    this._spawnUnfullscreenIfBorn(window, id);
     this._scheduleRelayout();
   }
 
@@ -620,8 +627,10 @@ export default class EtherbitTilingExtension extends Extension {
         if (!current || !this._isWindowLive(window)) {
           return GLib.SOURCE_REMOVE;
         }
-        // Estado já populado: desmaximiza se "nasceu maximizada" e re-tila com o min-size negociado.
+        // Estado já populado: desmaximiza/desfullscreena se "nasceu preenchendo a tela" e re-tila com
+        // o min-size negociado.
         this._spawnUnmaximizeIfBorn(window, id);
+        this._spawnUnfullscreenIfBorn(window, id);
         this._scheduleRelayout();
         return GLib.SOURCE_REMOVE;
       });
@@ -782,6 +791,28 @@ export default class EtherbitTilingExtension extends Extension {
       console.log(
         `[etherbit] grid: ${commands.map((c) => `${c.id}@${c.x},${c.y} ${c.width}x${c.height}`).join(' | ')}`,
       );
+    }
+    // Diagnóstico CRU por janela descartada (ADR 0037, espírito 0035): correlaciona o `dropped` do
+    // daemon (só id+motivo) com o `Meta.Window` local e expõe os flags brutos que explicam o motivo —
+    // distingue maximizada vs fullscreen vs tamanho fixo na próxima sessão, sem tocar no protocolo
+    // D-Bus. Cada janela isolada em try/catch (espelha o resto do `_relayout`).
+    for (const d of dropped) {
+      const w = byId.get(d.id);
+      if (!w) {
+        continue;
+      }
+      try {
+        const [minW, minH] = this._minSize(w);
+        const [maxW, maxH] = this._maxSize(w);
+        console.log(
+          `[etherbit] drop-detail: id=${d.id} reason=${d.reason} resizeable=${w.resizeable} ` +
+            `can_maximize=${w.can_maximize()} fullscreen=${this._isFullscreen(w)} ` +
+            `maximized=${this._isMaximized(w)} wtype=${w.get_window_type()} ` +
+            `min=${minW}x${minH} max=${maxW}x${maxH}`,
+        );
+      } catch (error) {
+        console.error(`Etherbit Tiling: drop-detail falhou na janela ${d.id}: ${error}`);
+      }
     }
 
     this._suppressRelayout = true;
@@ -1447,7 +1478,9 @@ export default class EtherbitTilingExtension extends Extension {
     const wmClass = window.get_wm_class() ?? window.get_wm_class_instance() ?? '';
     const workspace = window.get_workspace();
     const normal = window.get_window_type() === Meta.WindowType.NORMAL;
-    const resizable = window.resizeable;
+    // ADR 0037: NÃO a leitura crua de `window.resizeable` (estado-dependente; false quando
+    // maximizada/fullscreen) — derivação independente de estado, senão a 1ª janela cai em `non_resizable`.
+    const resizable = this._isResizable(window);
     const maximizable = window.can_maximize();
     // Min-size REAL (ADR 0033, inverte o "força frame, ignora hints" do 0021/0028): no Wayland o
     // cliente RECUSA encolher abaixo do seu `xdg min_size` — zerar o hint não fixa o app no slot,
@@ -1585,6 +1618,22 @@ export default class EtherbitTilingExtension extends Extension {
     }
   }
 
+  /// `true` se a janela está em FULLSCREEN (não confundir com maximizada — fullscreen cobre tudo, sem
+  /// barra/gaps, e o compositor rejeita `move_resize_frame` enquanto durar). Base do unfullscreen de
+  /// spawn (ADR 0037). Feature-detect `is_fullscreen()` (ADR 0023), caindo na propriedade `fullscreen`.
+  /// Defensivo: nunca lança.
+  private _isFullscreen(window: Meta.Window): boolean {
+    const w = window as unknown as { is_fullscreen?: () => boolean; fullscreen?: boolean };
+    try {
+      if (typeof w.is_fullscreen === 'function') {
+        return w.is_fullscreen() === true;
+      }
+      return w.fullscreen === true;
+    } catch {
+      return false;
+    }
+  }
+
   /// `true` se a janela é tileável (espelha o filtro `is_tileable` do core: tipo NORMAL + redimensionável
   /// + maximizável). Usado SÓ para travar o one-shot de `size-changed`: não trava enquanto a janela não
   /// for tileável, evitando que um `size-changed` precoce (antes do tipo/flags assentarem) queime o
@@ -1593,7 +1642,7 @@ export default class EtherbitTilingExtension extends Extension {
     try {
       return (
         window.get_window_type() === Meta.WindowType.NORMAL &&
-        window.resizeable === true &&
+        this._isResizable(window) &&
         window.can_maximize()
       );
     } catch {
@@ -1628,6 +1677,23 @@ export default class EtherbitTilingExtension extends Extension {
     }
   }
 
+  /// Spawn-unfullscreen (ADR 0037): espelha `_spawnUnmaximizeIfBorn` para o estado FULLSCREEN. Com o
+  /// Tiling ATIVO, uma janela que está fullscreen e que o core ainda NÃO tilou "nasceu em tela cheia"
+  /// — desfaz o fullscreen para ela entrar na Distribuição Cíclica (senão o compositor rejeita o
+  /// `move_resize_frame` do encaixe). Uma janela já tilada (em `_everTiled`) que o usuário põe em
+  /// fullscreen é PRESERVADA (mesmo guard do Unmaximize Recovery). `unmake_fullscreen` é 0-arg em toda
+  /// a linha (sem a armadilha de assinatura do `unmaximize`); ainda assim chamamos defensivo. Defensivo.
+  private _spawnUnfullscreenIfBorn(window: Meta.Window, id: number): void {
+    if (!this._config.enabled || this._everTiled.has(id) || !this._isFullscreen(window)) {
+      return;
+    }
+    try {
+      (window as unknown as { unmake_fullscreen?: () => void }).unmake_fullscreen?.call(window);
+    } catch (error) {
+      console.error(`Etherbit Tiling: spawn-unfullscreen falhou na janela ${id}: ${error}`);
+    }
+  }
+
   /// Tamanho mínimo (px de frame) imposto pelo app via `Meta.Window.get_min_size()` — funciona em
   /// X11 (WM_NORMAL_HINTS) e Wayland (xdg_toplevel.set_min_size). Degrada para `[0, 0]` (sem
   /// restrição) se o método não existir ou lançar — nunca derruba o snapshot.
@@ -1641,6 +1707,44 @@ export default class EtherbitTilingExtension extends Extension {
       return [Number.isFinite(w) ? Math.max(0, w) : 0, Number.isFinite(h) ? Math.max(0, h) : 0];
     } catch {
       return [0, 0];
+    }
+  }
+
+  /// Tamanho MÁXIMO (px de frame) imposto pelo app via `Meta.Window.get_max_size()` — espelha o
+  /// `_minSize`. `get_max_size` NÃO existe nos tipos `@girs` (cast defensivo); degrada para `[0, 0]`
+  /// (= "sem teto" → redimensionável) se o método não existir ou lançar. Nunca derruba o snapshot.
+  private _maxSize(window: Meta.Window): [number, number] {
+    try {
+      const fn = (window as unknown as { get_max_size?: () => [number, number] }).get_max_size;
+      if (typeof fn !== 'function') {
+        return [0, 0];
+      }
+      const [w, h] = fn.call(window);
+      return [Number.isFinite(w) ? Math.max(0, w) : 0, Number.isFinite(h) ? Math.max(0, h) : 0];
+    } catch {
+      return [0, 0];
+    }
+  }
+
+  /// Redimensionável de forma INDEPENDENTE DO ESTADO (ADR 0037). `Meta.Window.resizeable` é
+  /// estado-dependente no Mutter (false enquanto maximizada/fullscreen): a 1ª janela, que nasce
+  /// preenchendo a tela, era descartada como `non_resizable` no portão `is_tileable` do core,
+  /// preemptando o Unmaximize Recovery. Delega à regra PURA `isResizable` (bridge.ts): confia no
+  /// `resizeable === true`; no `false`, só é não-redimensionável se for de tamanho fixo (min == max).
+  private _isResizable(window: Meta.Window): boolean {
+    try {
+      const [minWidth, minHeight] = this._minSize(window);
+      const [maxWidth, maxHeight] = this._maxSize(window);
+      return isResizable({
+        rawResizeable: window.resizeable === true,
+        minWidth,
+        minHeight,
+        maxWidth,
+        maxHeight,
+      });
+    } catch {
+      // Defensivo: na dúvida, tratar como redimensionável (o core ainda filtra por normal/maximizable).
+      return true;
     }
   }
 
