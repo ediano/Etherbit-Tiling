@@ -25,6 +25,7 @@ import {
   resizeDeltaFrom,
   resolveHotZone,
   serializeScope,
+  serializeHudCells,
   type Stack,
   type TreeNode,
   type TransportNode,
@@ -345,42 +346,55 @@ describe('ordem estável das janelas (ids string/internalId)', () => {
     expect(sortByOrder(order, '0:0', ['a', 'z', 'b', 'c'])).toEqual(['c', 'a', 'b', 'z']);
   });
 
-  // ---- HUD do jogo da velha (resolveHotZone — ADR 0026) ----
-  const MON = { x: 0, y: 0, width: 900, height: 900 };
-  const TARGET = { x: 300, y: 300, width: 300, height: 300 };
+  // ---- HUD do jogo da velha (resolveHotZone — ADR 0026, célula 3×3 estrita) ----
+  const MON = { x: 0, y: 0, width: 900, height: 900 }; // células de 300×300
+  const FULL = { x: 0, y: 0, width: 900, height: 900 }; // janela cobrindo o monitor
 
-  it('centro do alvo → center; outline = janela-alvo inteira', () => {
-    const hz = resolveHotZone({ x: 450, y: 450 }, TARGET, MON);
+  it('terço central de uma janela → fusão em abas (center local)', () => {
+    const hz = resolveHotZone({ x: 450, y: 450 }, FULL, MON);
     expect(hz.scope).toBe('local');
     expect(hz.dropZone).toBe('center');
-    expect(hz.outline).toEqual(TARGET);
+    expect(hz.outline).toEqual(FULL);
   });
 
-  it('eixo esquerdo → left (faixa de 1/3)', () => {
-    const hz = resolveHotZone({ x: 350, y: 450 }, TARGET, MON);
-    expect(hz.dropZone).toBe('left');
-    expect(hz.outline).toEqual({ x: 300, y: 300, width: 100, height: 300 });
-  });
-
-  it('canto → top_left (célula única)', () => {
-    const hz = resolveHotZone({ x: 350, y: 350 }, TARGET, MON);
+  it('canto superior-esquerdo sobre janela → célula 3×3 (grid, top_left)', () => {
+    const hz = resolveHotZone({ x: 150, y: 150 }, FULL, MON);
+    expect(hz.scope).toBe('grid');
     expect(hz.dropZone).toBe('top_left');
-    expect(hz.outline).toEqual({ x: 300, y: 300, width: 100, height: 100 });
+    expect(hz.cells).toHaveLength(9);
+    expect(hz.hot).toEqual([0]);
+    expect(hz.outline).toEqual({ x: 0, y: 0, width: 300, height: 300 });
   });
 
-  it('perto da borda da tela → global, bloco de 50%', () => {
-    const hz = resolveHotZone({ x: 10, y: 450 }, TARGET, MON);
+  it('densidade: canto colado à borda NÃO vira 50% (continua grid)', () => {
+    const hz = resolveHotZone({ x: 5, y: 5 }, FULL, MON);
+    expect(hz.scope).toBe('grid');
+    expect(hz.dropZone).toBe('top_left');
+    expect(hz.outline).toEqual({ x: 0, y: 0, width: 300, height: 300 });
+  });
+
+  it('gap sem janela → global 50% pela borda', () => {
+    const hz = resolveHotZone({ x: 10, y: 450 }, null, MON);
     expect(hz.scope).toBe('global');
     expect(hz.dropZone).toBe('left');
     expect(hz.outline).toEqual({ x: 0, y: 0, width: 450, height: 900 });
   });
 
-  it('gap sem janela → global', () => {
-    expect(resolveHotZone({ x: 450, y: 450 }, null, MON).scope).toBe('global');
-  });
-
-  it('serializeScope mapeia local/global', () => {
+  it('serializeScope mapeia local/global/grid', () => {
     expect(serializeScope('global')).toBe('global');
     expect(serializeScope('local')).toBe('local');
+    expect(serializeScope('grid')).toBe('grid');
+  });
+
+  it('serializeHudCells marca a célula realçada e usa literais (sem object spread)', () => {
+    const cells = [
+      { x: 0, y: 0, width: 300, height: 300 },
+      { x: 300, y: 0, width: 300, height: 300 },
+    ];
+    const json = serializeHudCells(cells, 1);
+    expect(JSON.parse(json)).toEqual([
+      { x: 0, y: 0, width: 300, height: 300, hot: false },
+      { x: 300, y: 0, width: 300, height: 300, hot: true },
+    ]);
   });
 });

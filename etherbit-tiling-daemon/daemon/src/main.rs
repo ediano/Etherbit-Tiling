@@ -81,8 +81,9 @@ async fn main() -> Result<()> {
             layer::TabBarOverlay::new(ctx, connection.clone(), shared.pending_actions.clone());
         println!("Etherbit daemon — overlay de abas pronto (formato {:?}).", overlay.format());
         let bars_rx = shared.bars_rx.clone();
+        let hud_rx = shared.hud_rx.clone();
         tokio::spawn(async move {
-            if let Err(err) = layer::run_event_loop(overlay, bars_rx).await {
+            if let Err(err) = layer::run_event_loop(overlay, bars_rx, hud_rx).await {
                 eprintln!("Etherbit daemon — overlay de abas indisponível: {err:#}");
             }
         });

@@ -35,6 +35,11 @@ const TAB_ACTIVE: Color = [0.37, 0.51, 0.67, 0.95]; // aba ativa (azul)
 const TAB_INACTIVE: Color = [0.30, 0.34, 0.40, 0.55]; // aba inativa (cinza)
 const CLOSE_FG: Color = [0.92, 0.94, 0.96, 0.95]; // marca do "x"
 
+// HUD do jogo da velha (overlay do daemon, KDE): preenchimento translúcido das 9 células durante o
+// arrasto; a célula sob o cursor (`hot`) é mais opaca. Mesma família azul Nord do tiling.
+pub const HUD_FILL: Color = [0.37, 0.51, 0.67, 0.16]; // célula fria
+pub const HUD_HOT: Color = [0.37, 0.51, 0.67, 0.44]; // célula sob o cursor
+
 /// Vértice do pipeline de quads: posição em clip-space (-1..1) + cor.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -234,6 +239,51 @@ impl QuadRenderer {
         queue.submit(std::iter::once(encoder.finish()));
         // TODO(wgpu-ui): desenhar TÍTULO e ÍCONE do app por aba (atlas de glifos via cosmic-text/
         // glyphon). O `member_ids` viaja no contrato; o título virá da ponte por IPC.
+    }
+
+    /// Pinta um único quad translúcido cobrindo TODA a superfície com `color`. Usado pelo HUD do jogo
+    /// da velha (uma superfície layer-shell por célula): a célula realçada usa `HUD_HOT`, as demais
+    /// `HUD_FILL`. Sem texto, sem geometria de abas — só o preenchimento.
+    pub fn draw_fill(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view: &wgpu::TextureView,
+        color: Color,
+    ) {
+        // Quad de tela cheia em clip-space (-1..1): dois triângulos (tl,bl,br) e (tl,br,tr).
+        let tl = Vertex { position: [-1.0, 1.0], color };
+        let tr = Vertex { position: [1.0, 1.0], color };
+        let bl = Vertex { position: [-1.0, -1.0], color };
+        let br = Vertex { position: [1.0, -1.0], color };
+        let verts = [tl, bl, br, tl, br, tr];
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("etherbit-hud-vertices"),
+            contents: bytemuck::cast_slice(&verts),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("etherbit-hud-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_vertex_buffer(0, buffer.slice(..));
+            pass.draw(0..verts.len() as u32, 0..1);
+        }
+        queue.submit(std::iter::once(encoder.finish()));
     }
 }
 

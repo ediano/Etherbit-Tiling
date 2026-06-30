@@ -428,6 +428,21 @@ export default class EtherbitTilingExtension extends Extension {
         window.connect('notify::maximized-horizontally', () => this._scheduleRelayout()),
         window.connect('notify::maximized-vertically', () => this._scheduleRelayout()),
       ];
+      // Re-tila UMA vez quando a janela "assenta" (o `window-created` chega antes de
+      // `resizable`/`maximizable`/min size estarem prontos; o snapshot precoce pode classificá-la como
+      // não-tileável → 0 rects → a 1ª janela fica flutuante e, sozinha, nada mais re-dispara). Guarda
+      // de uma vez só (`settled`): evita relayout a cada resize do usuário; é limpo em massa no
+      // `unmanaged` via `notifyIds`.
+      let settled = false;
+      notifyIds.push(
+        window.connect('size-changed', () => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          this._scheduleRelayout();
+        }),
+      );
       this._tracked.set(id, { window, unmanagedId, notifyIds });
     }
     this._scheduleRelayout();
@@ -825,7 +840,9 @@ export default class EtherbitTilingExtension extends Extension {
       }
       return;
     }
-    const merge = hot.dropZone === 'center';
+    // Verde (merge) só na fusão em abas (centro de uma janela, escopo local). A célula central da
+    // matriz 3×3 (escopo grid) é um destino de tiling normal → azul.
+    const merge = hot.dropZone === 'center' && hot.scope === 'local';
     const HOT_MERGE =
       'background-color: rgba(163, 190, 140, 0.34);' +
       'border: 2px solid rgba(163, 190, 140, 0.95); border-radius: 10px;';
@@ -894,7 +911,7 @@ export default class EtherbitTilingExtension extends Extension {
         `[etherbit][drag] soltar: zona=${hot?.dropZone ?? 'none'} escopo=${hot?.scope ?? '-'}` +
           ` arrastada=${this._draggedId} alvo=${target ? targetId : 'nenhum'}`,
       );
-      const moveWindow = (zoneStr: string, scope: 'local' | 'global'): void => {
+      const moveWindow = (zoneStr: string, scope: 'local' | 'global' | 'grid'): void => {
         const res = this._call((p) =>
           p.MoveWindowSync(
             serializeState(this._stacks, this._disabledGroups, this._trees, this._draggedId),
@@ -908,17 +925,16 @@ export default class EtherbitTilingExtension extends Extension {
           this._trees = parseLayoutTrees(res[0]);
         }
       };
-      if (hot && hot.scope === 'global' && hot.dropZone !== 'none') {
-        // Escopo global: insere como nó principal do workspace (50%) — não exige janela-alvo.
+      if (hot && hot.scope === 'grid' && hot.dropZone !== 'none') {
+        // Célula unitária da matriz 3×3 do workspace: o app se fixa na célula (sem esticar para 50%).
+        // O `target` é irrelevante — o core resolve a posição pela própria zona/célula.
+        moveWindow(hot.dropZone, 'grid');
+      } else if (hot && hot.scope === 'global' && hot.dropZone !== 'none') {
+        // Gap vazio: insere como nó principal do workspace (50%) — não exige janela-alvo.
         moveWindow(hot.dropZone, 'global');
-      } else if (hot && target) {
-        if (hot.dropZone === 'center') {
-          // Centro da janela-alvo → empilha em abas (estado de stacks; o core não muta a árvore).
-          addToStack(this._stacks, key, targetId, this._draggedId);
-        } else if (hot.dropZone !== 'none') {
-          // Eixo/canto → move+split local (faixa de 1/3) na árvore persistente.
-          moveWindow(hot.dropZone, 'local');
-        }
+      } else if (hot && hot.scope === 'local' && target && hot.dropZone === 'center') {
+        // Centro de uma janela-alvo → empilha em abas (estado de stacks; o core não muta a árvore).
+        addToStack(this._stacks, key, targetId, this._draggedId);
       }
     } else if (
       this._resizeStart &&
@@ -1209,7 +1225,17 @@ export default class EtherbitTilingExtension extends Extension {
     const frame = window.get_frame_rect();
     const wmClass = window.get_wm_class() ?? window.get_wm_class_instance() ?? '';
     const workspace = window.get_workspace();
-    const [minWidth, minHeight] = this._minSize(window);
+    const normal = window.get_window_type() === Meta.WindowType.NORMAL;
+    const resizable = window.resizeable;
+    const maximizable = window.can_maximize();
+    // "Forçar frame, ignorar hints" (ADR 0021/0026): para janelas que SERÃO tiladas (normal +
+    // resizable + maximizable) NÃO enviamos os geometry hints. Apps com travas geométricas rígidas
+    // (ex.: gnome-terminal, com incrementos de célula de texto) seriam AUTO-FLUTUADOS/"perdidos" pelo
+    // core quando o mínimo não cabe na célula da matriz 3×3. Zerando o mínimo, o app é FIXADO na
+    // célula (conteúdo recortado se preciso) em vez de fugir do grid. As demais janelas (diálogos
+    // rígidos etc., que o core nem tila) mantêm o piso defensivo do `get_min_size()`.
+    const [minWidth, minHeight] =
+      normal && resizable && maximizable ? [0, 0] : this._minSize(window);
     return {
       id: window.get_stable_sequence(),
       app_id: wmClass,
@@ -1217,9 +1243,9 @@ export default class EtherbitTilingExtension extends Extension {
       y: frame.y,
       width: frame.width,
       height: frame.height,
-      normal: window.get_window_type() === Meta.WindowType.NORMAL,
-      resizable: window.resizeable,
-      maximizable: window.can_maximize(),
+      normal,
+      resizable,
+      maximizable,
       // `get_monitor()` devolve -1 para janela sem monitor; clampa a 0 para o JSON nunca carregar um
       // índice negativo (que invalidaria a desserialização no daemon → SyncWindows falho).
       monitor: Math.max(0, window.get_monitor()),

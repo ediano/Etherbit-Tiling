@@ -291,9 +291,9 @@ export function parsePreview(json: string): DropPreview | null {
 // ---- HUD de preview do jogo da velha (cálculo LOCAL na ponte — ADR 0026) ----
 //
 // Espelha o `resolveHotZone` da ponte GNOME: durante o arrasto, calcula a zona sob o cursor SEM chamar
-// o Rust (divide o alvo por 3 = local; bordas do monitor = global). O KWin Script só desenha o
-// `outline` (um retângulo nativo via `workspace.showOutline`) — não as 9 células (limitação do KWin
-// Script; ver ADR 0026). O core só é acionado no DROP (MoveWindow). Puro/testável.
+// o Rust (sobre uma janela = célula da matriz 3×3 do monitor ou centro=merge; gap vazio = bloco de
+// 50%). O HUD translúcido das 9 células é desenhado pelo OVERLAY wgpu do daemon (ShowDropHud), com o
+// `workspace.showOutline` nativo como fallback. O core só é acionado no DROP (MoveWindow). Puro/testável.
 
 /// Retângulo simples em px absolutos de tela.
 export interface Rect {
@@ -305,34 +305,50 @@ export interface Rect {
 
 /// Resultado do HUD: a zona quente sob o cursor, as células e o destino do drop.
 export interface HotZone {
-  scope: 'local' | 'global';
+  scope: 'local' | 'global' | 'grid';
   dropZone: string;
   cells: Rect[];
   hot: number[];
   outline: Rect;
 }
 
-/// Faixa (fração do MONITOR) junto às bordas da tela que aciona o escopo GLOBAL.
-const SCREEN_EDGE_FRAC = 0.12;
+/// Zonas das 9 células da matriz 3×3 do monitor (índice = row*3 + col). Espelha `zone_to_cell` do core.
+const GRID_ZONES: string[] = [
+  'top_left',
+  'top',
+  'top_right',
+  'left',
+  'center',
+  'right',
+  'bottom_left',
+  'bottom',
+  'bottom_right',
+];
 
 /// Calcula a zona quente do HUD sob o cursor, sem D-Bus. `target` = retângulo da janela sob o cursor
 /// (`null` num gap vazio); `monitor` = área útil do monitor sob o cursor.
+///  - Terço CENTRAL de uma janela → `center` local (fusão em abas).
+///  - Qualquer outra parte SOBRE uma janela → CÉLULA da matriz 3×3 do monitor (escopo `grid`): o app se
+///    fixa na célula 1/9 sem esticar para 50% (densidade não dispara mais 50% acidental).
+///  - Gap vazio → bloco de 50% pela borda mais próxima (escopo `global`).
 export function resolveHotZone(
   pointer: { x: number; y: number },
   target: Rect | null,
   monitor: Rect,
 ): HotZone {
+  if (target && target.width > 0 && target.height > 0) {
+    const tfx = (pointer.x - target.x) / target.width;
+    const tfy = (pointer.y - target.y) / target.height;
+    if (tfx > 1 / 3 && tfx < 2 / 3 && tfy > 1 / 3 && tfy < 2 / 3) {
+      // Literal explícito (NÃO object spread): o QJSEngine do KWin rejeita `{ ...x }`. Ver ADR 0013.
+      const whole = { x: target.x, y: target.y, width: target.width, height: target.height };
+      return { scope: 'local', dropZone: 'center', cells: [whole], hot: [0], outline: whole };
+    }
+    return gridHotZone(pointer, monitor);
+  }
   const mfx = monitor.width > 0 ? (pointer.x - monitor.x) / monitor.width : 0.5;
   const mfy = monitor.height > 0 ? (pointer.y - monitor.y) / monitor.height : 0.5;
-  const nearScreenEdge =
-    mfx < SCREEN_EDGE_FRAC ||
-    mfx > 1 - SCREEN_EDGE_FRAC ||
-    mfy < SCREEN_EDGE_FRAC ||
-    mfy > 1 - SCREEN_EDGE_FRAC;
-  if (nearScreenEdge || !target || target.width <= 0 || target.height <= 0) {
-    return globalHotZone(mfx, mfy, monitor);
-  }
-  return localHotZone(pointer, target);
+  return globalHotZone(mfx, mfy, monitor);
 }
 
 function globalHotZone(mfx: number, mfy: number, monitor: Rect): HotZone {
@@ -361,76 +377,51 @@ function globalHotZone(mfx: number, mfy: number, monitor: Rect): HotZone {
   return { scope: 'global', dropZone, cells: [block], hot: [0], outline: block };
 }
 
-function localHotZone(pointer: { x: number; y: number }, target: Rect): HotZone {
-  const cw = target.width / 3;
-  const ch = target.height / 3;
+/// Escopo GRID: a célula 1/9 da matriz 3×3 do monitor sob o cursor. Desenha as 9 células e acende a do
+/// cursor; o drop fixa o app naquela célula (span 1×1, sem auto-expansão).
+function gridHotZone(pointer: { x: number; y: number }, monitor: Rect): HotZone {
+  const cw = monitor.width / 3;
+  const ch = monitor.height / 3;
   const cells: Rect[] = [];
   for (let row = 0; row < 3; row += 1) {
     for (let col = 0; col < 3; col += 1) {
-      cells.push({ x: target.x + col * cw, y: target.y + row * ch, width: cw, height: ch });
+      cells.push({ x: monitor.x + col * cw, y: monitor.y + row * ch, width: cw, height: ch });
     }
   }
-  const idx = (r: number, c: number): number => r * 3 + c;
-  const fx = (pointer.x - target.x) / target.width;
-  const fy = (pointer.y - target.y) / target.height;
-  const col = Math.min(2, Math.max(0, Math.floor(fx * 3)));
-  const row = Math.min(2, Math.max(0, Math.floor(fy * 3)));
-
-  if (col === 1 && row === 1) {
-    return {
-      scope: 'local',
-      dropZone: 'center',
-      cells,
-      hot: [idx(1, 1)],
-      // Literal explícito (NÃO object spread): o QJSEngine do KWin rejeita `{ ...x }` (ES2018) na
-      // compilação do bundle. Mesmo estilo dos ramos irmãos abaixo. Ver vite.config.ts / ADR 0013.
-      outline: { x: target.x, y: target.y, width: target.width, height: target.height },
-    };
-  }
-  if (col === 1 && row === 0) {
-    return localAxis('top', cells, [idx(0, 0), idx(0, 1), idx(0, 2)], {
-      x: target.x,
-      y: target.y,
-      width: target.width,
-      height: ch,
-    });
-  }
-  if (col === 1 && row === 2) {
-    return localAxis('bottom', cells, [idx(2, 0), idx(2, 1), idx(2, 2)], {
-      x: target.x,
-      y: target.y + 2 * ch,
-      width: target.width,
-      height: ch,
-    });
-  }
-  if (row === 1 && col === 0) {
-    return localAxis('left', cells, [idx(0, 0), idx(1, 0), idx(2, 0)], {
-      x: target.x,
-      y: target.y,
-      width: cw,
-      height: target.height,
-    });
-  }
-  if (row === 1 && col === 2) {
-    return localAxis('right', cells, [idx(0, 2), idx(1, 2), idx(2, 2)], {
-      x: target.x + 2 * cw,
-      y: target.y,
-      width: cw,
-      height: target.height,
-    });
-  }
-  const cornerZone = `${row === 0 ? 'top' : 'bottom'}_${col === 0 ? 'left' : 'right'}`;
-  const i = idx(row, col);
-  return { scope: 'local', dropZone: cornerZone, cells, hot: [i], outline: cells[i] as Rect };
+  const col = Math.min(2, Math.max(0, Math.floor((pointer.x - monitor.x) / cw)));
+  const row = Math.min(2, Math.max(0, Math.floor((pointer.y - monitor.y) / ch)));
+  const i = row * 3 + col;
+  return {
+    scope: 'grid',
+    dropZone: GRID_ZONES[i] as string,
+    cells,
+    hot: [i],
+    outline: cells[i] as Rect,
+  };
 }
 
-function localAxis(dropZone: string, cells: Rect[], hot: number[], outline: Rect): HotZone {
-  return { scope: 'local', dropZone, cells, hot, outline };
+/// Serializa o escopo do drop para o `MoveWindow` (ADR 0026): `"global"` (50%), `"grid"` (célula 3×3)
+/// ou `"local"` (fusão/centro).
+export function serializeScope(scope: 'local' | 'global' | 'grid'): string {
+  if (scope === 'global') {
+    return 'global';
+  }
+  if (scope === 'grid') {
+    return 'grid';
+  }
+  return 'local';
 }
 
-/// Serializa o escopo do drop para o `MoveWindow` (ADR 0026): `"global"` ou `"local"`.
-export function serializeScope(scope: 'local' | 'global'): string {
-  return scope === 'global' ? 'global' : 'local';
+/// Serializa as células do HUD do jogo da velha para o `ShowDropHud` do daemon (overlay wgpu). Marca
+/// `hot` na célula realçada (`hotIdx`). Literal EXPLÍCITO por célula (NÃO object spread — o QJSEngine
+/// do KWin rejeita `{ ...x }`; ver ADR 0013). Sem IDs (só geometria), então sem risco de `uint64`.
+export function serializeHudCells(cells: Rect[], hotIdx: number): string {
+  const out: { x: number; y: number; width: number; height: number; hot: boolean }[] = [];
+  for (let i = 0; i < cells.length; i += 1) {
+    const c = cells[i] as Rect;
+    out.push({ x: c.x, y: c.y, width: c.width, height: c.height, hot: i === hotIdx });
+  }
+  return JSON.stringify(out);
 }
 
 // ---- Ordem estável das janelas (estado leve da ponte) ----
