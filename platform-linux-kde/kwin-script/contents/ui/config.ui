@@ -8,14 +8,14 @@
    <item row="0" column="0" colspan="2">
     <widget class="QCheckBox" name="kcfg_enabled">
      <property name="text">
-      <string>Ativar o tiling (chave geral; atalho: Meta+Shift+Y)</string>
+      <string>Enable tiling (master switch; shortcut: Meta+Shift+Y)</string>
      </property>
     </widget>
    </item>
    <item row="1" column="0">
     <widget class="QLabel" name="labelGap">
      <property name="text">
-      <string>Espaçamento (entre janelas e da borda, px):</string>
+      <string>Spacing (between windows and screen edge, px):</string>
      </property>
     </widget>
    </item>
@@ -30,14 +30,14 @@
    <item row="2" column="0" colspan="2">
     <widget class="QCheckBox" name="kcfg_activeBorder">
      <property name="text">
-      <string>Destacar a janela focada com borda</string>
+      <string>Highlight the focused window with a border</string>
      </property>
     </widget>
    </item>
    <item row="3" column="0">
     <widget class="QLabel" name="labelBorderColor">
      <property name="text">
-      <string>Cor da borda:</string>
+      <string>Border color:</string>
      </property>
     </widget>
    </item>
@@ -47,7 +47,7 @@
    <item row="4" column="0">
     <widget class="QLabel" name="labelBorderWidth">
      <property name="text">
-      <string>Espessura da borda (px):</string>
+      <string>Border thickness (px):</string>
      </property>
     </widget>
    </item>
@@ -62,14 +62,14 @@
    <item row="5" column="0" colspan="2">
     <widget class="QCheckBox" name="kcfg_roundedCorners">
      <property name="text">
-      <string>Cantos arredondados (requer o efeito nativo de cantos do KWin)</string>
+      <string>Rounded corners (requires KWin's native corners effect)</string>
      </property>
     </widget>
    </item>
    <item row="6" column="0">
     <widget class="QLabel" name="labelCornerRadius">
      <property name="text">
-      <string>Raio dos cantos (px):</string>
+      <string>Corner radius (px):</string>
      </property>
     </widget>
    </item>

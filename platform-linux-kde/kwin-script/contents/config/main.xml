@@ -10,41 +10,41 @@
   <kcfgfile name=""/>
   <group name="">
     <entry name="enabled" type="Bool">
-      <label>Ativar o tiling (chave geral)</label>
+      <label>Enable tiling (master switch)</label>
       <default>true</default>
     </entry>
     <entry name="gap" type="Int">
-      <label>Espaçamento único: entre janelas e da borda da tela (px)</label>
+      <label>Single spacing: between windows and the screen edge (px)</label>
       <default>8</default>
       <min>0</min>
       <max>100</max>
     </entry>
     <entry name="activeBorder" type="Bool">
-      <label>Destacar a janela focada com borda</label>
+      <label>Highlight the focused window with a border</label>
       <default>true</default>
     </entry>
     <entry name="borderColor" type="String">
-      <label>Cor da borda da janela focada</label>
+      <label>Border color of the focused window</label>
       <default>#5e81ac</default>
     </entry>
     <entry name="borderWidth" type="Int">
-      <label>Espessura da borda (px)</label>
+      <label>Border thickness (px)</label>
       <default>2</default>
       <min>0</min>
       <max>20</max>
     </entry>
     <entry name="roundedCorners" type="Bool">
-      <label>Cantos arredondados (requer o efeito nativo de cantos do KWin)</label>
+      <label>Rounded corners (requires KWin's native corners effect)</label>
       <default>true</default>
     </entry>
     <entry name="cornerRadius" type="Int">
-      <label>Raio dos cantos (px)</label>
+      <label>Corner radius (px)</label>
       <default>12</default>
       <min>0</min>
       <max>50</max>
     </entry>
     <entry name="debug" type="Bool">
-      <label>Logs detalhados no journal (diagnóstico): nº de janelas/retângulos por evento</label>
+      <label>Verbose logs in the journal (diagnostics): number of windows/rectangles per event</label>
       <default>false</default>
     </entry>
   </group>

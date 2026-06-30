@@ -2,7 +2,7 @@
   "KPlugin": {
     "Id": "etherbit-tiling",
     "Name": "Etherbit Tiling",
-    "Description": "O tecido invisível que coloca suas janelas em órbita perfeita. Gerenciador automático de janelas (tiling) para KDE Plasma 6 sob Wayland.",
+    "Description": "The invisible fabric that puts your windows in perfect orbit. Automatic window manager (tiling) for KDE Plasma 6 under Wayland.",
     "Icon": "view-grid-symbolic",
     "Version": "2",
     "License": "MIT",

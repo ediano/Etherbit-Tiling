@@ -4,12 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-    <title>
+    <title data-i18n="meta.title">
       Etherbit Tiling — O tecido invisível que coloca suas janelas em órbita
       perfeita
     </title>
     <meta
       name="description"
+      data-i18n-content="meta.description"
       content="Gerenciador automático de janelas (tiling) com algoritmo agnóstico em Rust. Suporte nativo a macOS (Swift) e Linux — GNOME 45+ e KDE Plasma 6 (Wayland). Zero espaço desperdiçado, organização automática."
     />
     <meta name="theme-color" content="#0e1116" />
@@ -71,11 +72,11 @@
   </head>
 
   <body>
-    <a class="skip-link" href="#main">Pular para o conteúdo</a>
+    <a class="skip-link" href="#main" data-i18n="a11y.skip">Pular para o conteúdo</a>
 
     <header class="site-header">
       <div class="container site-header__inner">
-        <a class="brand" href="#main" aria-label="Etherbit Tiling — início">
+        <a class="brand" href="#main" data-i18n-aria-label="brand.aria" aria-label="Etherbit Tiling — início">
           <svg
             class="brand__mark"
             width="28"
@@ -91,8 +92,8 @@
           <span class="brand__name">Etherbit <strong>Tiling</strong></span>
         </a>
         <nav class="site-nav" aria-label="Navegação principal">
-          <a href="#manifesto">Manifesto</a>
-          <a href="#sistemas">Sistemas</a>
+          <a href="#manifesto" data-i18n="nav.manifesto">Manifesto</a>
+          <a href="#sistemas" data-i18n="nav.systems">Sistemas</a>
           <a
             class="site-nav__cta"
             href="https://github.com/ediano"
@@ -100,6 +101,14 @@
             rel="noopener noreferrer"
             >GitHub</a
           >
+          <button
+            class="site-nav__lang"
+            type="button"
+            data-lang-toggle
+            aria-label="Mudar idioma"
+          >
+            EN
+          </button>
         </nav>
       </div>
     </header>
@@ -108,20 +117,21 @@
       <!-- ───────────────────────── Hero ───────────────────────── -->
       <section class="hero">
         <div class="container hero__inner">
-          <p class="eyebrow">
+          <p class="eyebrow" data-i18n="hero.eyebrow">
             Linux GNOME &amp; KDE · Wayland · agnóstico de sistema
           </p>
           <h1 class="hero__title">Etherbit Tiling</h1>
-          <p class="hero__subtitle">
+          <p class="hero__subtitle" data-i18n="hero.subtitle">
             O tecido invisível que coloca suas janelas em órbita perfeita.
           </p>
           <div class="hero__actions">
-            <a class="btn btn--primary" href="#sistemas">Baixar agora</a>
+            <a class="btn btn--primary" href="#sistemas" data-i18n="hero.cta">Baixar agora</a>
           </div>
 
           <!-- Mockup CSS-only: janelas se auto-organizando em blocos. -->
           <figure
             class="mockup"
+            data-i18n-aria-label="hero.mockupAria"
             aria-label="Demonstração: janelas se organizando automaticamente em blocos"
           >
             <div class="mockup__bar" aria-hidden="true">
@@ -133,7 +143,7 @@
               <div class="win win--3"></div>
               <div class="win win--4"></div>
             </div>
-            <figcaption class="mockup__caption">
+            <figcaption class="mockup__caption" data-i18n="hero.mockupCaption">
               Ether Flow organizando o espaço em tempo real
             </figcaption>
           </figure>
@@ -144,10 +154,11 @@
       <section id="manifesto" class="manifesto">
         <div class="container">
           <h2 class="section-title">
-            A essência: <span class="accent">Ether</span> +
+            <span data-i18n="manifesto.essencePrefix">A essência:</span>
+            <span class="accent">Ether</span> +
             <span class="accent">Bit</span>
           </h2>
-          <p class="section-lead">
+          <p class="section-lead" data-i18n="manifesto.lead">
             O nome é a fusão cirúrgica de dois conceitos — física e computação —
             que definem a alma do algoritmo. Juntos, criam uma experiência única
             de produtividade, independente do sistema operacional.
@@ -155,8 +166,8 @@
 
           <div class="essence-grid">
             <article class="essence">
-              <h3 class="essence__title">Ether — o preenchimento do vazio</h3>
-              <p>
+              <h3 class="essence__title" data-i18n="manifesto.etherTitle">Ether — o preenchimento do vazio</h3>
+              <p data-i18n="manifesto.etherBody">
                 Na física clássica, o Éter era a substância invisível que
                 preenchia todo o espaço. Aqui, o
                 <strong>Ether</strong> é o preenchimento matemático de pixels:
@@ -168,8 +179,8 @@
             </article>
 
             <article class="essence">
-              <h3 class="essence__title">Bit — a gravidade da órbita</h3>
-              <p>
+              <h3 class="essence__title" data-i18n="manifesto.bitTitle">Bit — a gravidade da órbita</h3>
+              <p data-i18n="manifesto.bitBody">
                 O sufixo <strong>Bit</strong> herda a mecânica de
                 <em>Orbit</em> (Órbita): o equilíbrio perfeito onde as janelas
                 encontram suas posições ideais sozinhas, guiadas pela gravidade
@@ -181,22 +192,22 @@
 
           <div class="pillars">
             <div class="pillar">
-              <h4>Tiling Dinâmico</h4>
-              <p>
+              <h4 data-i18n="pillars.dynamicTitle">Tiling Dinâmico</h4>
+              <p data-i18n="pillars.dynamicBody">
                 Abriu um terminal, um editor ou o navegador? A janela vai para a
                 órbita correta na hora. Sem mouse.
               </p>
             </div>
             <div class="pillar">
-              <h4>Ether Flow</h4>
-              <p>
+              <h4 data-i18n="pillars.flowTitle">Ether Flow</h4>
+              <p data-i18n="pillars.flowBody">
                 Divisão matemática de tela, agnóstica de plataforma, que elimina
                 espaços mortos e se adapta em tempo real.
               </p>
             </div>
             <div class="pillar">
-              <h4>Nativo e resiliente</h4>
-              <p>
+              <h4 data-i18n="pillars.nativeTitle">Nativo e resiliente</h4>
+              <p data-i18n="pillars.nativeBody">
                 Construído sobre as APIs mais estáveis de cada SO. Leve, rápido
                 e que não quebra a cada atualização.
               </p>
@@ -208,8 +219,8 @@
       <!-- ─────────────────── Sistemas Suportados ─────────────────── -->
       <section id="sistemas" class="downloads">
         <div class="container">
-          <h2 class="section-title">Sistemas suportados</h2>
-          <p class="section-lead">
+          <h2 class="section-title" data-i18n="systems.title">Sistemas suportados</h2>
+          <p class="section-lead" data-i18n="systems.lead">
             Um núcleo agnóstico em Rust, uma camada nativa fina por sistema.
             Escolha o seu.
           </p>
@@ -243,8 +254,8 @@
                   />
                 </svg>
               </div>
-              <h3 class="card__title">Linux · GNOME 45+</h3>
-              <p class="card__desc">
+              <h3 class="card__title" data-i18n="card.gnomeTitle">Linux · GNOME 45+</h3>
+              <p class="card__desc" data-i18n="card.gnomeDesc">
                 Pacote unificado <strong>.tar.gz</strong> (Daemon Rust +
                 Extensão GNOME) para <strong>Wayland</strong>. Instale em um
                 comando:
@@ -255,6 +266,8 @@
                   class="code__copy"
                   type="button"
                   data-copy-btn
+                  data-i18n="copy.btn"
+                  data-i18n-aria-label="copy.aria"
                   aria-label="Copiar comando"
                 >
                   Copiar
@@ -265,10 +278,11 @@
                 href="https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/etherbit-tiling-gnome.tar.gz"
                 target="_blank"
                 rel="noopener noreferrer"
+                data-i18n="card.download"
               >
                 Baixar .tar.gz
               </a>
-              <p class="card__note">
+              <p class="card__note" data-i18n="card.gnomeNote">
                 GNOME 45–50 · Wayland ·
                 <a class="card__link" href="/desinstalar.html"
                   >Como desinstalar</a
@@ -285,8 +299,8 @@
                   />
                 </svg>
               </div>
-              <h3 class="card__title">Linux · KDE Plasma 6</h3>
-              <p class="card__desc">
+              <h3 class="card__title" data-i18n="card.kdeTitle">Linux · KDE Plasma 6</h3>
+              <p class="card__desc" data-i18n="card.kdeDesc">
                 Pacote unificado <strong>.tar.gz</strong> (Daemon Rust + KWin
                 Script) para <strong>Wayland</strong>. Instale em um comando:
               </p>
@@ -296,6 +310,8 @@
                   class="code__copy"
                   type="button"
                   data-copy-btn
+                  data-i18n="copy.btn"
+                  data-i18n-aria-label="copy.aria"
                   aria-label="Copiar comando"
                 >
                   Copiar
@@ -306,10 +322,11 @@
                 href="https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/etherbit-tiling-kde.tar.gz"
                 target="_blank"
                 rel="noopener noreferrer"
+                data-i18n="card.download"
               >
                 Baixar .tar.gz
               </a>
-              <p class="card__note">
+              <p class="card__note" data-i18n="card.kdeNote">
                 Plasma 6 · Wayland ·
                 <a class="card__link" href="/desinstalar.html"
                   >Como desinstalar</a
@@ -320,6 +337,7 @@
             <!-- Futuro -->
             <article
               class="card card--soon"
+              data-i18n-aria-label="card.soonAria"
               aria-label="Novos sistemas em breve"
             >
               <div class="card__icon" aria-hidden="true">
@@ -336,15 +354,15 @@
                   <circle cx="12" cy="12" r="2.2" />
                 </svg>
               </div>
-              <h3 class="card__title">Novos ambientes</h3>
-              <p class="card__desc">
+              <h3 class="card__title" data-i18n="card.soonTitle">Novos ambientes</h3>
+              <p class="card__desc" data-i18n="card.soonDesc">
                 Novos ambientes estão entrando em órbita. A arquitetura
                 agnóstica já está pronta para receber novas plataformas.
               </p>
-              <span class="btn btn--disabled card__cta" aria-disabled="true"
+              <span class="btn btn--disabled card__cta" aria-disabled="true" data-i18n="card.soonCta"
                 >Em breve</span
               >
-              <p class="card__note">Em construção</p>
+              <p class="card__note" data-i18n="card.soonNote">Em construção</p>
             </article>
           </div>
         </div>
@@ -353,7 +371,7 @@
 
     <footer class="site-footer">
       <div class="container site-footer__inner">
-        <p>
+        <p data-i18n="footer.tagline">
           <strong>Etherbit Tiling</strong> — o tecido invisível que coloca suas
           janelas em órbita perfeita.
         </p>
@@ -362,10 +380,11 @@
             href="https://github.com/ediano"
             target="_blank"
             rel="noopener noreferrer"
+            data-i18n="footer.repo"
             >Repositório</a
           >
         </nav>
-        <p class="site-footer__legal">
+        <p class="site-footer__legal" data-i18n="footer.legal">
           © <span id="year">2026</span> Etherbit Tiling · Inspirado no COSMIC do
           Pop!_OS
         </p>

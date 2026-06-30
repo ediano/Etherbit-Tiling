@@ -1,0 +1,63 @@
+# Etherbit Tiling — tradução pt-BR da UI de config do KWin Script. ADR 0032.
+# msgid = inglês (default global); msgstr = português do Brasil.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: etherbit-tiling\n"
+"Report-Msgid-Bugs-To: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: pt_BR\n"
+
+#. config.ui — master switch checkbox
+msgid "Enable tiling (master switch; shortcut: Meta+Shift+Y)"
+msgstr "Ativar o tiling (chave geral; atalho: Meta+Shift+Y)"
+
+#. config.ui — gap label
+msgid "Spacing (between windows and screen edge, px):"
+msgstr "Espaçamento (entre janelas e da borda, px):"
+
+#. config.ui + main.xml — active border toggle
+msgid "Highlight the focused window with a border"
+msgstr "Destacar a janela focada com borda"
+
+#. config.ui — border color label
+msgid "Border color:"
+msgstr "Cor da borda:"
+
+#. config.ui — border width label
+msgid "Border thickness (px):"
+msgstr "Espessura da borda (px):"
+
+#. config.ui + main.xml — rounded corners toggle
+msgid "Rounded corners (requires KWin's native corners effect)"
+msgstr "Cantos arredondados (requer o efeito nativo de cantos do KWin)"
+
+#. config.ui — corner radius label
+msgid "Corner radius (px):"
+msgstr "Raio dos cantos (px):"
+
+#. main.xml — enabled
+msgid "Enable tiling (master switch)"
+msgstr "Ativar o tiling (chave geral)"
+
+#. main.xml — gap
+msgid "Single spacing: between windows and the screen edge (px)"
+msgstr "Espaçamento único: entre janelas e da borda da tela (px)"
+
+#. main.xml — borderColor
+msgid "Border color of the focused window"
+msgstr "Cor da borda da janela focada"
+
+#. main.xml — borderWidth
+msgid "Border thickness (px)"
+msgstr "Espessura da borda (px)"
+
+#. main.xml — cornerRadius
+msgid "Corner radius (px)"
+msgstr "Raio dos cantos (px)"
+
+#. main.xml — debug
+msgid "Verbose logs in the journal (diagnostics): number of windows/rectangles per event"
+msgstr "Logs detalhados no journal (diagnóstico): nº de janelas/retângulos por evento"

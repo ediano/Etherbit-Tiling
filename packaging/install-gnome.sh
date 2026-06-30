@@ -10,6 +10,84 @@
 # (sem sudo). Wayland: o GNOME Shell só recarrega extensões após logout/login.
 set -euo pipefail
 
+# --- i18n (inline) -------------------------------------------------------------
+# Distribuído isolado via `curl ... | bash`: a i18n NÃO pode depender de arquivos
+# vizinhos — fica inline. Inglês é o default global; pt-BR só quando o locale for
+# pt_BR (ADR 0032). Catálogo de referência: packaging/i18n-reference.sh.
+case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
+  pt_BR*|pt-BR*|pt_br*) ETB_LANG=pt ;;
+  *)                    ETB_LANG=en ;;
+esac
+# t <chave> [args...] — imprime a string traduzida (printf-style, sem newline
+# automático: o `\n` faz parte de cada mensagem). Fallback estrito ao inglês.
+t() {
+  local k="$1"; shift
+  local en="" pt=""
+  case "$k" in
+    skip_de_check)   en='>> ETHERBIT_SKIP_DE_CHECK=1 — environment guard disabled.\n'
+                     pt='>> ETHERBIT_SKIP_DE_CHECK=1 — trava de ambiente desativada.\n' ;;
+    err_wrong_env)   en='error: this is the GNOME installer, but the current environment looks like KDE/Plasma.\n       Use install-kde.sh. To force: ETHERBIT_SKIP_DE_CHECK=1 bash <this-script>.\n'
+                     pt='erro: este é o instalador do GNOME, mas o ambiente atual parece ser KDE/Plasma.\n       Use o install-kde.sh. Para forçar: ETHERBIT_SKIP_DE_CHECK=1 bash <este-script>.\n' ;;
+    warn_env_unknown) en="warning: could not confirm the environment is GNOME (XDG_CURRENT_DESKTOP='%s').\n"
+                     pt="aviso: não foi possível confirmar que o ambiente é o GNOME (XDG_CURRENT_DESKTOP='%s').\n" ;;
+    prompt_continue) en='Continue the GNOME install anyway? [y/N] '
+                     pt='Continuar a instalação do GNOME mesmo assim? [s/N] ' ;;
+    proceed_user)    en='>> Proceeding at the user request.\n'
+                     pt='>> Prosseguindo a pedido do usuário.\n' ;;
+    cancelled)       en='Installation cancelled.\n'
+                     pt='Instalação cancelada.\n' ;;
+    abort_noninteractive) en='       Non-interactive session — aborting for safety. To force: ETHERBIT_SKIP_DE_CHECK=1 bash <this-script>.\n'
+                     pt='       Sessão não interativa — abortando por segurança. Para forçar: ETHERBIT_SKIP_DE_CHECK=1 bash <este-script>.\n' ;;
+    payload_missing) en='>> Local payload missing; downloading release from %s\n'
+                     pt='>> Payload local ausente; baixando release de %s\n' ;;
+    err_need_tar)    en="error: 'tar' is required.\n"
+                     pt="erro: 'tar' é necessário.\n" ;;
+    err_need_curl_wget) en="error: install 'curl' or 'wget' to download the release.\n"
+                     pt="erro: instale 'curl' ou 'wget' para baixar o release.\n" ;;
+    install_clean)   en='>> Clean installation%s.\n'
+                     pt='>> Instalação limpa%s.\n' ;;
+    version_missing) en='>> VERSION missing in package — forced reinstall over v%s.\n'
+                     pt='>> VERSION ausente no pacote — reinstalação forçada sobre v%s.\n' ;;
+    same_version)    en='>> Same version (v%s) — reapplying files (idempotent).\n'
+                     pt='>> Mesma versão (v%s) — reaplicando arquivos (idempotente).\n' ;;
+    upgrading)       en='>> Upgrading v%s → v%s.\n'
+                     pt='>> Atualizando v%s → v%s.\n' ;;
+    downgrade_forced) en='>> ETHERBIT_FORCE=1 — downgrade v%s → v%s.\n'
+                     pt='>> ETHERBIT_FORCE=1 — downgrade v%s → v%s.\n' ;;
+    warn_older_pkg)  en='warning: the package (v%s) is older than the installed one (v%s); keeping the current one.\n       To force the downgrade: ETHERBIT_FORCE=1 bash <this-script>\n'
+                     pt='aviso: o pacote (v%s) é mais antigo que o instalado (v%s); mantendo o atual.\n       Para forçar o downgrade: ETHERBIT_FORCE=1 bash <este-script>\n' ;;
+    bin_install)     en='>> Installing daemon in %s\n'
+                     pt='>> Instalando daemon em %s\n' ;;
+    err_daemon_missing) en='error: %s/bin/etherbit-tiling-daemon missing.\n'
+                     pt='erro: %s/bin/etherbit-tiling-daemon ausente.\n' ;;
+    err_ext_incomplete) en='error: extension bundle incomplete in %s/extension/.\n'
+                     pt='erro: bundle da extensão incompleto em %s/extension/.\n' ;;
+    ext_install)     en='>> Installing extension in %s\n'
+                     pt='>> Instalando extensão em %s\n' ;;
+    service_install) en='>> Installing systemd --user service (%s)\n'
+                     pt='>> Instalando serviço systemd --user (%s)\n' ;;
+    warn_no_start)   en='warning: could not start now (session without systemd --user?). It will start on next login.\n'
+                     pt='aviso: não foi possível iniciar agora (sessão sem systemd --user?). Será iniciado no próximo login.\n' ;;
+    warn_no_systemctl) en='warning: systemctl unavailable — service installed but not enabled.\n'
+                     pt='aviso: systemctl indisponível — serviço instalado, mas não habilitado.\n' ;;
+    enabling_ext)    en='>> Enabling the extension in the user profile (%s)\n'
+                     pt='>> Habilitando a extensão no perfil do usuário (%s)\n' ;;
+    warn_enable_failed) en="warning: could not enable now; enable it with 'gnome-extensions enable %s'.\n"
+                     pt="aviso: não foi possível habilitar agora; habilite com 'gnome-extensions enable %s'.\n" ;;
+    done_title)      en='\nInstallation complete.\n'
+                     pt='\nInstalação concluída.\n' ;;
+    done_daemon)     en='  • Daemon:     %s/etherbit-tiling-daemon\n'
+                     pt='  • Daemon:     %s/etherbit-tiling-daemon\n' ;;
+    done_ext)        en='  • Extension:  %s (enabled in profile)\n'
+                     pt='  • Extensão:   %s (habilitada no perfil)\n' ;;
+    done_service)    en='  • Service:    %s\n'
+                     pt='  • Serviço:    %s\n' ;;
+    done_wayland)    en='\nWayland: log out/in — the extension and daemon come up automatically, no manual step.\n'
+                     pt='\nWayland: faça logout/login — a extensão e o daemon sobem automaticamente, sem passo manual.\n' ;;
+  esac
+  if [ "$ETB_LANG" = pt ] && [ -n "$pt" ]; then printf -- "$pt" "$@"; else printf -- "$en" "$@"; fi
+}
+
 # --- Trava de ambiente gráfico (fail-safe) -------------------------------------
 # Impede execução cruzada: rodar o instalador do GNOME sob KDE (ou vice-versa)
 # embaralharia configs/serviços de DEs distintos. Detecção via sinais freedesktop
@@ -20,7 +98,7 @@ set -euo pipefail
 # Bypass total: ETHERBIT_SKIP_DE_CHECK=1.
 guard_desktop() {
   if [ "${ETHERBIT_SKIP_DE_CHECK:-0}" = "1" ]; then
-    echo ">> ETHERBIT_SKIP_DE_CHECK=1 — trava de ambiente desativada."
+    t skip_de_check
     return 0
   fi
   local signals
@@ -32,22 +110,21 @@ guard_desktop() {
   esac
   case "$signals" in
     *kde*|*plasma*)
-      echo "erro: este é o instalador do GNOME, mas o ambiente atual parece ser KDE/Plasma." >&2
-      echo "       Use o install-kde.sh. Para forçar: ETHERBIT_SKIP_DE_CHECK=1 bash <este-script>." >&2
+      t err_wrong_env >&2
       exit 1
       ;;
   esac
-  echo "aviso: não foi possível confirmar que o ambiente é o GNOME (XDG_CURRENT_DESKTOP='${XDG_CURRENT_DESKTOP:-vazio}')." >&2
+  t warn_env_unknown "${XDG_CURRENT_DESKTOP:-}" >&2
   if [ -t 0 ]; then
-    printf 'Continuar a instalação do GNOME mesmo assim? [s/N] ' >&2
+    t prompt_continue >&2
     local resp=""
     read -r resp || resp=""
     case "$resp" in
-      [sSyY]*) echo ">> Prosseguindo a pedido do usuário."; return 0 ;;
-      *) echo "Instalação cancelada." >&2; exit 1 ;;
+      [sSyY]*) t proceed_user; return 0 ;;
+      *) t cancelled >&2; exit 1 ;;
     esac
   fi
-  echo "       Sessão não interativa — abortando por segurança. Para forçar: ETHERBIT_SKIP_DE_CHECK=1 bash <este-script>." >&2
+  t abort_noninteractive >&2
   exit 1
 }
 guard_desktop
@@ -70,8 +147,8 @@ fi
 # `curl | bash`, em que só o install-gnome.sh chega — baixa e extrai o tarball de
 # release num diretório temporário e segue a instalação a partir dele.
 if [ -z "$HERE" ] || [ ! -f "$HERE/bin/etherbit-tiling-daemon" ]; then
-  echo ">> Payload local ausente; baixando release de $REPO"
-  command -v tar >/dev/null || { echo "erro: 'tar' é necessário." >&2; exit 1; }
+  t payload_missing "$REPO"
+  command -v tar >/dev/null || { t err_need_tar >&2; exit 1; }
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT
   if command -v curl >/dev/null; then
@@ -79,7 +156,7 @@ if [ -z "$HERE" ] || [ ! -f "$HERE/bin/etherbit-tiling-daemon" ]; then
   elif command -v wget >/dev/null; then
     wget -qO "$TMP/$TARBALL" "$ASSET_URL"
   else
-    echo "erro: instale 'curl' ou 'wget' para baixar o release." >&2
+    t err_need_curl_wget >&2
     exit 1
   fi
   tar -xzf "$TMP/$TARBALL" -C "$TMP"
@@ -93,11 +170,11 @@ SERVICE="etherbit-tiling-daemon.service"
 
 # --- Validação -----------------------------------------------------------------
 if [ ! -f "$HERE/bin/etherbit-tiling-daemon" ]; then
-  echo "erro: $HERE/bin/etherbit-tiling-daemon ausente." >&2
+  t err_daemon_missing "$HERE" >&2
   exit 1
 fi
 if [ ! -f "$HERE/extension/extension.js" ] || [ ! -f "$HERE/extension/metadata.json" ]; then
-  echo "erro: bundle da extensão incompleto em $HERE/extension/." >&2
+  t err_ext_incomplete "$HERE" >&2
   exit 1
 fi
 
@@ -114,18 +191,17 @@ OLD_VERSION="$([ -f "$VERSION_FILE" ] && tr -d '[:space:]' < "$VERSION_FILE" || 
 version_gt() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]; }
 
 if [ -z "$OLD_VERSION" ]; then
-  echo ">> Instalação limpa${NEW_VERSION:+ (v$NEW_VERSION)}."
+  t install_clean "${NEW_VERSION:+ (v$NEW_VERSION)}"
 elif [ -z "$NEW_VERSION" ]; then
-  echo ">> VERSION ausente no pacote — reinstalação forçada sobre v$OLD_VERSION."
+  t version_missing "$OLD_VERSION"
 elif [ "$NEW_VERSION" = "$OLD_VERSION" ]; then
-  echo ">> Mesma versão (v$OLD_VERSION) — reaplicando arquivos (idempotente)."
+  t same_version "$OLD_VERSION"
 elif version_gt "$NEW_VERSION" "$OLD_VERSION"; then
-  echo ">> Atualizando v$OLD_VERSION → v$NEW_VERSION."
+  t upgrading "$OLD_VERSION" "$NEW_VERSION"
 elif [ "${ETHERBIT_FORCE:-0}" = "1" ]; then
-  echo ">> ETHERBIT_FORCE=1 — downgrade v$OLD_VERSION → v$NEW_VERSION."
+  t downgrade_forced "$OLD_VERSION" "$NEW_VERSION"
 else
-  echo "aviso: o pacote (v$NEW_VERSION) é mais antigo que o instalado (v$OLD_VERSION); mantendo o atual." >&2
-  echo "       Para forçar o downgrade: ETHERBIT_FORCE=1 bash <este-script>" >&2
+  t warn_older_pkg "$NEW_VERSION" "$OLD_VERSION" >&2
   exit 0
 fi
 
@@ -139,12 +215,12 @@ if command -v systemctl >/dev/null; then
 fi
 
 # --- Daemon --------------------------------------------------------------------
-echo ">> Instalando daemon em $BIN_DIR"
+t bin_install "$BIN_DIR"
 mkdir -p "$BIN_DIR"
 install -m 755 "$HERE/bin/etherbit-tiling-daemon" "$BIN_DIR/etherbit-tiling-daemon"
 
 # --- Extensão ------------------------------------------------------------------
-echo ">> Instalando extensão em $EXT_DIR"
+t ext_install "$EXT_DIR"
 mkdir -p "$EXT_DIR"
 install -m 644 "$HERE/extension/extension.js"  "$EXT_DIR/extension.js"
 install -m 644 "$HERE/extension/metadata.json" "$EXT_DIR/metadata.json"
@@ -157,7 +233,7 @@ if [ -d "$HERE/extension/schemas" ]; then
 fi
 
 # --- Serviço systemd (--user) --------------------------------------------------
-echo ">> Instalando serviço systemd --user ($SERVICE)"
+t service_install "$SERVICE"
 mkdir -p "$SYSTEMD_DIR"
 cat > "$SYSTEMD_DIR/$SERVICE" <<'UNIT'
 [Unit]
@@ -178,9 +254,9 @@ UNIT
 if command -v systemctl >/dev/null; then
   systemctl --user daemon-reload || true
   systemctl --user enable --now "$SERVICE" || \
-    echo "aviso: não foi possível iniciar agora (sessão sem systemd --user?). Será iniciado no próximo login."
+    t warn_no_start
 else
-  echo "aviso: systemctl indisponível — serviço instalado, mas não habilitado."
+  t warn_no_systemctl
 fi
 
 # --- Habilitação blindada da extensão ------------------------------------------
@@ -210,8 +286,8 @@ enable_extension() {
     fi
   fi
 }
-echo ">> Habilitando a extensão no perfil do usuário ($UUID)"
-enable_extension || echo "aviso: não foi possível habilitar agora; habilite com 'gnome-extensions enable $UUID'."
+t enabling_ext "$UUID"
+enable_extension || t warn_enable_failed "$UUID"
 
 # --- Marcador de versão --------------------------------------------------------
 # Registra a versão instalada — base de comparação do próximo run (upgrade idempotente).
@@ -221,10 +297,8 @@ if [ -n "$NEW_VERSION" ]; then
 fi
 
 # --- Fim -----------------------------------------------------------------------
-echo
-echo "Instalação concluída."
-echo "  • Daemon:    $BIN_DIR/etherbit-tiling-daemon"
-echo "  • Extensão:  $EXT_DIR (habilitada no perfil)"
-echo "  • Serviço:   $SYSTEMD_DIR/$SERVICE"
-echo
-echo "Wayland: faça logout/login — a extensão e o daemon sobem automaticamente, sem passo manual."
+t done_title
+t done_daemon "$BIN_DIR"
+t done_ext "$EXT_DIR"
+t done_service "$SYSTEMD_DIR/$SERVICE"
+t done_wayland

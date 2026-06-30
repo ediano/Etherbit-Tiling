@@ -24,7 +24,7 @@ principal **macOS** (Swift), suporte **Linux/GNOME** (daemon Rust + extension GN
 
 ## Convenções (resumo — detalhe em `rules/`)
 
-- **Idioma:** docs e comunicação em **português**; código/identificadores em inglês. → [rules/0001](rules/0001-idioma-portugues.md)
+- **Idioma:** docs e comunicação em **português**; código/identificadores em inglês. Strings de **UI e instalador** são **bilíngues** (inglês default global, pt-BR por locale). → [rules/0001](rules/0001-idioma-portugues.md), [rules/0032](rules/0032-i18n-multilingue.md)
 - **Arquitetura:** core agnóstico decide o layout; camadas nativas finas aplicam. → [rules/0002](rules/0002-arquitetura-core-agnostico.md)
 - **Rust:** workspaces isolados — raiz agnóstica (`core`) e `etherbit-tiling-daemon` (`daemon`, compartilhado por GNOME/KDE); `edition 2021`; `Cargo.lock` versionado por workspace. → [rules/0003](rules/0003-monorepo-poliglota.md), [rules/0006](rules/0006-cargo-lock-versionado.md)
 - **Docker:** centralizado em `docker/Dockerfile.core` (sem `.devcontainer/Dockerfile`). → [rules/0004](rules/0004-docker-centralizado.md)

@@ -1,0 +1,64 @@
+# Etherbit Tiling — KWin Script config UI (template).
+# Strings-fonte (msgid) em inglês, extraídas de contents/ui/config.ui e
+# contents/config/main.xml. Veja contents/po/README.md. ADR 0032.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: etherbit-tiling\n"
+"Report-Msgid-Bugs-To: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: \n"
+
+#. config.ui — master switch checkbox
+msgid "Enable tiling (master switch; shortcut: Meta+Shift+Y)"
+msgstr ""
+
+#. config.ui — gap label
+msgid "Spacing (between windows and screen edge, px):"
+msgstr ""
+
+#. config.ui + main.xml — active border toggle
+msgid "Highlight the focused window with a border"
+msgstr ""
+
+#. config.ui — border color label
+msgid "Border color:"
+msgstr ""
+
+#. config.ui — border width label
+msgid "Border thickness (px):"
+msgstr ""
+
+#. config.ui + main.xml — rounded corners toggle
+msgid "Rounded corners (requires KWin's native corners effect)"
+msgstr ""
+
+#. config.ui — corner radius label
+msgid "Corner radius (px):"
+msgstr ""
+
+#. main.xml — enabled
+msgid "Enable tiling (master switch)"
+msgstr ""
+
+#. main.xml — gap
+msgid "Single spacing: between windows and the screen edge (px)"
+msgstr ""
+
+#. main.xml — borderColor
+msgid "Border color of the focused window"
+msgstr ""
+
+#. main.xml — borderWidth
+msgid "Border thickness (px)"
+msgstr ""
+
+#. main.xml — cornerRadius
+msgid "Corner radius (px)"
+msgstr ""
+
+#. main.xml — debug
+msgid "Verbose logs in the journal (diagnostics): number of windows/rectangles per event"
+msgstr ""

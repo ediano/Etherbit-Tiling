@@ -57,6 +57,7 @@ import {
 } from './bridge.js';
 import { EtherbitIndicator } from './indicator.js';
 import { applyRoundedCorners, clearRoundedCorners } from './effects.js';
+import { initI18n } from './i18n.js';
 
 /// Nomes das chaves de atalho no gschema (schemas/org.gnome.shell.extensions.etherbit-tiling.gschema.xml).
 const KEY_TOGGLE_TILING = 'toggle-tiling';
@@ -248,7 +249,11 @@ export default class EtherbitTilingExtension extends Extension {
     //    (re)aparecer; toda chamada passa por `_call`, que reconecta sob demanda.
     this._ensureProxy();
 
-    // 2) Indicador na barra. Cada ação roteia por `_call` (resiliente a queda do canal).
+    // 2) i18n: detecta o idioma do sistema ANTES de construir a UI (os rótulos do indicador são
+    //    resolvidos no construtor). Inglês default global; pt-BR só sob locale pt (ADR 0032).
+    initI18n(GLib.get_language_names());
+
+    // 3) Indicador na barra. Cada ação roteia por `_call` (resiliente a queda do canal).
     this._indicator = new EtherbitIndicator({
       // Chave geral: persiste no daemon e propaga via ConfigChanged → o `_relayout` lê `enabled` e
       // pausa/retoma o laço.
@@ -261,10 +266,10 @@ export default class EtherbitTilingExtension extends Extension {
     });
     Main.panel.addToStatusArea(this.uuid, this._indicator);
 
-    // 3) Config inicial.
+    // 4) Config inicial.
     this._refreshConfig();
 
-    // 3b) Watch do nome do daemon: ao (re)aparecer (pós-wake/reativação), refaz o handshake e
+    // 4b) Watch do nome do daemon: ao (re)aparecer (pós-wake/reativação), refaz o handshake e
     //     re-sincroniza config + layout; ao sumir, descarta o proxy morto. Recuperação automática.
     this._nameWatchId = Gio.bus_watch_name(
       Gio.BusType.SESSION,
@@ -274,7 +279,7 @@ export default class EtherbitTilingExtension extends Extension {
       () => this._dropProxy(),
     );
 
-    // 4) Eventos nativos do Mutter que motivam um novo layout.
+    // 5) Eventos nativos do Mutter que motivam um novo layout.
     this._displayIds.push(
       global.display.connect('window-created', (_display, window) =>
         this._onWindowCreated(window),
@@ -304,7 +309,7 @@ export default class EtherbitTilingExtension extends Extension {
       this._scheduleRelayout(),
     );
 
-    // 5) Atalhos globais (Super+Y = tiling por workspace; Super+S = agrupar em abas). As teclas
+    // 6) Atalhos globais (Super+Y = tiling por workspace; Super+S = agrupar em abas). As teclas
     // vivem no gschema; aqui só ligamos o disparo aos handlers que mutam o estado e re-tilam.
     try {
       this._settings = this.getSettings();
@@ -326,7 +331,7 @@ export default class EtherbitTilingExtension extends Extension {
       console.error(`Etherbit Tiling: falha ao registrar atalhos: ${error}`);
     }
 
-    // 6) Layout inicial para as janelas já abertas.
+    // 7) Layout inicial para as janelas já abertas.
     this._scheduleRelayout();
   }
 
