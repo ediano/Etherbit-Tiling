@@ -4,7 +4,8 @@ import {
   serializeWindows,
   serializeMonitors,
   parseLayout,
-  parseFloating,
+  parseCollisions,
+  collisionKey,
   parseLayoutTrees,
   parsePreview,
   orderKey,
@@ -85,28 +86,46 @@ describe('parseLayout', () => {
   });
 });
 
-describe('parseFloating', () => {
-  it('lê as janelas flutuantes do formato objeto { floating }', () => {
+describe('parseCollisions', () => {
+  it('lê os grupos de colisão do formato objeto { collisions }', () => {
     const json = JSON.stringify({
       rects: [],
       tab_bars: [],
-      floating: [{ id: 7, x: 100, y: 50, width: 800, height: 600 }],
+      collisions: [{ cell_id: 1, members: [1, 2] }],
     });
-    expect(parseFloating(json)).toEqual([{ id: 7, x: 100, y: 50, width: 800, height: 600 }]);
+    expect(parseCollisions(json)).toEqual([{ cellId: 1, members: [1, 2] }]);
   });
 
-  it('ausente (daemon antigo) → vazio', () => {
-    expect(parseFloating('{"rects":[],"tab_bars":[]}')).toEqual([]);
+  it('ausente (daemon antigo = comportamento 0040) → vazio', () => {
+    expect(parseCollisions('{"rects":[],"tab_bars":[]}')).toEqual([]);
   });
 
   it('formato legado (array) → vazio', () => {
-    expect(parseFloating('[{"id":1,"x":0,"y":0,"width":1,"height":1}]')).toEqual([]);
+    expect(parseCollisions('[{"cell_id":1,"members":[1,2]}]')).toEqual([]);
   });
 
-  it('descarta entradas malformadas e JSON inválido', () => {
-    expect(parseFloating('not json')).toEqual([]);
-    const json = '{"floating":[{"id":1,"x":0,"y":0,"width":10,"height":10},{"id":"x"}]}';
-    expect(parseFloating(json)).toEqual([{ id: 1, x: 0, y: 0, width: 10, height: 10 }]);
+  it('descarta grupos com < 2 membros e entradas malformadas, e JSON inválido', () => {
+    expect(parseCollisions('not json')).toEqual([]);
+    const json = JSON.stringify({
+      collisions: [
+        { cell_id: 1, members: [1] }, // < 2 → descartado (nada a agrupar)
+        { cell_id: 2, members: [3, 4] }, // ok
+        { cell_id: 'x', members: [5, 6] }, // cell_id inválido → descartado
+        { members: [7, 8] }, // sem cell_id → descartado
+      ],
+    });
+    expect(parseCollisions(json)).toEqual([{ cellId: 2, members: [3, 4] }]);
+  });
+});
+
+describe('collisionKey', () => {
+  it('é ordem-insensível sobre ids estáveis (string)', () => {
+    expect(collisionKey(['w2', 'w1'])).toBe(collisionKey(['w1', 'w2']));
+    expect(collisionKey(['w1', 'w2'])).toBe('w1,w2');
+  });
+
+  it('distingue conjuntos diferentes', () => {
+    expect(collisionKey(['w1', 'w2'])).not.toBe(collisionKey(['w1', 'w3']));
   });
 });
 

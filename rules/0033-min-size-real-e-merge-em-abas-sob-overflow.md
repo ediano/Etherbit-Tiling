@@ -10,6 +10,9 @@ buscando paridade com o GNOME; reafirma [0002](0002-arquitetura-core-agnostico.m
 A parte **B** (sinal de overflow `floating`) e a parte **C** (Merge Fallback) foram **descontinuadas** por
 [0040](0040-esmagamento-impositivo-e-menu-de-contexto-kde.md) — esmagamento impositivo de min-size,
 agrupamento só manual. A parte **A** (min-size **real** nas pontes) **permanece**.
+As partes **B** e **C** foram **reintroduzidas adaptadas** por
+[0041](0041-agrupamento-por-colisao-estrita.md): o sinal de "não cabe" volta como `collisions` (por
+célula, geométrico) e o agrupamento automático volta sob **colapso estrito**, agora em **GNOME e KDE**.
 
 ## Contexto
 

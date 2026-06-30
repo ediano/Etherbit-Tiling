@@ -24,6 +24,8 @@ import {
   parseLayout,
   parseTabBars,
   parseLayoutTrees,
+  parseCollisions,
+  collisionKey,
   resolveHotZone,
   serializeScope,
   resizeDeltaFrom,
@@ -150,6 +152,10 @@ let trees = new Map<string, TreeNode | null>();
 const stacks = new Map<string, Stack[]>();
 /// Membros de stack OCULTOS (minimizados) por nós — para reexibir ao saírem do stack/aba inativa.
 const stackHidden = new Set<string>();
+/// Conjuntos já agrupados por colisão (ADR 0041), chave ordem-insensível de `collisionKey` sobre ids
+/// estáveis — evita re-agrupar o mesmo conjunto a cada sync (idempotência/anti-oscilação). Descartado
+/// quando o conjunto deixa de aparecer no sinal `collisions` do core.
+const mergedCollisions = new Set<string>();
 /// Mapas de transporte do ÚLTIMO retile (internalId ↔ id opaco), reusados no drop (sem retile no meio
 /// do arrasto, eles seguem válidos para as janelas pré-existentes).
 let lastTransportOf = new Map<string, number>();
@@ -460,9 +466,55 @@ function retile(): void {
       const commands = parseLayout(layoutJson);
       const tabBars = parseTabBars(layoutJson);
       debug('SyncWindows OK (seq', mySeq, ') — retângulos:', commands.length);
-      // Esmagamento impositivo (ADR 0040): o core entrega a TODA janela rígida ≥ seu mínimo no grid e
-      // comprime as vizinhas — não há mais sinal de overflow nem Merge Fallback/float automático. O
-      // agrupamento em abas é só MANUAL (drag-to-group, zona `center`).
+      // Agrupamento automático por colisão (ADR 0041): quando o core sinaliza colapso de célula (Σ mins
+      // rígidos > avail), agrupamos os membros em abas — cada aba recebe a célula inteira e cabe,
+      // eliminando a sobreposição do esmagamento (ADR 0040), que segue como rede. O merge vira
+      // Node::Stack → a célula deixa de colapsar → o sinal some no próximo sync (idempotente).
+      // `mergedCollisions` evita re-agrupar o mesmo conjunto; permanece agrupado (sem auto-desagrupar).
+      // Ids vêm em TRANSPORTE → traduz p/ estável (internalId) antes do addToStack (contrato ADR 0009).
+      const stableGroups = parseCollisions(layoutJson)
+        .map((c) =>
+          c.members
+            .map((m) => transportToStable.get(m))
+            .filter((s): s is string => s !== undefined),
+        )
+        .filter((g) => g.length >= 2);
+      const liveCollisions = new Set(stableGroups.map((g) => collisionKey(g)));
+      for (const k of [...mergedCollisions]) {
+        if (!liveCollisions.has(k)) {
+          mergedCollisions.delete(k);
+        }
+      }
+      let didMerge = false;
+      for (const group of stableGroups) {
+        const key = collisionKey(group);
+        if (mergedCollisions.has(key)) {
+          continue;
+        }
+        const [targetStable, ...rest] = group;
+        if (targetStable === undefined) {
+          continue;
+        }
+        const win = stableToWin.get(targetStable);
+        if (!win || !isLiveWindow(win)) {
+          continue;
+        }
+        const monitor = collectOutputs().indexOf(win.output);
+        const groupKey = orderKey(monitor < 0 ? 0 : monitor, desktopIndexOf(win));
+        let changed = false;
+        for (const member of rest) {
+          changed = addToStack(stacks, groupKey, targetStable, member) || changed;
+        }
+        if (changed) {
+          mergedCollisions.add(key);
+          didMerge = true;
+        }
+      }
+      if (didMerge) {
+        // A topologia mudou: re-tila para o core materializar os stacks e recalcular sem colapso.
+        retile();
+        return;
+      }
 
       // Abas inativas a ocultar (minimizar): todo membro de stack que não é o ativo (ids de transporte).
       const shouldHide = new Set<string>();

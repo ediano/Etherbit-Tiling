@@ -11,6 +11,7 @@ import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
+import Pango from 'gi://Pango';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
@@ -32,6 +33,8 @@ import {
   parseLayout,
   parseTabBars,
   parseDropped,
+  parseCollisions,
+  collisionKey,
   isResizable,
   clampGeometry,
   geometryConverged,
@@ -161,6 +164,10 @@ export default class EtherbitTilingExtension extends Extension {
   private _disabledGroups = new Set<string>();
   private _groupTiled = new Map<string, number[]>();
   private _stackHidden = new Set<number>();
+  // Agrupamento automático por colisão (ADR 0041): conjuntos já agrupados (chave ordem-insensível de
+  // `collisionKey`), para não re-agrupar o mesmo conjunto a cada sync (idempotência/anti-oscilação).
+  // Uma entrada é descartada quando seu conjunto deixa de aparecer no sinal `collisions` do core.
+  private _mergedCollisions = new Set<string>();
   // Spawn-unmaximize (ciclo de vida de maximização): ids que o core JÁ tilou ao menos uma vez. Uma
   // janela que é maximizada e NUNCA foi tilada "nasceu maximizada" → forçamos `unmaximize` para ela
   // entrar na Distribuição Cíclica. Já uma janela tilada que o usuário maximiza manualmente é
@@ -411,6 +418,7 @@ export default class EtherbitTilingExtension extends Extension {
     this._stacks.clear();
     this._disabledGroups.clear();
     this._groupTiled.clear();
+    this._mergedCollisions.clear();
 
     for (const id of this._displayIds) {
       global.display.disconnect(id);
@@ -735,9 +743,50 @@ export default class EtherbitTilingExtension extends Extension {
     // a tela — `total > aplicadas` deixa de parecer bug quando é só uma janela não-tileável (ex.:
     // desktop/DING) ou uma "nascida maximizada" ainda fora do grid (`excluded_maximized`).
     const dropped = parseDropped(layoutJson);
-    // Esmagamento impositivo (ADR 0040): o core entrega a TODA janela rígida ≥ seu mínimo no grid e
-    // comprime as vizinhas em cascata — não há mais sinal de overflow nem Merge Fallback/float
-    // automático. O agrupamento em abas é só MANUAL (drag-to-group, zona `center`).
+    // Agrupamento automático por colisão (ADR 0041): o esmagamento impositivo (ADR 0040) entrega a
+    // TODA janela rígida ≥ seu mínimo, mas pode empurrar a vizinha para fora da borda (sobreposição).
+    // Quando o core sinaliza que uma célula COLAPSOU (`Σ mins rígidos > avail`), agrupamos os membros
+    // em abas — cada aba recebe a célula inteira e cabe, eliminando a sobreposição. O merge muda a
+    // topologia (vira `Node::Stack`) → a célula deixa de colapsar → o sinal some no próximo sync
+    // (idempotente). `_mergedCollisions` evita re-agrupar o mesmo conjunto. Permanece agrupado (sem
+    // auto-desagrupar): o usuário desagrupa pelo menu/Super+S; fechar uma das duas dissolve o stack.
+    const collisions = parseCollisions(layoutJson);
+    const snapById = new Map(snapshots.map((s) => [s.id, s]));
+    const liveCollisions = new Set(collisions.map((c) => collisionKey(c.members)));
+    for (const k of [...this._mergedCollisions]) {
+      if (!liveCollisions.has(k)) {
+        this._mergedCollisions.delete(k);
+      }
+    }
+    let didMerge = false;
+    for (const collision of collisions) {
+      const key = collisionKey(collision.members);
+      if (this._mergedCollisions.has(key)) {
+        continue;
+      }
+      const [target, ...rest] = collision.members;
+      if (target === undefined) {
+        continue;
+      }
+      const snap = snapById.get(target);
+      if (!snap) {
+        continue;
+      }
+      const groupKey = orderKey(snap.monitor, snap.workspace);
+      let changed = false;
+      for (const member of rest) {
+        changed = addToStack(this._stacks, groupKey, target, member) || changed;
+      }
+      if (changed) {
+        this._mergedCollisions.add(key);
+        didMerge = true;
+      }
+    }
+    if (didMerge) {
+      // A topologia mudou: re-sincroniza para o core materializar os stacks e recalcular sem colapso.
+      this._scheduleRelayout();
+      return;
+    }
 
     // Abas inativas a ocultar (minimizar): todo membro de stack que não é o ativo.
     const shouldHide = new Set<number>();
@@ -1287,8 +1336,16 @@ export default class EtherbitTilingExtension extends Extension {
         'background-color: rgba(46, 52, 64, 0.92);' +
           'border-radius: 8px; padding: 2px; spacing: 2px;',
       );
+      // Regra II (ADR 0041): cada aba ocupa 1/N da barra, INDEPENDENTE do comprimento do título
+      // (largura fixa + ellipsis), espelhando `tabs.rs::layout_slots` do KDE. Desconta o padding
+      // (2px/lado) e o spacing (2px entre N abas) do box para a soma fechar a largura da barra.
+      const n = bar.members.length;
+      const inner = Math.max(1, bar.width) - 4 - Math.max(0, n - 1) * 2;
+      const tabW = n > 0 ? Math.max(1, Math.floor(inner / n)) : Math.max(1, bar.width);
       for (const memberId of bar.members) {
-        box.add_child(this._makeTabButton(byId.get(memberId), memberId, memberId === bar.active));
+        box.add_child(
+          this._makeTabButton(byId.get(memberId), memberId, memberId === bar.active, tabW),
+        );
       }
       box.set_position(bar.x, bar.y);
       // Clamp ≥ 1px: uma barra degenerada (0×0) vinda do core alimentaria o framebuffer do Cogl com
@@ -1305,12 +1362,15 @@ export default class EtherbitTilingExtension extends Extension {
     window: Meta.Window | undefined,
     memberId: number,
     isActive: boolean,
+    tabW: number,
   ): St.Widget {
     const tab = new St.BoxLayout({
       style_class: isActive ? 'etherbit-tab etherbit-tab-active' : 'etherbit-tab',
       reactive: true,
-      x_expand: true,
     });
+    // Regra II (ADR 0041): largura FIXA = 1/N da barra. SEM `x_expand` — a aba não cresce com o
+    // comprimento do título; todas ficam simétricas (o título excedente é truncado com ellipsis).
+    tab.set_width(tabW);
     tab.set_style(
       isActive
         ? 'background-color: rgba(94, 129, 172, 0.95); border-radius: 6px; color: #eceff4;'
@@ -1318,15 +1378,21 @@ export default class EtherbitTilingExtension extends Extension {
     );
 
     // Conteúdo: ícone (via Shell.WindowTracker) + título. Clique esquerdo → ativa a aba.
-    const content = new St.BoxLayout({ style_class: 'etherbit-tab-content' });
+    const content = new St.BoxLayout({ style_class: 'etherbit-tab-content', x_expand: true });
     content.set_style('spacing: 6px; padding: 0 8px;');
     const app = window ? Shell.WindowTracker.get_default().get_window_app(window) : null;
     if (app) {
       content.add_child(app.create_icon_texture(16));
     }
-    content.add_child(
-      new St.Label({ text: window?.get_title() ?? '', y_align: Clutter.ActorAlign.CENTER }),
-    );
+    // Título com ELLIPSIS: como a aba tem largura fixa, um título longo trunca ("…") em vez de esticar
+    // a aba. `single_line_mode` evita quebra de linha; `x_expand` ocupa o espaço restante do conteúdo.
+    const label = new St.Label({
+      text: window?.get_title() ?? '',
+      y_align: Clutter.ActorAlign.CENTER,
+      x_expand: true,
+    });
+    label.clutter_text.set({ ellipsize: Pango.EllipsizeMode.END, single_line_mode: true });
+    content.add_child(label);
     const activateBtn = new St.Button({ x_expand: true, child: content });
     activateBtn.set_style('background-color: transparent; border-radius: 6px;');
     activateBtn.connect('clicked', () => {

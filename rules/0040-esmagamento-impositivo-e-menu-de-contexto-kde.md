@@ -9,6 +9,10 @@ nas pontes, permanece); substitui a parte **Merge Fallback** do [0030](0030-dist
 [0039](0039-kde-abas-visuais-no-helper-de-overlay.md) — o clique direito na aba abre um **menu de
 contexto**, não mais ungroup imediato; reafirma
 [0002](0002-arquitetura-core-agnostico.md)/[0016](0016-extensao-ponte-burra-render-no-daemon.md))
+**Emendado por [0041](0041-agrupamento-por-colisao-estrita.md):** as partes **B** (sinal de overflow) e
+**C** (merge automático) são **revertidas/adaptadas** — o agrupamento automático volta, agora só sob
+**colapso estrito** (sinal `collisions` por célula) e em **GNOME e KDE**. As partes **A** (esmagamento
+impositivo), o menu de contexto e o spawn-unmaximize **permanecem**.
 
 ## Contexto
 
