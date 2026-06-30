@@ -7,6 +7,8 @@ agora **visíveis e clicáveis**; emenda o [0029](0029-daemon-sem-framework-visu
 trazer framework visual de volta ao **daemon de geometria**; reafirma o
 [0016](0016-extensao-ponte-burra-render-no-daemon.md)/[0013](0013-camada-kde-kwin-script.md): o KWin
 Script é uma ponte burra que **não pinta nem captura ponteiro**)
+O clique direito na aba foi emendado por [0040](0040-esmagamento-impositivo-e-menu-de-contexto-kde.md):
+abre um **menu de contexto** ("Desagrupar") no helper, em vez de desagrupar de imediato.
 
 ## Contexto
 

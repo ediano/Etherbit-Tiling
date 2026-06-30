@@ -22,7 +22,6 @@ import {
   serializeMonitors,
   serializeState,
   parseLayout,
-  parseFloating,
   parseTabBars,
   parseLayoutTrees,
   resolveHotZone,
@@ -33,7 +32,6 @@ import {
   removeFromOrder,
   sortByOrder,
   toggleGroupDisabled,
-  mergeFallback,
   removeIdFromStacks,
   addToStack,
   setActiveMember,
@@ -140,8 +138,6 @@ callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'Ping', (status: string) => {
 const order = new Map<string, string[]>();
 /// Grupos `(monitor, desktop)` com tiling desligado (Meta+Y).
 const disabled = new Set<string>();
-/// internalIds que NÓS elevamos (keepAbove) por auto-floating — para baixar ao voltarem ao grid.
-const floatingAbove = new Set<string>();
 /// internalIds que o core JÁ tilou ao menos uma vez. Uma janela maximizada que NUNCA foi tilada
 /// "nasceu maximizada" → spawn-unmaximize (entra na Distribuição Cíclica). Já uma janela tilada que o
 /// usuário maximiza é PRESERVADA (volta ao slot ao desmaximizar — Unmaximize Recovery).
@@ -149,15 +145,11 @@ const everTiled = new Set<string>();
 /// Árvores BSP persistentes por `(monitor, desktop)`, com folhas em internalId (forma canônica).
 /// O core reconcilia e devolve a versão atualizada a cada SyncWindows/MoveWindow.
 let trees = new Map<string, TreeNode | null>();
-/// Abas (stacks) por `(monitor, desktop)`, com membros em internalId. Criadas pelo Merge Fallback
-/// (ADR 0033) quando o core sinaliza overflow; enviadas a cada SyncWindows para o core materializar.
+/// Abas (stacks) por `(monitor, desktop)`, com membros em internalId. Criadas só MANUALMENTE
+/// (drag-to-group na zona `center`; Meta+S); enviadas a cada SyncWindows para o core materializar.
 const stacks = new Map<string, Stack[]>();
 /// Membros de stack OCULTOS (minimizados) por nós — para reexibir ao saírem do stack/aba inativa.
 const stackHidden = new Set<string>();
-/// Merge Fallback (ADR 0030/0033): ids já agrupados em aba por colapso de min-size. Evita o loop
-/// sync↔merge — se a janela AINDA estoura após o merge (tela minúscula), deixa de tentar e cai no
-/// floating legado como rede. Limpo quando o id deixa de estourar.
-const mergeAttempted = new Set<string>();
 /// Mapas de transporte do ÚLTIMO retile (internalId ↔ id opaco), reusados no drop (sem retile no meio
 /// do arrasto, eles seguem válidos para as janelas pré-existentes).
 let lastTransportOf = new Map<string, number>();
@@ -306,11 +298,11 @@ function windowUnderPointObj(x: number, y: number, excludeId: string): KWinWindo
 }
 
 /// Libera as janelas do grid para o comportamento flutuante do sistema (chave geral desligada):
-/// baixa (remove keepAbove) as que elevamos por auto-floating. Envolto em `applying` para não disparar
-/// retile reentrante via `keepAboveChanged`. O estado leve (ordem/árvores) é PRESERVADO — religar
-/// reorganiza tudo de volta. Idempotente.
+/// reexibe as abas inativas que NÓS ocultamos. Envolto em `applying` para não disparar retile
+/// reentrante. O estado leve (ordem/árvores/stacks) é PRESERVADO — religar reorganiza tudo de volta.
+/// Idempotente.
 function releaseToFloating(): void {
-  if (floatingAbove.size === 0 && stackHidden.size === 0) {
+  if (stackHidden.size === 0) {
     return;
   }
   applying = true;
@@ -319,20 +311,15 @@ function releaseToFloating(): void {
       if (!isLiveWindow(win)) {
         continue;
       }
-      const id = windowId(win);
-      if (floatingAbove.has(id) && win.keepAbove) {
-        win.keepAbove = false;
-      }
       // Reexibe as abas inativas que NÓS ocultamos: a chave geral deve liberar tudo (o estado de
       // stacks é preservado para o religar reorganizar de volta).
-      if (stackHidden.has(id) && win.minimized) {
+      if (stackHidden.has(windowId(win)) && win.minimized) {
         win.minimized = false;
       }
     }
   } finally {
     applying = false;
   }
-  floatingAbove.clear();
   stackHidden.clear();
   // Tiling desligado: nenhuma barra de abas deve permanecer no overlay.
   pushTabs([]);
@@ -426,8 +413,8 @@ function retile(): void {
       const maximizable = entry.win.maximizable;
       // Min-size REAL (ADR 0033, inverte o "força frame, ignora hints" do 0021/0026): no Wayland o
       // cliente RECUSA encolher abaixo do seu min_size — zerar o hint só o faz transbordar/ser ejetado.
-      // Enviamos o mínimo real; o core sinaliza "não cabe" (overflow → `floating`) e a ponte resolve via
-      // Merge Fallback (abas), cada aba no slot inteiro. Espelha a ponte GNOME.
+      // Enviamos o mínimo real e o core o respeita via esmagamento impositivo (ADR 0040): a janela
+      // rígida recebe ≥ seu mínimo e os vizinhos comprimem. Espelha a ponte GNOME.
       const min = entry.win.minSize;
       snapshots.push({
         id,
@@ -473,53 +460,9 @@ function retile(): void {
       const commands = parseLayout(layoutJson);
       const tabBars = parseTabBars(layoutJson);
       debug('SyncWindows OK (seq', mySeq, ') — retângulos:', commands.length);
-      // Sinal de OVERFLOW (ADR 0033): janelas cujo slot ficou < o mínimo. Alimenta o Merge Fallback
-      // (abas); o float-and-elevate abaixo fica como rede para quem ainda estoura após o merge.
-      const floating = parseFloating(layoutJson);
-      const floatingHere = new Set<string>();
-
-      // Merge Fallback (ADR 0030/0033): agrupa a janela que estouraria como aba no quadrante focado, em
-      // vez de deixá-la flutuar. Opera em ids ESTÁVEIS (string); traduz floating/commands de transporte.
-      // Limpa o guard dos ids que já não estouram; um merge dispara novo retile (o slot do stack passa a
-      // caber — o min do stack é o `max` dos membros) e `floating` esvazia.
-      const floatingStable = floating
-        .map((c) => transportToStable.get(c.id))
-        .filter((s): s is string => s !== undefined);
-      const floatingStableSet = new Set(floatingStable);
-      for (const id of [...mergeAttempted]) {
-        if (!floatingStableSet.has(id)) {
-          mergeAttempted.delete(id);
-        }
-      }
-      if (floatingStable.length > 0) {
-        const snapStable = snapshots
-          .map((s) => ({
-            id: transportToStable.get(s.id),
-            monitor: s.monitor,
-            workspace: s.workspace,
-          }))
-          .filter(
-            (s): s is { id: string; monitor: number; workspace: number } => s.id !== undefined,
-          );
-        const visibleStable = commands
-          .map((c) => ({ id: transportToStable.get(c.id), width: c.width, height: c.height }))
-          .filter((v): v is { id: string; width: number; height: number } => v.id !== undefined);
-        const merged = mergeFallback(
-          stacks,
-          floatingStable,
-          mergeAttempted,
-          snapStable,
-          visibleStable,
-          focusedStable,
-        );
-        if (merged.length > 0) {
-          for (const id of merged) {
-            mergeAttempted.add(id);
-          }
-          retile();
-          return;
-        }
-      }
+      // Esmagamento impositivo (ADR 0040): o core entrega a TODA janela rígida ≥ seu mínimo no grid e
+      // comprime as vizinhas — não há mais sinal de overflow nem Merge Fallback/float automático. O
+      // agrupamento em abas é só MANUAL (drag-to-group, zona `center`).
 
       // Abas inativas a ocultar (minimizar): todo membro de stack que não é o ativo (ids de transporte).
       const shouldHide = new Set<string>();
@@ -580,48 +523,8 @@ function retile(): void {
             };
           }
         }
-        // Aplica a geometria das flutuantes (centralizadas pelo core) e as eleva acima do grid.
-        for (const command of floating) {
-          const win = byId.get(command.id);
-          if (!win) {
-            continue;
-          }
-          if (!isLiveWindow(win)) {
-            sawDead = true;
-            continue;
-          }
-          win.frameGeometry = {
-            x: command.x,
-            y: command.y,
-            width: command.width,
-            height: command.height,
-          };
-          // Só escreve quando MUDA: reescrever `keepAbove = true` a cada relayout reemite
-          // `keepAboveChanged` e RE-EMPILHA a janela, podendo roubar o raise/foco de quem o usuário
-          // está usando (a "perda de foco errática"). Com a cascata da Frente C o floating já é raro;
-          // este guarda elimina o churn residual de quem permanece flutuante entre ciclos.
-          if (!win.keepAbove) {
-            win.keepAbove = true;
-          }
-          floatingHere.add(windowId(win));
-        }
-        // Baixa quem deixou de flutuar (voltou ao grid): remove o keepAbove que nós pusemos.
-        for (const sid of floatingAbove) {
-          if (!floatingHere.has(sid)) {
-            const w = stableToWin.get(sid);
-            if (w && isLiveWindow(w)) {
-              w.keepAbove = false;
-            } else if (w) {
-              sawDead = true;
-            }
-          }
-        }
       } finally {
         applying = false;
-      }
-      floatingAbove.clear();
-      for (const sid of floatingHere) {
-        floatingAbove.add(sid);
       }
       stackHidden.clear();
       for (const sid of shouldHide) {
@@ -1076,7 +979,6 @@ workspace.windowRemoved.connect((win) => {
     removeFromOrder(order, id);
     removeIdFromStacks(stacks, id);
     stackHidden.delete(id);
-    mergeAttempted.delete(id);
     everTiled.delete(id);
   } catch (e) {
     // referência morta — segue direto para o retile

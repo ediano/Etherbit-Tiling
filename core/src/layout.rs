@@ -712,15 +712,18 @@ fn track_bounds(start: f64, total: f64, fracs: &[f64], gap: f64) -> Vec<(f64, f6
     out
 }
 
-/// Resolve os tamanhos das tracks RESPEITANDO os mínimos por track (cascata elástica): parte das
-/// frações desejadas e SATURA as tracks que ficariam abaixo do mínimo, redistribuindo o restante às
-/// demais proporcionalmente à fração. Quando NEM os mínimos cabem (`Σ mins > avail`), comprime **sem
-/// sobrepor** (ADR 0031, cascata sempre, nunca flutua): a(s) track(s) `priority` — as que contêm a
-/// janela focada/nova — recebem o mínimo CHEIO (clampado ao espaço) e as demais dividem o resto
-/// proporcionalmente ao próprio mínimo, de modo que `Σ tracks == avail` SEMPRE (ladrilho perfeito,
-/// nunca overflow). Sem `priority` (todas falsas), todas comprimem proporcionalmente. O clamp final por
-/// janela (abaixo do mínimo real) fica a cargo do compositor. Com `mins` todos 0, é idêntico a
-/// `track_bounds`. `priority` deve ter o mesmo comprimento de `fracs`.
+/// Resolve os tamanhos das tracks RESPEITANDO os mínimos por track. Quando os mínimos cabem (`Σ mins ≤
+/// avail`), aplica a saturação elástica clássica: parte das frações desejadas e SATURA as tracks que
+/// ficariam abaixo do mínimo, redistribuindo o restante às demais proporcionalmente à fração.
+///
+/// Quando NEM os mínimos cabem (`Σ mins > avail`), faz o **esmagamento impositivo** (ADR 0040): cada
+/// track com mínimo rígido (`min > eps`) recebe seu mínimo EXATO e as flexíveis (`min ≈ 0`) vão a zero —
+/// aceitando que `Σ tracks > avail` (as últimas tracks transbordam a borda: **deslocamento
+/// compensatório**). Isso quebra a invariante "`Σ tracks == avail`" do [0031], em troca de SEMPRE
+/// entregar à janela rígida um slot satisfatível (o cliente Wayland aceita → a geometria converge → fim
+/// da oscilação). Com `mins` todos 0, é idêntico a `track_bounds`. `priority` (viés da focada do 0031) é
+/// mantido na assinatura por compatibilidade, mas NÃO influencia mais o tamanho — toda rígida recebe seu
+/// mínimo independentemente da prioridade.
 fn solve_tracks(
     start: f64,
     total: f64,
@@ -729,6 +732,9 @@ fn solve_tracks(
     gap: f64,
     priority: &[bool],
 ) -> Vec<(f64, f64)> {
+    // `priority` deixou de afetar o TAMANHO no esmagamento impositivo (ADR 0040); permanece na assinatura
+    // por compatibilidade com os chamadores e por documentar o viés histórico da focada.
+    let _ = priority;
     let n = fracs.len();
     if n == 0 {
         return Vec::new();
@@ -765,25 +771,15 @@ fn solve_tracks(
         }
         size
     } else {
-        // NÃO CABE: comprime sem sobrepor. As tracks `priority` (focada/nova) recebem o mínimo cheio
-        // (clampado a `avail`); as demais dividem o que sobra proporcional ao próprio mínimo. Se nem o
-        // mínimo das prioritárias cabe, elas mesmas comprimem (limite físico — o clamp real é do
-        // compositor). `Σ tracks == avail`, nunca overflow.
-        let pri_sum: f64 = (0..n).filter(|&i| priority[i]).map(|i| mins[i].max(0.0)).sum();
-        let pri_clamped = pri_sum.min(avail);
-        let pri_scale = if pri_sum > 1e-9 { pri_clamped / pri_sum } else { 0.0 };
-        let rest_avail = (avail - pri_clamped).max(0.0);
-        let rest_sum: f64 =
-            (0..n).filter(|&i| !priority[i]).map(|i| mins[i].max(0.0)).sum::<f64>().max(1e-9);
-        (0..n)
-            .map(|i| {
-                if priority[i] {
-                    mins[i].max(0.0) * pri_scale
-                } else {
-                    rest_avail * (mins[i].max(0.0) / rest_sum)
-                }
-            })
-            .collect()
+        // NÃO CABE: esmagamento impositivo (ADR 0040). Como `needed` (o gatilho deste ramo) é a soma dos
+        // mínimos — e as tracks flexíveis contribuem com 0 — aqui SEMPRE `Σ mins rígidos > avail`. Cada
+        // track rígida (`min > eps`) recebe seu mínimo EXATO e as flexíveis (`min ≈ 0`) vão a zero. A
+        // soma excede `avail` (as últimas tracks transbordam a borda → deslocamento compensatório), mas
+        // toda janela rígida ganha um slot satisfatível: o cliente Wayland aceita, a geometria real
+        // coincide com a pedida e o relayout converge (fim da oscilação). O ramo "CABE" acima já entrega
+        // o mínimo a toda track quando `Σ mins ≤ avail` (saturação elástica), então não há perda aqui.
+        const EPS: f64 = 1e-6;
+        mins.iter().map(|m| if m.max(0.0) > EPS { m.max(0.0) } else { 0.0 }).collect()
     };
     let mut out = Vec::with_capacity(n);
     let mut cursor = start;
@@ -1097,10 +1093,10 @@ fn geometry_from_tree(
     let inner = inner_rect(area, opts.outer_gap as f64);
     let mut leaves = Vec::new();
     geom_leaves_min(root, inner, opts.inner_gap as f64, min, focused, &mut leaves);
-    // Detecta "não cabe" ANTES de consumir `leaves`: janelas cujo slot final (pós-cascata) ficou
-    // abaixo do mínimo — o sinal que a ponte usa para o Merge Fallback (abas) em vez de forçar um
-    // frame < min (que o cliente Wayland recusa, transbordando/sendo ejetado).
-    let floating = detect_overflow(&leaves, min);
+    // `floating` é SEMPRE vazio (ADR 0040): o esmagamento impositivo do `solve_tracks` garante que
+    // toda janela rígida receba ≥ seu mínimo dentro do grid, então não há mais "não cabe" a sinalizar.
+    // O campo permanece no struct por retrocompat de DTO (as pontes ainda o desserializam).
+    let floating = Vec::new();
     let mut stack_nodes = HashMap::new();
     collect_stack_nodes(root, &mut stack_nodes);
     for (id, r) in leaves {
@@ -1117,29 +1113,6 @@ fn geometry_from_tree(
         }
     }
     LayoutResult { rects, tab_bars, floating }
-}
-
-/// Detecta as folhas cujo slot final ficou MENOR que o mínimo (em qualquer eixo) mesmo depois de a
-/// cascata elástica (`geom_leaves_min` → `solve_tracks`) ter comprimido o máximo possível. É o gatilho
-/// de "não cabe": só dispara quando a compressão não resolveu. Compara valores ARREDONDADOS (como os
-/// rects efetivamente aplicados, para não dar falso-positivo de 1px) e usa `<` ESTRITO — igualar
-/// exatamente o mínimo não é overflow. A âncora de um stack já carrega o `max` dos membros (+ header)
-/// em `min`, então a checagem cobre stacks pelo slot cheio. Folha sem entrada em `min` é ignorada.
-fn detect_overflow(leaves: &[(u64, Rectf)], min: &MinSizes) -> Vec<WindowRect> {
-    let mut out = Vec::new();
-    for (id, r) in leaves {
-        let Some(&(mw, mh)) = min.get(id) else { continue };
-        if round(r.w) < mw || round(r.h) < mh {
-            out.push(WindowRect {
-                id: *id,
-                x: round(r.x),
-                y: round(r.y),
-                width: round(r.w),
-                height: round(r.h),
-            });
-        }
-    }
-    out
 }
 
 /// Monta o mapa de tamanhos mínimos por FOLHA do grupo a partir das janelas e dos stacks. Uma folha
@@ -2950,21 +2923,22 @@ mod tests {
     }
 
     #[test]
-    fn min_inviavel_comprime_e_sinaliza_overflow() {
-        // ADR 0033: min_width 2000 > área. A cascata comprime proporcionalmente — a restrita satura na
-        // maior largura possível e a vizinha cede; as duas SEGUEM tiladas (nada some), mas como o slot
-        // da restrita ficou < seu mínimo, ela é SINALIZADA em `floating` (overflow) para o Merge Fallback.
+    fn min_inviavel_entrega_min_e_nao_floata() {
+        // ADR 0040: min_width 2000 > área. O esmagamento impositivo entrega à janela rígida seu mínimo
+        // EXATO (2000) e comprime a vizinha flexível a zero — Σ excede a tela (deslocamento
+        // compensatório), mas o slot é satisfatível (o cliente Wayland aceita). NINGUÉM floata.
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
         let windows = vec![win_min(1, 2000, 0), win(2, 0)];
         let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows, None);
-        assert!(
-            res.floating.iter().any(|r| r.id == 1),
-            "slot < min → sinaliza overflow da restrita"
-        );
+        assert!(res.floating.is_empty(), "esmagamento impositivo nunca floata por min");
         assert_eq!(res.rects.len(), 2, "as 2 seguem no grid");
         let r1 = res.rects.iter().find(|r| r.id == 1).unwrap();
-        assert!(r1.width >= 900, "a restrita satura na maior largura possível (got {})", r1.width);
+        assert!(
+            r1.width >= 2000,
+            "a rígida (não-focada) recebe seu mínimo exato (got {})",
+            r1.width
+        );
         assert_no_overlap(&res.rects);
     }
 
@@ -2980,22 +2954,18 @@ mod tests {
     }
 
     #[test]
-    fn impossivel_comprime_e_sinaliza_ambas_em_overflow() {
-        // Caso impossível: as duas com min gigante (> tela). A cascata NÃO some com ninguém — comprime
-        // as duas proporcionalmente, preenchendo a área sem sobreposição. Como AMBAS ficam < o próprio
-        // mínimo, ambas são sinalizadas em `floating` (overflow) — a ponte resolve via Merge Fallback.
+    fn impossivel_entrega_min_a_ambas_sem_floatar() {
+        // Caso impossível: as duas com min gigante (> tela). O esmagamento impositivo entrega a CADA UMA
+        // seu mínimo exato (2000); Σ larguras excede a área (deslocamento compensatório), mas o cursor é
+        // sequencial → SEM sobreposição. `floating` fica vazio.
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
         let windows = vec![win_min(1, 2000, 0), win_min(2, 2000, 0)];
         let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows, None);
-        assert!(
-            res.floating.iter().any(|r| r.id == 1) && res.floating.iter().any(|r| r.id == 2),
-            "as duas estouram o mínimo → overflow"
-        );
+        assert!(res.floating.is_empty(), "esmagamento impositivo nunca floata por min");
         assert_eq!(res.rects.len(), 2, "as 2 seguem tiladas");
-        // Preenchem a área interna sem estourar (Σ larguras + gap ≈ inner), sem sobreposição.
-        let total: i32 = res.rects.iter().map(|r| r.width).sum();
-        assert!(total <= 976, "Σ larguras não estoura a área interna (got {})", total);
+        let w = |id: u64| res.rects.iter().find(|r| r.id == id).unwrap().width;
+        assert!(w(1) >= 2000 && w(2) >= 2000, "cada rígida recebe seu mínimo exato");
         assert_no_overlap(&res.rects);
     }
 
@@ -3008,28 +2978,6 @@ mod tests {
         let m = build_min_sizes(&windows, &stacks, &[1, 2], &opts());
         assert_eq!(m.get(&1), Some(&(500, 200 + 28)));
         assert_eq!(m.get(&2), None);
-    }
-
-    #[test]
-    fn detect_overflow_sinaliza_so_abaixo_do_min_estrito() {
-        // Slot exatamente == min → NÃO é overflow (`<` estrito). 1px abaixo em qualquer eixo → sinaliza.
-        // Folha sem entrada no mapa de mínimos é ignorada.
-        let mut min = MinSizes::new();
-        min.insert(1, (300, 200)); // 1: slot exatamente no mínimo → não estoura
-        min.insert(2, (300, 200)); // 2: 1px abaixo na largura → estoura
-        min.insert(3, (300, 200)); // 3: 1px abaixo na altura → estoura
-        let leaves = vec![
-            (1u64, Rectf { x: 0.0, y: 0.0, w: 300.0, h: 200.0 }),
-            (2u64, Rectf { x: 0.0, y: 0.0, w: 299.0, h: 200.0 }),
-            (3u64, Rectf { x: 0.0, y: 0.0, w: 300.0, h: 199.0 }),
-            (4u64, Rectf { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }), // sem min → ignorada
-        ];
-        let over = detect_overflow(&leaves, &min);
-        let ids: Vec<u64> = over.iter().map(|r| r.id).collect();
-        assert!(!ids.contains(&1), "slot == min não é overflow");
-        assert!(ids.contains(&2), "1px abaixo na largura → overflow");
-        assert!(ids.contains(&3), "1px abaixo na altura → overflow");
-        assert!(!ids.contains(&4), "folha sem min é ignorada");
     }
 
     #[test]
@@ -3099,32 +3047,34 @@ mod tests {
     }
 
     #[test]
-    fn focada_satura_no_min_vizinho_comprime() {
-        // A janela restrita (1) com min 2000 > área, e FOCADA: pela cascata com viés (ADR 0031), a
-        // focada satura na maior largura possível do nó e o vizinho comprime — NINGUÉM flutua, nada
-        // se sobrepõe. A focada é a mais larga (recebe a prioridade na saturação).
+    fn focada_rigida_entrega_min_vizinho_comprime() {
+        // ADR 0040: a janela restrita (1) com min 2000 > área recebe seu mínimo EXATO via esmagamento
+        // impositivo; a vizinha flexível comprime a zero. Ninguém flutua, nada se sobrepõe.
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], Some(1), &area, &opts());
         let windows = vec![win_min(1, 2000, 0), win(2, 0)];
         let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows, Some(1));
-        assert!(res.floating.iter().any(|r| r.id == 1), "a focada satura abaixo do min → overflow");
+        assert!(res.floating.is_empty(), "esmagamento impositivo nunca floata por min");
         assert_eq!(res.rects.len(), 2, "as 2 seguem no grid");
         let w = |id: u64| res.rects.iter().find(|r| r.id == id).unwrap().width;
-        assert!(w(1) >= w(2), "a focada satura (mais larga); o vizinho cede");
+        assert!(w(1) >= 2000, "a rígida recebe seu mínimo exato (got {})", w(1));
+        assert!(w(1) >= w(2), "a rígida é a mais larga; a vizinha cede");
         assert_no_overlap(&res.rects);
     }
 
     #[test]
-    fn focada_mantem_min_demais_comprimem() {
-        // Três janelas, a focada (1) com min inviável: a cascata com viés mantém a focada larga e
-        // comprime os não-focados (2 e 3). Ninguém flutua; a focada é sempre a maior; sem sobreposição.
+    fn focada_rigida_inviavel_entrega_min_demais_comprimem() {
+        // Três janelas, a focada (1) com min inviável (4000): o esmagamento impositivo dá à focada seu
+        // mínimo exato e comprime os flexíveis (2 e 3) a zero. Ninguém flutua; a focada é a maior; sem
+        // sobreposição.
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], Some(1), &area, &opts());
         let windows = vec![win_min(1, 4000, 0), win(2, 0), win(3, 0)];
         let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2, 3], &windows, Some(1));
-        assert!(res.floating.iter().any(|r| r.id == 1), "a focada com min inviável → overflow");
+        assert!(res.floating.is_empty(), "esmagamento impositivo nunca floata por min");
         assert_eq!(res.rects.len(), 3, "as 3 seguem no grid");
         let w = |id: u64| res.rects.iter().find(|r| r.id == id).unwrap().width;
+        assert!(w(1) >= 4000, "a focada recebe seu mínimo exato (got {})", w(1));
         assert!(w(1) >= w(2) && w(1) >= w(3), "a focada nunca cede a prioridade");
         assert_no_overlap(&res.rects);
     }
@@ -3144,18 +3094,41 @@ mod tests {
     }
 
     #[test]
-    fn solve_tracks_satura_proporcional_no_impossivel() {
-        // ADR 0031: os dois mínimos (600+600=1200) > avail (992). SEM prioridade, comprime
-        // PROPORCIONALMENTE (scale = 992/1200): ambas ≈ 496, Σ == avail (nunca overflow/sobreposição).
+    fn solve_tracks_impositivo_entrega_min_a_todas_as_rigidas() {
+        // ADR 0040: os dois mínimos (600+600=1200) > avail (992). O esmagamento impositivo entrega a
+        // CADA track rígida seu mínimo EXATO (600), independentemente de prioridade; Σ excede avail
+        // (deslocamento compensatório). O cursor é sequencial, então não há sobreposição.
         let d = solve_tracks(0.0, 1000.0, &[0.5, 0.5], &[600.0, 600.0], 8.0, &[false, false]);
-        let scale = 992.0 / 1200.0;
-        assert!((d[0].1 - 600.0 * scale).abs() < 1e-6 && (d[1].1 - 600.0 * scale).abs() < 1e-6);
-        assert!((d[0].1 + d[1].1 - 992.0).abs() < 1e-6, "Σ tracks == avail (sem overflow)");
-        // COM prioridade na 1ª track: ela recebe o mínimo CHEIO (600) e a 2ª fica com o resto (392).
+        assert!(
+            (d[0].1 - 600.0).abs() < 1e-6 && (d[1].1 - 600.0).abs() < 1e-6,
+            "cada rígida recebe seu mínimo exato"
+        );
+        // Offsets sequenciais (sem sobreposição): track1 começa após track0 + gap.
+        assert!(
+            (d[1].0 - (d[0].0 + d[0].1 + 8.0)).abs() < 1e-6,
+            "cursor sequencial, sem sobreposição"
+        );
+        // priority NÃO altera mais o tamanho (ADR 0040): com prioridade, o resultado é idêntico.
         let b = solve_tracks(0.0, 1000.0, &[0.5, 0.5], &[600.0, 600.0], 8.0, &[true, false]);
-        assert!((b[0].1 - 600.0).abs() < 1e-6, "a track prioritária satura no mínimo cheio");
-        assert!((b[1].1 - 392.0).abs() < 1e-6, "a vizinha cede o resto");
-        assert!((b[0].1 + b[1].1 - 992.0).abs() < 1e-6, "Σ tracks == avail");
+        assert!(
+            (b[0].1 - 600.0).abs() < 1e-6 && (b[1].1 - 600.0).abs() < 1e-6,
+            "priority não muda o tamanho no esmagamento impositivo"
+        );
+    }
+
+    #[test]
+    fn solve_tracks_rigida_nao_focada_recebe_min() {
+        // Regressão direta do bug de oscilação (ADR 0040): uma track rígida que NÃO é a prioritária
+        // recebia menos que o mínimo (cliente Wayland recusava → loop). Agora recebe seu mínimo mesmo
+        // sendo a não-prioritária. Prioridade na track 0 (flexível); a track 1 (rígida, min 600) é a
+        // não-prioritária. avail = 500 < 600 → ramo impositivo.
+        let t = solve_tracks(0.0, 500.0, &[0.5, 0.5], &[0.0, 600.0], 0.0, &[true, false]);
+        assert!(
+            (t[1].1 - 600.0).abs() < 1e-6,
+            "a rígida não-focada recebe seu mínimo (got {})",
+            t[1].1
+        );
+        assert!((t[0].1 - 0.0).abs() < 1e-6, "a flexível absorve a compressão (vai a zero)");
     }
 
     #[test]

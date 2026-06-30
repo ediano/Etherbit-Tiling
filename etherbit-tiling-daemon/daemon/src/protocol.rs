@@ -581,10 +581,9 @@ pub fn sync_windows_dto(
                 // Reconcilia a árvore mesmo se o grupo estiver desligado (mantém a topologia).
                 let tree = reconcile(&prev, &group_ids, &stacks, focused_opt, area, &opts);
                 if !state.disabled_groups.contains(&(monitor, workspace)) {
-                    // `compute_constrained` respeita os mínimos (splits assimétricos) e isola por
-                    // auto-floating quem não cabe — recebe a árvore COMPLETA e poda só p/ geometria.
-                    // `focused_opt` PROTEGE a janela nova/em foco do auto-float: ela mantém o mínimo
-                    // no grid e os vizinhos comprimem em cascata (ADR 0021).
+                    // `compute_constrained` respeita os mínimos via esmagamento impositivo (ADR 0040):
+                    // toda janela rígida recebe ≥ seu mínimo no grid e os vizinhos comprimem em cascata.
+                    // `res.floating` é sempre vazio (não há mais auto-floating por overflow de min).
                     let res = compute_constrained(
                         &tree,
                         area,
@@ -598,8 +597,8 @@ pub fn sync_windows_dto(
                     tab_bars.extend(res.tab_bars.iter().map(TabBarDto::from));
                     floating.extend(res.floating.iter().map(RectDto::from));
                 }
-                // Persiste a árvore COMPLETA (não a podada): a janela flutuante volta a tilar
-                // quando o espaço crescer, lembrando sua posição.
+                // Persiste a árvore reconciliada (topologia + ratios): o relayout seguinte reproduz os
+                // slots quando o espaço mudar, lembrando a posição de cada janela.
                 out_trees.push(tree_to_dto(monitor, workspace, &tree));
             }
             // Sem área conhecida para este monitor: não posiciona; preserva a árvore anterior.
@@ -1025,15 +1024,15 @@ mod tests {
     }
 
     #[test]
-    fn sync_oversized_min_comprime_e_sinaliza_overflow() {
-        // ADR 0033: janela com min_width maior que a área. A cascata comprime e ela segue tilada, mas
-        // como o slot ficou < o mínimo, ela é SINALIZADA em `floating` (overflow) — a ponte resolve via
-        // Merge Fallback. As duas seguem no grid.
+    fn sync_oversized_min_entrega_min_e_nao_floata() {
+        // ADR 0040: janela com min_width maior que a área. O esmagamento impositivo entrega à rígida seu
+        // mínimo EXATO e comprime a vizinha — NINGUÉM floata; as duas seguem no grid.
         let windows = format!("[{},{}]", win_json_min(1, "store", 2000, 0), win_json(2, "b"));
         let out = sync_windows(&windows, AREAS, "", &[], OPTS).expect("ok");
         let res = layout_of(&out);
-        assert!(res.floating.iter().any(|r| r.id == 1), "slot < min → overflow propagado ao DTO");
-        assert_eq!(res.rects.iter().filter(|r| r.id == 1).count(), 1, "a restrita segue tilada");
+        assert!(res.floating.is_empty(), "esmagamento impositivo nunca floata por min");
+        let r1 = res.rects.iter().find(|r| r.id == 1).expect("a restrita segue tilada");
+        assert!(r1.width >= 2000, "a rígida recebe seu mínimo exato (got {})", r1.width);
         assert_eq!(res.rects.iter().filter(|r| r.id == 2).count(), 1);
     }
 
@@ -1046,23 +1045,22 @@ mod tests {
     }
 
     // --- Diagnóstico de "N janelas → 0 rects": classifica cada caminho que esvazia o grid, separando
-    // o COMPORTAMENTO ESPERADO (auto-floating / filtro / monitor desconhecido / grupo desligado) de uma
-    // REGRESSÃO genuína (árvore reconciliada vazia apesar de haver janelas tileáveis). ---
+    // o COMPORTAMENTO ESPERADO (filtro / monitor desconhecido / grupo desligado) de uma REGRESSÃO
+    // genuína (árvore reconciliada vazia apesar de haver janelas tileáveis). ---
 
     #[test]
-    fn sync_all_oversized_min_comprime_e_sinaliza_overflow() {
-        // ADR 0033: TODAS as janelas com min maior que a área. A cascata comprime as duas
-        // proporcionalmente e elas seguem tiladas (2 rects), mas ambas estouram o próprio mínimo →
-        // ambas em `floating` (overflow), propagado ao DTO.
+    fn sync_all_oversized_min_entrega_min_a_ambas_sem_floatar() {
+        // ADR 0040: TODAS as janelas com min maior que a área. O esmagamento impositivo entrega a cada
+        // uma seu mínimo exato (Σ excede a tela → deslocamento compensatório), as duas seguem tiladas
+        // (2 rects) e NINGUÉM floata.
         let windows =
             format!("[{},{}]", win_json_min(1, "a", 2000, 0), win_json_min(2, "b", 2000, 0));
         let out = sync_windows(&windows, AREAS, "", &[], OPTS).expect("ok");
         let res = layout_of(&out);
         assert_eq!(res.rects.len(), 2, "min gigante comprime, não some do grid");
-        assert!(
-            res.floating.iter().any(|r| r.id == 1) && res.floating.iter().any(|r| r.id == 2),
-            "ambas estouram → overflow no DTO"
-        );
+        assert!(res.floating.is_empty(), "esmagamento impositivo nunca floata por min");
+        let w = |id: u64| res.rects.iter().find(|r| r.id == id).unwrap().width;
+        assert!(w(1) >= 2000 && w(2) >= 2000, "cada rígida recebe seu mínimo exato");
     }
 
     #[test]

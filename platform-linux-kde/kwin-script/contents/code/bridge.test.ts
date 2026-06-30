@@ -20,7 +20,6 @@ import {
   resolveHotZone,
   serializeScope,
   parseTabBars,
-  mergeFallback,
   addToStack,
   removeIdFromStacks,
   setActiveMember,
@@ -365,32 +364,6 @@ describe('Merge Fallback / abas (ADR 0033, paridade com GNOME — ids string)', 
     expect(setActiveMember(stacks, 'a')).toBe(true);
     expect(stacks.get(key)?.[0]?.active).toBe('a');
     expect(setActiveMember(stacks, 'a')).toBe(false); // já ativa → sem mudança
-  });
-
-  it('mergeFallback agrupa a janela em overflow no alvo FOCADO do mesmo grupo', () => {
-    const stacks = new Map<string, Stack[]>();
-    const attempted = new Set<string>();
-    const snapshots = [
-      { id: 'big', monitor: 0, workspace: 0 },
-      { id: 'foco', monitor: 0, workspace: 0 },
-    ];
-    const visible = [{ id: 'foco', width: 800, height: 600 }];
-    // 'big' estourou o min (não está em `visible`); o foco 'foco' é o alvo do merge.
-    const merged = mergeFallback(stacks, ['big'], attempted, snapshots, visible, 'foco');
-    expect(merged).toEqual(['big']);
-    expect(stacks.get(key)).toEqual([{ members: ['foco', 'big'], active: 'big' }]);
-  });
-
-  it('mergeFallback ignora ids já tentados (guard anti-loop)', () => {
-    const stacks = new Map<string, Stack[]>();
-    const attempted = new Set<string>(['big']);
-    const snapshots = [
-      { id: 'big', monitor: 0, workspace: 0 },
-      { id: 'foco', monitor: 0, workspace: 0 },
-    ];
-    const visible = [{ id: 'foco', width: 800, height: 600 }];
-    expect(mergeFallback(stacks, ['big'], attempted, snapshots, visible, 'foco')).toEqual([]);
-    expect(stacks.has(key)).toBe(false);
   });
 
   it('parseTabBars lê as barras do layout_json (objeto) e descarta malformadas', () => {

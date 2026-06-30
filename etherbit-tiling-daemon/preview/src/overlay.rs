@@ -54,7 +54,10 @@ use smithay_client_toolkit::{
     shm::{slot::SlotPool, Shm, ShmHandler},
 };
 
-use crate::tabs::{hit_test_local, layout_slots, PointerButton, TabAction, TabBarView, TabSlot};
+use crate::tabs::{
+    hit_test_local, layout_slots, menu_hit_test, menu_size, BarHit, MenuModel, PointerButton,
+    TabAction, TabBarView, TabSlot, MENU_ITEM_H, MENU_PAD_X,
+};
 use crate::text;
 
 /// Retângulo físico do preview (coordenadas globais do compositor).
@@ -98,6 +101,15 @@ struct TabSurface {
     slots: Vec<TabSlot>,
 }
 
+/// A superfície do menu de contexto da guia (ADR 0040): a `LayerSurface`, o modelo (para qual
+/// `(stack_id, member_id)` age e seus itens) e o tamanho desenhado.
+struct MenuSurface {
+    layer: LayerSurface,
+    model: MenuModel,
+    w: i32,
+    h: i32,
+}
+
 struct App {
     registry_state: RegistryState,
     output_state: OutputState,
@@ -113,6 +125,8 @@ struct App {
     rect: Option<PreviewRect>,
     /// Superfícies das BARRAS DE ABAS (uma por grupo).
     tab_surfaces: Vec<TabSurface>,
+    /// Menu de contexto aberto (no máximo um por vez). `None` = nenhum menu aberto. ADR 0040.
+    menu: Option<MenuSurface>,
     pointer: Option<wl_pointer::WlPointer>,
     /// Fila de ações (clique) drenada pela interface D-Bus `Tabs`.
     actions: Arc<Mutex<Vec<TabAction>>>,
@@ -254,9 +268,30 @@ impl App {
                 });
             }
         }
+        // Se o menu aberto referencia uma guia que sumiu (stack dissolvido ou membro removido), fecha-o
+        // para não apontar para nada (ADR 0040).
+        if let Some(menu) = self.menu.as_ref() {
+            let still = bars.iter().any(|b| {
+                b.stack_id == menu.model.stack_id
+                    && b.tabs.iter().any(|t| t.member_id == menu.model.member_id)
+            });
+            if !still {
+                self.close_menu();
+            }
+        }
     }
 
-    /// Resolve um clique do ponteiro sobre uma das barras: enfileira a ação e acorda o KWin Script.
+    /// Enfileira uma `TabAction` e acorda o KWin Script (drena via `DrainTabActions`). Best-effort.
+    fn enqueue_action(&self, action: TabAction) {
+        if let Ok(mut q) = self.actions.lock() {
+            q.push(action);
+        }
+        let _ = self.wake_tx.send(());
+    }
+
+    /// Resolve um clique do ponteiro. Prioridade (ADR 0040): se há menu de contexto aberto, o clique o
+    /// resolve (item → ungroup) ou o descarta (dismiss); só então os cliques nas barras são roteados —
+    /// esquerdo ativa/fecha, direito ABRE o menu de contexto da guia.
     fn on_pointer_press(&mut self, surface: &wl_surface::WlSurface, pos: (f64, f64), button: u32) {
         let pb = match button {
             BTN_LEFT => PointerButton::Left,
@@ -265,17 +300,104 @@ impl App {
         };
         let px = pos.0 as i32;
         let py = pos.1 as i32;
+
+        // 1) Menu aberto tem prioridade: um único clique resolve o item OU descarta o menu.
+        if let Some(menu) = self.menu.as_ref() {
+            if menu.layer.wl_surface() == surface {
+                // Dentro do menu: esquerdo sobre o item → ação; qualquer outro botão/ponto → dismiss.
+                let action = if pb == PointerButton::Left {
+                    menu_hit_test(&menu.model, px, py)
+                } else {
+                    None
+                };
+                if let Some(action) = action {
+                    self.enqueue_action(action);
+                }
+            }
+            // Clique dentro (sem item) OU fora do menu: em ambos os casos o menu fecha. O clique fora
+            // NÃO é repassado à barra (primeira interação só descarta o popup — padrão de menus).
+            self.close_menu();
+            return;
+        }
+
+        // 2) Sem menu: roteia o clique na barra cuja superfície casa.
+        let mut open: Option<(String, String, i32, i32)> = None;
         for ts in &self.tab_surfaces {
             if ts.layer.wl_surface() == surface {
-                if let Some(action) = hit_test_local(&ts.view.stack_id, &ts.slots, px, py, pb) {
-                    if let Ok(mut q) = self.actions.lock() {
-                        q.push(action);
+                match hit_test_local(&ts.view.stack_id, &ts.slots, px, py, pb) {
+                    Some(BarHit::Action(action)) => self.enqueue_action(action),
+                    Some(BarHit::OpenContextMenu { stack_id, member_id }) => {
+                        // Posição GLOBAL do cursor = origem da barra (view.x, view.y) + offset local.
+                        open = Some((stack_id, member_id, ts.view.x + px, ts.view.y + py));
                     }
-                    // Acorda o script (drena via DrainTabActions). Best-effort.
-                    let _ = self.wake_tx.send(());
+                    None => {}
                 }
-                return;
+                break;
             }
+        }
+        if let Some((stack_id, member_id, ax, ay)) = open {
+            self.open_menu(&stack_id, &member_id, ax, ay);
+        }
+    }
+
+    /// Abre o menu de contexto da guia `(stack_id, member_id)` ancorado na posição GLOBAL `(anchor_x,
+    /// anchor_y)` do cursor. Substitui qualquer menu anterior (só um por vez). O primeiro desenho ocorre
+    /// no `configure`. Clamp best-effort à união dos outputs (v1, ADR 0040).
+    fn open_menu(&mut self, stack_id: &str, member_id: &str, anchor_x: i32, anchor_y: i32) {
+        self.close_menu();
+        let model = MenuModel::for_tab(stack_id, member_id);
+        let (w, h) = menu_size(&model);
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        let (mut ax, mut ay) = (anchor_x.max(0), anchor_y.max(0));
+        if let Some((bx, by)) = self.output_bounds() {
+            ax = ax.min((bx - w).max(0));
+            ay = ay.min((by - h).max(0));
+        }
+        let surface = self.compositor.create_surface(&self.qh);
+        let layer = self.layer_shell.create_layer_surface(
+            &self.qh,
+            surface,
+            Layer::Overlay,
+            Some("etherbit-tab-menu"),
+            None,
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::LEFT);
+        layer.set_size(w as u32, h as u32);
+        layer.set_margin(ay, 0, 0, ax);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        // Input region PADRÃO (toda a superfície) → recebe os cliques. Primeiro draw no configure.
+        layer.commit();
+        self.menu = Some(MenuSurface { layer, model, w, h });
+    }
+
+    /// Fecha o menu de contexto (o drop da `LayerSurface` desmonta a superfície no compositor).
+    fn close_menu(&mut self) {
+        self.menu = None;
+    }
+
+    /// União (x+w, y+h) máxima dos outputs com geometria lógica conhecida — para o clamp do menu.
+    /// `None` se nenhum output expõe geometria (fica sem clamp).
+    fn output_bounds(&self) -> Option<(i32, i32)> {
+        let mut max_x = 0;
+        let mut max_y = 0;
+        let mut found = false;
+        for output in self.output_state.outputs() {
+            if let Some(info) = self.output_state.info(&output) {
+                if let (Some((lx, ly)), Some((sw, sh))) = (info.logical_position, info.logical_size)
+                {
+                    max_x = max_x.max(lx + sw);
+                    max_y = max_y.max(ly + sh);
+                    found = true;
+                }
+            }
+        }
+        if found {
+            Some((max_x, max_y))
+        } else {
+            None
         }
     }
 
@@ -334,6 +456,53 @@ fn draw_bar(pool: &mut SlotPool, font: Option<&FontVec>, ts: &TabSurface) {
     let surface = ts.layer.wl_surface();
     if let Err(err) = buffer.attach_to(surface) {
         eprintln!("Etherbit tabs — attach buffer falhou: {err}");
+        return;
+    }
+    surface.damage_buffer(0, 0, w, h);
+    surface.commit();
+}
+
+/// Desenha o menu de contexto no seu buffer SHM: fundo opaco + o rótulo de cada item (ADR 0040). A v1
+/// tem um único item ("Desagrupar"), então a altura da superfície é `MENU_ITEM_H` e o rótulo fica
+/// centralizado verticalmente (o `draw_text` centra na altura do canvas).
+fn draw_menu(pool: &mut SlotPool, font: Option<&FontVec>, menu: &MenuSurface) {
+    let w = menu.w;
+    let h = menu.h;
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let stride = w * 4;
+    let (buffer, canvas) = match pool.create_buffer(w, h, stride, wl_shm::Format::Argb8888) {
+        Ok(pair) => pair,
+        Err(err) => {
+            eprintln!("Etherbit menu — create_buffer falhou: {err}");
+            return;
+        }
+    };
+    {
+        fill_rect(canvas, w, h, 0, 0, w, h, BAR_BG);
+        if let Some(font) = font {
+            let font_px = (MENU_ITEM_H as f32 * 0.52).clamp(11.0, 16.0);
+            // v1: item único — centralizado na altura total (= MENU_ITEM_H). Multi-item (offset vertical
+            // por linha) fica como evolução futura.
+            if let Some(item) = menu.model.items.first() {
+                text::draw_text(
+                    canvas,
+                    w,
+                    h,
+                    font,
+                    &item.label,
+                    MENU_PAD_X,
+                    w - MENU_PAD_X,
+                    TEXT_ACTIVE,
+                    font_px,
+                );
+            }
+        }
+    }
+    let surface = menu.layer.wl_surface();
+    if let Err(err) = buffer.attach_to(surface) {
+        eprintln!("Etherbit menu — attach buffer falhou: {err}");
         return;
     }
     surface.damage_buffer(0, 0, w, h);
@@ -501,6 +670,9 @@ impl LayerShellHandler for App {
         if self.layer.as_ref().map(|l| l.wl_surface()) == Some(layer.wl_surface()) {
             self.layer = None;
         }
+        if self.menu.as_ref().map(|m| m.layer.wl_surface()) == Some(layer.wl_surface()) {
+            self.menu = None;
+        }
         self.tab_surfaces.retain(|ts| ts.layer.wl_surface() != layer.wl_surface());
     }
 
@@ -521,6 +693,13 @@ impl LayerShellHandler for App {
                 (r.width.max(0) as u32, r.height.max(0) as u32)
             };
             self.draw_preview(w, h);
+            return;
+        }
+        // Menu de contexto?
+        if self.menu.as_ref().map(|m| m.layer.wl_surface()) == Some(layer.wl_surface()) {
+            if let Some(menu) = self.menu.as_ref() {
+                draw_menu(&mut self.pool, self.font.as_ref(), menu);
+            }
             return;
         }
         // Barra de abas?
@@ -610,6 +789,7 @@ pub fn run(
         layer: None,
         rect: None,
         tab_surfaces: Vec::new(),
+        menu: None,
         pointer: None,
         actions,
         wake_tx,

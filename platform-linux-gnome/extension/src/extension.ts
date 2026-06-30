@@ -31,7 +31,6 @@ import {
   serializeState,
   parseLayout,
   parseTabBars,
-  parseFloating,
   parseDropped,
   isResizable,
   clampGeometry,
@@ -48,7 +47,6 @@ import {
   toggleStackGroup,
   toggleGroupDisabled,
   addToStack,
-  mergeFallback,
   setActiveMember,
   type Stack,
   type TabBar,
@@ -159,16 +157,10 @@ export default class EtherbitTilingExtension extends Extension {
   //  - `_disabledGroups`: grupos com tiling desligado (Super+Y);
   //  - `_groupTiled`: ids tiláveis por grupo no último layout (base do Super+S);
   //  - `_stackHidden`: ids que NÓS minimizamos (abas inativas), para restaurar depois.
-  //  - `_floatingAbove`: ids que NÓS elevamos (auto-floating), para baixar ao voltarem ao grid.
   private _stacks = new Map<string, Stack[]>();
   private _disabledGroups = new Set<string>();
   private _groupTiled = new Map<string, number[]>();
   private _stackHidden = new Set<number>();
-  private _floatingAbove = new Set<number>();
-  // Merge Fallback (ADR 0030): ids já agrupados em aba por colapso de min-size. Evita o loop
-  // sync↔merge — se a janela AINDA floata após o merge (tela minúscula), deixa de tentar e cai no
-  // floating legado como rede de segurança. Limpo quando o id deixa de floatar.
-  private _mergeAttempted = new Set<number>();
   // Spawn-unmaximize (ciclo de vida de maximização): ids que o core JÁ tilou ao menos uma vez. Uma
   // janela que é maximizada e NUNCA foi tilada "nasceu maximizada" → forçamos `unmaximize` para ela
   // entrar na Distribuição Cíclica. Já uma janela tilada que o usuário maximiza manualmente é
@@ -743,40 +735,9 @@ export default class EtherbitTilingExtension extends Extension {
     // a tela — `total > aplicadas` deixa de parecer bug quando é só uma janela não-tileável (ex.:
     // desktop/DING) ou uma "nascida maximizada" ainda fora do grid (`excluded_maximized`).
     const dropped = parseDropped(layoutJson);
-    // Sinal de OVERFLOW (ADR 0033): janelas cujo slot ficou < o mínimo mesmo após a cascata. Alimenta
-    // o Merge Fallback abaixo (colapsar em abas, onde cada aba recebe o slot inteiro) — o caminho que
-    // resolve apps de min grande no Wayland (ex.: Ubuntu Store). O float-and-elevate legado (mais
-    // abaixo) fica como REDE: só age se um id ainda estourar após o merge (tela minúscula).
-    const floating = parseFloating(layoutJson);
-    const floatingIds = new Set<number>(floating.map((c) => c.id));
-
-    // Merge Fallback (ADR 0030, GNOME-only): janela que floataria por colapso de min-size é agrupada
-    // como ABA no quadrante focado, em vez de flutuar. Limpa o guard dos ids que já não floatam (para
-    // re-merge num colapso futuro); se um id AINDA floata após o merge (tela minúscula), o guard o
-    // mantém e ele cai no floating legado abaixo. Um merge dispara novo relayout: o slot deixa de
-    // estourar o mínimo (o min do stack é o `max` dos membros) e `floating` esvazia.
-    for (const id of [...this._mergeAttempted]) {
-      if (!floatingIds.has(id)) {
-        this._mergeAttempted.delete(id);
-      }
-    }
-    if (floating.length > 0) {
-      const merged = mergeFallback(
-        this._stacks,
-        floating.map((c) => c.id),
-        this._mergeAttempted,
-        snapshots,
-        commands,
-        focusedId,
-      );
-      if (merged.length > 0) {
-        for (const id of merged) {
-          this._mergeAttempted.add(id);
-        }
-        this._scheduleRelayout();
-        return;
-      }
-    }
+    // Esmagamento impositivo (ADR 0040): o core entrega a TODA janela rígida ≥ seu mínimo no grid e
+    // comprime as vizinhas em cascata — não há mais sinal de overflow nem Merge Fallback/float
+    // automático. O agrupamento em abas é só MANUAL (drag-to-group, zona `center`).
 
     // Abas inativas a ocultar (minimizar): todo membro de stack que não é o ativo.
     const shouldHide = new Set<number>();
@@ -794,7 +755,6 @@ export default class EtherbitTilingExtension extends Extension {
     // geometria. Resetada em `_releaseToFloating` p/ a chave geral religar mesmo com layout igual.
     const layoutSig = JSON.stringify([
       commands,
-      floating,
       tabBars,
       [...shouldHide].sort((a, b) => a - b),
       this._config.corner_radius,
@@ -817,7 +777,7 @@ export default class EtherbitTilingExtension extends Extension {
         ? ` descartadas=[${dropped.map((d) => `${d.id}:${d.reason}`).join(', ')}]`
         : '';
     console.log(
-      `[etherbit] relayout: total=${snapshots.length} aplicadas=${commands.length} flutuantes=${floating.length}${droppedDesc}`,
+      `[etherbit] relayout: total=${snapshots.length} aplicadas=${commands.length}${droppedDesc}`,
     );
     if (commands.length > 0) {
       console.log(
@@ -918,46 +878,6 @@ export default class EtherbitTilingExtension extends Extension {
           }
         }
       }
-      // Baixa quem deixou de flutuar (voltou ao grid): remove o "always-on-top" que nós pusemos.
-      // `unmake_above()` também mexe no stack → mesmo adiamento.
-      for (const id of this._floatingAbove) {
-        if (!floatingIds.has(id)) {
-          const w = byId.get(id);
-          if (w) {
-            this._enqueueRestack(() => {
-              if (this._isWindowLive(w)) {
-                w.unmake_above();
-              }
-            });
-          }
-        }
-      }
-      // Aplica a geometria das flutuantes (centralizadas pelo core) e as eleva acima das tiladas.
-      // A geometria (`move_resize_frame`) não toca no stack, então é aplicada já; só o
-      // `make_above()`/`raise()` é ADIADO para o BEFORE_REDRAW (evita `stack_position >= 0`).
-      for (const command of floating) {
-        const window = byId.get(command.id);
-        if (!window) {
-          continue;
-        }
-        if (!this._isWindowLive(window)) {
-          continue;
-        }
-        try {
-          // Clamp ≥ 1px: rect inválido quebraria o framebuffer do Cogl (ver janelas tiladas acima).
-          const g = clampGeometry(command);
-          window.move_resize_frame(false, g.x, g.y, g.width, g.height);
-        } catch (error) {
-          console.error(`Etherbit Tiling: falha ao posicionar a flutuante ${command.id}: ${error}`);
-        }
-        this._enqueueRestack(() => {
-          if (!this._isWindowLive(window)) {
-            return;
-          }
-          window.make_above();
-          window.raise();
-        });
-      }
     } finally {
       // Se restacks foram ADIADOS (mexem foco/stack), a supressão segue até o drain deles
       // (`_enqueueRestack`); só liberamos aqui quando NENHUM foi enfileirado neste ciclo.
@@ -966,7 +886,6 @@ export default class EtherbitTilingExtension extends Extension {
       }
     }
     this._stackHidden = shouldHide;
-    this._floatingAbove = floatingIds;
 
     // Ids tiláveis por grupo (singles + membros de stacks) — base do toggle de abas (Super+S).
     this._groupTiled = this._collectGroupTiled(commands, tabBars, byId);
@@ -1495,8 +1414,8 @@ export default class EtherbitTilingExtension extends Extension {
   }
 
   /// Libera as janelas do grid para o comportamento flutuante do sistema (chave geral desligada):
-  /// desminimiza abas, baixa as elevadas, descarta as barras de aba e remove o efeito de cantos. NÃO
-  /// limpa o estado leve (ordem/stacks/árvores) — assim religar o tiling reorganiza tudo de volta.
+  /// desminimiza abas, descarta as barras de aba e remove o efeito de cantos. NÃO limpa o estado leve
+  /// (ordem/stacks/árvores) — assim religar o tiling reorganiza tudo de volta.
   private _releaseToFloating(): void {
     // Chave geral DESLIGADA libera as janelas: invalida a assinatura para que RELIGAR sempre reaplique
     // o grid, mesmo que o layout calculado coincida com o último de antes do desligamento.
@@ -1512,10 +1431,9 @@ export default class EtherbitTilingExtension extends Extension {
     }
   }
 
-  /// Restaura o estado que NÓS impusemos: desminimiza abas inativas e baixa (remove always-on-top)
-  /// as janelas que elevamos por auto-floating. Chamado no disable/cleanup.
+  /// Restaura o estado que NÓS impusemos: desminimiza as abas inativas. Chamado no disable/cleanup.
   private _restoreHiddenWindows(): void {
-    if (this._stackHidden.size === 0 && this._floatingAbove.size === 0) {
+    if (this._stackHidden.size === 0) {
       return;
     }
     const byId = new Map<number, Meta.Window>();
@@ -1528,12 +1446,7 @@ export default class EtherbitTilingExtension extends Extension {
     for (const id of this._stackHidden) {
       byId.get(id)?.unminimize();
     }
-    for (const id of this._floatingAbove) {
-      byId.get(id)?.unmake_above();
-    }
     this._stackHidden.clear();
-    this._floatingAbove.clear();
-    this._mergeAttempted.clear();
   }
 
   /// Metadados brutos de uma janela (espelham o WindowDto do daemon). A filtragem é do core.
@@ -1547,10 +1460,9 @@ export default class EtherbitTilingExtension extends Extension {
     const resizable = this._isResizable(window);
     const maximizable = window.can_maximize();
     // Min-size REAL (ADR 0033, inverte o "força frame, ignora hints" do 0021/0028): no Wayland o
-    // cliente RECUSA encolher abaixo do seu `xdg min_size` — zerar o hint não fixa o app no slot,
-    // só o faz transbordar/ser ejetado para flutuante. Enviamos o mínimo real e deixamos o core
-    // sinalizar "não cabe" (overflow → `floating`) quando o quadrante for menor que o app; a ponte
-    // resolve via Merge Fallback (abas), onde cada aba recebe o slot inteiro.
+    // cliente RECUSA encolher abaixo do seu `xdg min_size` — zerar o hint não fixa o app no slot, só
+    // o faz transbordar/ser ejetado para flutuante. Enviamos o mínimo real e o core o respeita via
+    // esmagamento impositivo (ADR 0040): a janela rígida recebe ≥ seu mínimo e os vizinhos comprimem.
     const [minWidth, minHeight] = this._minSize(window);
     return {
       id: window.get_stable_sequence(),
