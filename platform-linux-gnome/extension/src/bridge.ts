@@ -337,6 +337,34 @@ export interface Rect {
   height: number;
 }
 
+/// Verifica se a geometria que NÓS aplicamos "pegou" na tela (dedup gated por realização, ADR 0038).
+/// `last` = rects que committamos (por id); `current` = `get_frame_rect()` atuais. Devolve `true` se
+/// todo id de `last` que ainda existe em `current` bate dentro de `epsilon` (px). Ids ausentes em
+/// `current` (janela fechada/maximizada — o chamador os exclui) são ignorados; `last` vazio → `true`.
+/// No boot, o compositor descarta o `move_resize_frame` em janelas ainda não realizadas: o frame não
+/// bate → NÃO convergiu → o dedup do `_lastLayoutSig` não pode curto-circuitar a reaplicação.
+export function geometryConverged(
+  last: Map<number, Rect>,
+  current: Map<number, Rect>,
+  epsilon: number,
+): boolean {
+  for (const [id, want] of last) {
+    const got = current.get(id);
+    if (!got) {
+      continue;
+    }
+    if (
+      Math.abs(got.x - want.x) > epsilon ||
+      Math.abs(got.y - want.y) > epsilon ||
+      Math.abs(got.width - want.width) > epsilon ||
+      Math.abs(got.height - want.height) > epsilon
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /// Resultado do HUD: a zona quente sob o cursor, as células a desenhar e o destino do drop.
 export interface HotZone {
   /// `local` = sobre uma janela-alvo: centro → fusão em abas (a ponte chama `addToStack`); fora do

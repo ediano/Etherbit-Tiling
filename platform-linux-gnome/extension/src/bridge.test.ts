@@ -27,10 +27,12 @@ import {
   serializeScope,
   isResizable,
   isFixedSize,
+  geometryConverged,
   type Stack,
   type TreeNode,
   type WindowSnapshot,
   type MonitorSnapshot,
+  type Rect,
 } from './bridge.js';
 
 const win: WindowSnapshot = {
@@ -544,5 +546,52 @@ describe('clampGeometry', () => {
   it('serializeScope mapeia só local/global', () => {
     expect(serializeScope('global')).toBe('global');
     expect(serializeScope('local')).toBe('local');
+  });
+});
+
+describe('geometryConverged', () => {
+  const r = (x: number, y: number, width: number, height: number): Rect => ({
+    x,
+    y,
+    width,
+    height,
+  });
+
+  it('mapa vazio → convergiu (nada a verificar)', () => {
+    expect(geometryConverged(new Map(), new Map([[1, r(0, 0, 100, 100)]]), 2)).toBe(true);
+  });
+
+  it('todos os rects batem dentro do epsilon → convergiu', () => {
+    const last = new Map([
+      [1, r(0, 0, 500, 1000)],
+      [2, r(500, 0, 500, 1000)],
+    ]);
+    const current = new Map([
+      [1, r(1, 0, 499, 1000)], // dentro de 2px
+      [2, r(500, 2, 500, 998)],
+    ]);
+    expect(geometryConverged(last, current, 2)).toBe(true);
+  });
+
+  it('uma janela fora do epsilon (apply descartado no boot) → NÃO convergiu', () => {
+    const last = new Map([[1, r(0, 0, 500, 1000)]]);
+    const current = new Map([[1, r(0, 0, 960, 540)]]); // "nasceu flutuante" no meio da tela
+    expect(geometryConverged(last, current, 2)).toBe(false);
+  });
+
+  it('id ausente em current (janela fechada/maximizada) é ignorado', () => {
+    const last = new Map([
+      [1, r(0, 0, 500, 1000)],
+      [2, r(500, 0, 500, 1000)],
+    ]);
+    const current = new Map([[1, r(0, 0, 500, 1000)]]); // id 2 sumiu
+    expect(geometryConverged(last, current, 2)).toBe(true);
+  });
+
+  it('desvio em qualquer eixo isolado quebra a convergência', () => {
+    const last = new Map([[1, r(10, 20, 300, 400)]]);
+    expect(geometryConverged(last, new Map([[1, r(13, 20, 300, 400)]]), 2)).toBe(false); // x
+    expect(geometryConverged(last, new Map([[1, r(10, 20, 300, 405)]]), 2)).toBe(false); // height
+    expect(geometryConverged(last, new Map([[1, r(11, 21, 301, 401)]]), 2)).toBe(true); // tudo ≤2px
   });
 });

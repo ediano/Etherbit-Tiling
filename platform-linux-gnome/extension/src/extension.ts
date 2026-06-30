@@ -35,6 +35,7 @@ import {
   parseDropped,
   isResizable,
   clampGeometry,
+  geometryConverged,
   parseLayoutTrees,
   resolveHotZone,
   serializeScope,
@@ -73,6 +74,11 @@ const DRAG_TICK_MS = 16;
 /// hardware sem fixar um valor frágil — a 1ª passada pega geometria/maximização, a última o min-size
 /// negociado tardiamente (apps de min grande, ex.: Ubuntu Store). Ver ADR 0034.
 const SPAWN_SETTLE_MS = [50, 150, 400];
+
+/// Tolerância (px) ao confrontar a geometria que committamos com o `get_frame_rect()` atual, para
+/// decidir se o último layout "pegou" na tela (dedup gated por realização, ADR 0038). Folga pequena
+/// para absorver arredondamento de frame/escala sem mascarar um `move_resize_frame` descartado.
+const RELAYOUT_CONVERGE_EPSILON_PX = 2;
 
 /// Janela rastreada: guardamos o id do handler `unmanaged` para desconectar no fechamento.
 interface Tracked {
@@ -119,6 +125,18 @@ export default class EtherbitTilingExtension extends Extension {
   private _settleSource = 0;
   // Assinatura do último layout APLICADO (dedup): se o novo é idêntico, pula reaplicação + log.
   private _lastLayoutSig = '';
+  // Geometria que de fato committamos no último ciclo (id → rect), só de janelas visíveis e
+  // NÃO-maximizadas. O dedup por `_lastLayoutSig` só pode curto-circuitar se essa geometria
+  // "pegou" na tela (ver `geometryConverged`): no boot frio o compositor descarta o
+  // `move_resize_frame` em janelas ainda não realizadas, e sem isso o re-disparo da rede de
+  // settle recalcula assinatura idêntica → cai no dedup → nunca reaplica (ADR 0038).
+  private _lastAppliedRects = new Map<number, Rect>();
+  // Timers do "boot settle cascade": janelas abertas ANTES do `enable()` não disparam
+  // `window-created`, logo não ganham a rede `first-frame`/`size-changed`/`SPAWN_SETTLE_MS`. Um
+  // único relayout no boot pode ser descartado (daemon ou janelas ainda não prontos). Reagendamos
+  // nos mesmos offsets de `SPAWN_SETTLE_MS`; com o dedup gated por realização (ADR 0038) os ticks
+  // convergem sem loop. Cancelados no `disable()`.
+  private _bootSettleIds: number[] = [];
 
   // Operações de restack (make_above/raise/unmake_above/minimize) ADIADAS para um "later" do Mutter
   // (BEFORE_REDRAW): rodam quando o stack das janelas já está consistente, evitando o assertion
@@ -344,8 +362,10 @@ export default class EtherbitTilingExtension extends Extension {
       console.error(`Etherbit Tiling: falha ao registrar atalhos: ${error}`);
     }
 
-    // 7) Layout inicial para as janelas já abertas.
+    // 7) Layout inicial para as janelas já abertas. No boot frio, um único disparo pode ser descartado
+    //    (daemon ou janelas ainda não prontos); a cascata reescalona até convergir (ADR 0038).
     this._scheduleRelayout();
+    this._scheduleBootSettle();
   }
 
   override disable(): void {
@@ -353,6 +373,12 @@ export default class EtherbitTilingExtension extends Extension {
       GLib.source_remove(this._relayoutSource);
       this._relayoutSource = 0;
     }
+
+    // Cancela os timers do boot settle cascade ainda pendentes (evita relayout após o teardown).
+    for (const id of this._bootSettleIds) {
+      GLib.source_remove(id);
+    }
+    this._bootSettleIds = [];
 
     // Cancela operações de restack adiadas (make_above/raise/unmake_above/minimize) ainda pendentes,
     // para não rodarem sobre janelas que serão restauradas/destruídas no teardown abaixo.
@@ -370,6 +396,7 @@ export default class EtherbitTilingExtension extends Extension {
     this._suppressRelayout = false;
     this._relayoutPending = false;
     this._lastLayoutSig = '';
+    this._lastAppliedRects.clear();
 
     // Remove os atalhos globais.
     if (this._settings) {
@@ -493,32 +520,14 @@ export default class EtherbitTilingExtension extends Extension {
         window.connect('notify::maximized-vertically', onStateChange),
         window.connect('notify::fullscreen', onStateChange),
       ];
-      // Re-tila quando a janela "assenta" (o `window-created` chega antes de
-      // `resizable`/`maximizable`/tipo estarem prontos; o snapshot precoce a classifica como
-      // não-tileável). O one-shot `settled` só trava quando a janela JÁ é tileável E o min-size já
-      // negociou (ver abaixo) — um `size-changed` que chega antes disso (apps que assentam o TAMANHO
-      // antes do tipo/flags, ex.: a Loja) re-tila mas NÃO queima o gatilho. Sem isso, com apps MISTOS
-      // (Nautilus + Loja) a 1ª/2ª janela podia perder o único disparo e nunca entrar no grid. Limpo em
-      // massa no `unmanaged` via `notifyIds`.
-      let settled = false;
-      notifyIds.push(
-        window.connect('size-changed', () => {
-          if (settled) {
-            return;
-          }
-          // Só "assenta" o gatilho quando a janela é tileável E o min-size XDG já negociou. No Wayland
-          // a janela pode virar tileável (tipo/flags) ANTES de o min-size popular; travar com min [0,0]
-          // queima o disparo antes de o overflow ser detectável — a janela de min grande só encaixaria
-          // via 3ª janela (ADR 0033/0034). Min [0,0] = ainda não negociado → mantém o gatilho armado.
-          if (this._isTileable(window)) {
-            const [minWidth, minHeight] = this._minSize(window);
-            if (minWidth > 0 || minHeight > 0) {
-              settled = true;
-            }
-          }
-          this._scheduleRelayout();
-        }),
-      );
+      // Re-tila SEMPRE que a janela muda de tamanho — sem o antigo latch one-shot `settled` (ADR 0038).
+      // Apps de min-size rígido (GNOME Settings, Ubuntu Store) negociam o min XDG real DEPOIS do spawn,
+      // às vezes em mais de um passo; o latch travava no 1º min>0 e ignorava os `size-changed`
+      // seguintes, deixando a janela presa em estado híbrido (sobreposição). Ao re-tilar a cada
+      // mudança, o re-snapshot lê o min atual → o core sinaliza overflow → cascata empurra as vizinhas
+      // OU o Merge Fallback agrupa em aba, em tempo real. Não há loop: nossa própria aplicação roda sob
+      // `_suppressRelayout` (coalesce trailing-edge), e o dedup gated por realização converge num passo.
+      notifyIds.push(window.connect('size-changed', () => this._scheduleRelayout()));
       // Encaixe determinístico no spawn (conceito pop-shell): o `window-created` chega ANTES de o ator
       // estar mapeado — aplicar geometria agora faz o Mutter REJEITAR o encaixe (a 1ª janela "nasce
       // flutuante" no meio da tela; a 2ª "funciona" só porque dispara um relayout posterior). O sinal
@@ -598,6 +607,25 @@ export default class EtherbitTilingExtension extends Extension {
       }
       return GLib.SOURCE_REMOVE;
     });
+  }
+
+  /// Boot settle cascade (ADR 0038): reagenda relayouts nos offsets de `SPAWN_SETTLE_MS` para as
+  /// janelas abertas ANTES do `enable()`, que não disparam `window-created` e por isso não têm a rede
+  /// per-janela. Cada tick só chama `_scheduleRelayout` (respeita debounce/supressão); o dedup gated
+  /// por realização torna os ticks no-op assim que o grid converge — sem loop. Cancelado no `disable`.
+  private _scheduleBootSettle(): void {
+    for (const delay of SPAWN_SETTLE_MS) {
+      let source = 0;
+      source = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delay, () => {
+        const idx = this._bootSettleIds.indexOf(source);
+        if (idx !== -1) {
+          this._bootSettleIds.splice(idx, 1);
+        }
+        this._scheduleRelayout();
+        return GLib.SOURCE_REMOVE;
+      });
+      this._bootSettleIds.push(source);
+    }
   }
 
   /// Estabilização do spawn no Wayland: agenda micro-relayouts escalonados (`SPAWN_SETTLE_MS`) para
@@ -771,7 +799,11 @@ export default class EtherbitTilingExtension extends Extension {
       [...shouldHide].sort((a, b) => a - b),
       this._config.corner_radius,
     ]);
-    if (layoutSig === this._lastLayoutSig) {
+    // Só curto-circuita se, ALÉM da assinatura idêntica, a geometria do ciclo anterior REALMENTE
+    // pegou na tela. No boot frio o compositor descarta o `move_resize_frame` (janela ainda não
+    // realizada): o frame não bate → não convergiu → reaplica, em vez de cair num dedup envenenado
+    // que congelava o grid até o toggle manual `disable()`→`enable()` (ADR 0038).
+    if (layoutSig === this._lastLayoutSig && this._appliedGeometryConverged(byId)) {
       return;
     }
     this._lastLayoutSig = layoutSig;
@@ -816,6 +848,9 @@ export default class EtherbitTilingExtension extends Extension {
     }
 
     this._suppressRelayout = true;
+    // Reinicia o registro do que committamos neste ciclo (base da verificação de convergência do
+    // próximo dedup, ADR 0038). Só recebe janelas visíveis e não-maximizadas, gravadas pós-apply.
+    this._lastAppliedRects.clear();
     try {
       // Restaura quem deixou de estar oculto (ex.: virou a aba ativa, ou o stack foi desfeito).
       for (const id of this._stackHidden) {
@@ -845,6 +880,13 @@ export default class EtherbitTilingExtension extends Extension {
           // Clamp ≥ 1px: rect inválido (width/height ≤ 0) quebraria o framebuffer do Cogl.
           const g = clampGeometry(command);
           window.move_resize_frame(false, g.x, g.y, g.width, g.height);
+          // Registra o slot committado: o próximo dedup só curto-circuita se o frame chegar nele.
+          this._lastAppliedRects.set(command.id, {
+            x: g.x,
+            y: g.y,
+            width: g.width,
+            height: g.height,
+          });
           // Cantos arredondados (efeito no ator): o RAIO é a única fonte de verdade — `> 0` aplica o
           // efeito; `0` o remove (não há mais toggle separado). Best-effort, nunca quebra.
           const actor = window.get_compositor_private() as Clutter.Actor | null;
@@ -931,6 +973,27 @@ export default class EtherbitTilingExtension extends Extension {
 
     // Desenha as barras de abas a partir da geometria devolvida pelo core.
     this._rebuildTabBars(tabBars, byId);
+  }
+
+  /// Confronta a geometria que committamos no último ciclo (`_lastAppliedRects`) com o
+  /// `get_frame_rect()` atual de cada janela viva e NÃO-maximizada (a maximizada é pulada na
+  /// aplicação, logo seu frame não reflete o slot — ignorada). Delega ao helper puro
+  /// `geometryConverged`. É o que impede o dedup por `_lastLayoutSig` de mascarar um
+  /// `move_resize_frame` descartado no boot frio (ADR 0038): sem convergência, reaplica.
+  private _appliedGeometryConverged(byId: Map<number, Meta.Window>): boolean {
+    if (this._lastAppliedRects.size === 0) {
+      return true;
+    }
+    const current = new Map<number, Rect>();
+    for (const id of this._lastAppliedRects.keys()) {
+      const window = byId.get(id);
+      if (!window || !this._isWindowLive(window) || this._isMaximized(window)) {
+        continue;
+      }
+      const r = window.get_frame_rect();
+      current.set(id, { x: r.x, y: r.y, width: r.width, height: r.height });
+    }
+    return geometryConverged(this._lastAppliedRects, current, RELAYOUT_CONVERGE_EPSILON_PX);
   }
 
   /// Mapeia, por grupo `(monitor, workspace)`, os ids tiláveis no último layout (singles + membros
@@ -1438,6 +1501,7 @@ export default class EtherbitTilingExtension extends Extension {
     // Chave geral DESLIGADA libera as janelas: invalida a assinatura para que RELIGAR sempre reaplique
     // o grid, mesmo que o layout calculado coincida com o último de antes do desligamento.
     this._lastLayoutSig = '';
+    this._lastAppliedRects.clear();
     this._restoreHiddenWindows();
     this._destroyTabBars();
     for (const { window } of this._tracked.values()) {
@@ -1629,22 +1693,6 @@ export default class EtherbitTilingExtension extends Extension {
         return w.is_fullscreen() === true;
       }
       return w.fullscreen === true;
-    } catch {
-      return false;
-    }
-  }
-
-  /// `true` se a janela é tileável (espelha o filtro `is_tileable` do core: tipo NORMAL + redimensionável
-  /// + maximizável). Usado SÓ para travar o one-shot de `size-changed`: não trava enquanto a janela não
-  /// for tileável, evitando que um `size-changed` precoce (antes do tipo/flags assentarem) queime o
-  /// gatilho e deixe a janela fora do grid (bug de init com apps mistos). Defensivo: nunca lança.
-  private _isTileable(window: Meta.Window): boolean {
-    try {
-      return (
-        window.get_window_type() === Meta.WindowType.NORMAL &&
-        this._isResizable(window) &&
-        window.can_maximize()
-      );
     } catch {
       return false;
     }
