@@ -5,7 +5,9 @@
 [0018](0018-abas-atalhos-globais-drag-to-group.md)/[0022](0022-stacknode-arvore-fechar-desagrupar-unmaximize.md)
 **GNOME-only**; remove a barra clicável do KDE do
 [0025](0025-barra-abas-clicavel-kde-entrega-por-pull.md). Reafirma
-[0016](0016-extensao-ponte-burra-render-no-daemon.md))
+[0016](0016-extensao-ponte-burra-render-no-daemon.md). Estendida por
+[0030](0030-distribuicao-ciclica-quadrantes-e-merge-fallback.md): o **Merge Fallback** de colapso é
+**GNOME-only** — o KDE, tiling puro, mantém o **auto-floating**; os splits seguem **50/50**)
 
 ## Contexto
 

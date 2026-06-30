@@ -28,17 +28,18 @@ arqueologia de commits.
 | [0016](0016-extensao-ponte-burra-render-no-daemon.md) | Extensão "ponte burra", layout no core e renderização no daemon | ✅ Aceita; render wgpu removido por #0029 |
 | [0017](0017-dominio-proprio-ediano-dev.md) | Migração para domínio próprio (`ediano.dev`) | ✅ Aceita |
 | [0018](0018-abas-atalhos-globais-drag-to-group.md) | Abas (StackNode), atalhos globais e agrupar por arraste | 🔄 Substituída por #0026; abas só-GNOME por #0028 |
-| [0019](0019-arvore-bsp-persistente-resize-elastico.md) | Árvore BSP persistente, resize elástico, gap único e cantos arredondados | 🔄 Topologia substituída por #0026 |
+| [0019](0019-arvore-bsp-persistente-resize-elastico.md) | Árvore BSP persistente, resize elástico, gap único e cantos arredondados | 🔄 Topologia substituída por #0026; inserção substituída por #0030 |
 | [0020](0020-resiliencia-ipc-dbus.md) | Resiliência de IPC (D-Bus): ativação, reconexão e wake handshake | ✅ Aceita |
-| [0021](0021-tamanhos-minimos-geometry-hints.md) | Tamanhos mínimos (geometry hints): splits assimétricos e auto-floating | 🔄 Topologia substituída por #0026 |
+| [0021](0021-tamanhos-minimos-geometry-hints.md) | Tamanhos mínimos (geometry hints): splits assimétricos e auto-floating | 🔄 Topologia substituída por #0026; auto-float refinado por #0030 (Merge Fallback no GNOME) |
 | [0022](0022-stacknode-arvore-fechar-desagrupar-unmaximize.md) | `Node::Stack` na árvore, fechar/desagrupar na barra de abas e Unmaximize Recovery | 🔄 Substituída por #0026; abas/barra só-GNOME por #0028 |
 | [0023](0023-compat-api-mutter-feature-detection.md) | Compatibilidade da API do Mutter na ponte GNOME (feature-detection defensiva) | ✅ Aceita |
 | [0024](0024-instaladores-upgrade-idempotente-autostart.md) | Instaladores idempotentes: autostart, upgrade com checagem de versão e parada segura do daemon | ✅ Aceita |
 | [0025](0025-barra-abas-clicavel-kde-entrega-por-pull.md) | Barra de abas clicável no KDE: entrega da ação por pull e fila efêmera no daemon | 🔄 Barra removida por #0028; HUD wgpu removido por #0029 |
 | [0026](0026-grid-fractal-3x3-elastico-e-hud.md) | Grid fractal 3×3 elástico (substitui o BSP) e HUD de preview com 9 zonas | 🔄 Zonas/escopo substituídos por #0028; HUD wgpu removido por #0029 |
 | [0027](0027-chave-geral-tiling-e-refino-ui.md) | Chave geral de ativação do tiling, raio como fonte do arredondamento e remoção do toggle de autostart | ✅ Aceita |
-| [0028](0028-eixos-limpos-cosmic-e-kde-sem-abas.md) | Mecânica de arraste em eixos limpos (estilo Cosmic) e KDE sem abas | ✅ Aceita |
+| [0028](0028-eixos-limpos-cosmic-e-kde-sem-abas.md) | Mecânica de arraste em eixos limpos (estilo Cosmic) e KDE sem abas | ✅ Aceita; estendida por #0030 (Merge Fallback GNOME-only) |
 | [0029](0029-daemon-sem-framework-visual.md) | Daemon sem framework visual: HUD nativo e core puramente geométrico | ✅ Aceita |
+| [0030](0030-distribuicao-ciclica-quadrantes-e-merge-fallback.md) | Distribuição cíclica em quadrantes (anti-horária) e Merge Fallback | ✅ Aceita |
 
 ## Como adicionar uma nova decisão
 1. Copie o formato de um ADR existente.

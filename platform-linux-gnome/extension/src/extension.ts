@@ -45,6 +45,7 @@ import {
   toggleStackGroup,
   toggleGroupDisabled,
   addToStack,
+  mergeFallback,
   setActiveMember,
   type Stack,
   type TabBar,
@@ -129,6 +130,10 @@ export default class EtherbitTilingExtension extends Extension {
   private _groupTiled = new Map<string, number[]>();
   private _stackHidden = new Set<number>();
   private _floatingAbove = new Set<number>();
+  // Merge Fallback (ADR 0030): ids já agrupados em aba por colapso de min-size. Evita o loop
+  // sync↔merge — se a janela AINDA floata após o merge (tela minúscula), deixa de tentar e cai no
+  // floating legado como rede de segurança. Limpo quando o id deixa de floatar.
+  private _mergeAttempted = new Set<number>();
   // Barras de abas desenhadas (recriadas a cada relayout). Settings do gschema (atalhos).
   private _tabBars: St.Widget[] = [];
   private _settings: Gio.Settings | null = null;
@@ -560,6 +565,34 @@ export default class EtherbitTilingExtension extends Extension {
     // Janelas isoladas por auto-floating (mínimo não cabe): aplicar e ELEVAR acima do grid.
     const floating = parseFloating(layoutJson);
     const floatingIds = new Set<number>(floating.map((c) => c.id));
+
+    // Merge Fallback (ADR 0030, GNOME-only): janela que floataria por colapso de min-size é agrupada
+    // como ABA no quadrante focado, em vez de flutuar. Limpa o guard dos ids que já não floatam (para
+    // re-merge num colapso futuro); se um id AINDA floata após o merge (tela minúscula), o guard o
+    // mantém e ele cai no floating legado abaixo. Um merge dispara novo relayout: o slot deixa de
+    // estourar o mínimo (o min do stack é o `max` dos membros) e `floating` esvazia.
+    for (const id of [...this._mergeAttempted]) {
+      if (!floatingIds.has(id)) {
+        this._mergeAttempted.delete(id);
+      }
+    }
+    if (floating.length > 0) {
+      const merged = mergeFallback(
+        this._stacks,
+        floating.map((c) => c.id),
+        this._mergeAttempted,
+        snapshots,
+        commands,
+        focusedId,
+      );
+      if (merged.length > 0) {
+        for (const id of merged) {
+          this._mergeAttempted.add(id);
+        }
+        this._scheduleRelayout();
+        return;
+      }
+    }
 
     // Abas inativas a ocultar (minimizar): todo membro de stack que não é o ativo.
     const shouldHide = new Set<number>();
@@ -1240,6 +1273,7 @@ export default class EtherbitTilingExtension extends Extension {
     }
     this._stackHidden.clear();
     this._floatingAbove.clear();
+    this._mergeAttempted.clear();
   }
 
   /// Metadados brutos de uma janela (espelham o WindowDto do daemon). A filtragem é do core.
