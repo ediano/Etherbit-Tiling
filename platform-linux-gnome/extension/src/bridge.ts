@@ -147,6 +147,44 @@ export function parseFloating(json: string): LayoutCommand[] {
   return commands;
 }
 
+/// Uma janela RECEBIDA que o daemon não posicionou, com o motivo (`non_normal`, `non_resizable`,
+/// `non_maximizable`, `ignored`, `excluded_maximized`). Puramente diagnóstico — alimenta o log fiel.
+export interface DroppedWindow {
+  id: number;
+  reason: string;
+}
+
+/// Parse defensivo do diagnóstico `dropped` do `layout_json`: janelas recebidas que o daemon NÃO
+/// tilou, com o motivo. Ausente (daemon antigo) ou malformado → vazio. Não afeta o layout, só o log.
+export function parseDropped(json: string): DroppedWindow[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  if (Array.isArray(parsed) || typeof parsed !== 'object' || parsed === null) {
+    return [];
+  }
+  const raw = (parsed as Record<string, unknown>).dropped;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const out: DroppedWindow[] = [];
+  for (const entry of raw) {
+    if (
+      typeof entry === 'object' &&
+      entry !== null &&
+      typeof (entry as Record<string, unknown>).id === 'number' &&
+      typeof (entry as Record<string, unknown>).reason === 'string'
+    ) {
+      const e = entry as { id: number; reason: string };
+      out.push({ id: e.id, reason: e.reason });
+    }
+  }
+  return out;
+}
+
 /// Parse defensivo das barras de abas do `layout_json` (objeto `{ rects, tab_bars }`). Formato
 /// legado (array) → sem barras. Descarta entradas malformadas em vez de lançar.
 export function parseTabBars(json: string): TabBar[] {

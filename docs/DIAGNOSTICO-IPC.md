@@ -32,7 +32,9 @@ journalctl --user -u etherbit-tiling-daemon.service -b 0
 
 # Rodar o daemon em primeiro plano com log detalhado (vê nº de janelas recebidas / rects / PÂNICO):
 systemctl --user stop etherbit-tiling-daemon.service 2>/dev/null
-RUST_LOG=debug ~/.local/bin/etherbit-tiling-daemon     # ou: cargo run --manifest-path etherbit-tiling-daemon/Cargo.toml
+RUST_LOG=debug ~/.local/bin/etherbit-tiling-daemon     # ou: ETHERBIT_LOG=debug; ou cargo run --manifest-path etherbit-tiling-daemon/Cargo.toml
+# A linha-chave é: "sync_windows: N recebida(s) → M tileável(is) → R rect(s), …, D descartada(s)".
+# Se recebidas (N) > rects (R), a CAUSA aparece no campo `descartada(s)` (D) e no log da extensão.
 
 # O daemon responde? (a chamada também dispara a ativação D-Bus)
 busctl --user call dev.ediano.etherbit.Tiling /dev/ediano/etherbit/Tiling \
@@ -51,6 +53,13 @@ Leitura dos resultados:
   (o guard devolve erro em vez de derrubar a task; valores como `monitor: -1` são tolerados).
 - `SyncWindows` retorna mas a janela **não move** ⇒ erro ao APLICAR a geometria na ponte: ver o
   journal do gnome-shell (KDE: a chave `debug` no kwinrc liga o detalhamento por evento).
+- **(GNOME) Log FIEL à tela.** A extensão loga, a cada relayout que muda o layout:
+  `[etherbit] relayout: total=<N> aplicadas=<A> flutuantes=<F> descartadas=[id:motivo, …]` e
+  `[etherbit] grid: id@x,y wxh | …` (geometria final de cada janela). Se `total > aplicadas` sem
+  `flutuantes`, a janela "que some" está em `descartadas` com o motivo: `non_normal`/`non_resizable`/
+  `non_maximizable`/`ignored` (reprovou em `is_tileable`, ex.: desktop/DING ou diálogo) ou
+  `excluded_maximized` (nasceu maximizada e está fora do grid até desmaximizar — se persistir, ver o
+  `JS WARNING` de `Meta.Window.unmaximize`, sintoma da API do Mutter mudar de assinatura).
 
 ## 1. O daemon ainda detém o nome no barramento?
 
