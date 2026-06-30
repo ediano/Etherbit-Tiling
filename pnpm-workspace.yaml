@@ -1,0 +1,8 @@
+# pnpm v11 lê configurações deste arquivo. Aqui ele NÃO declara `packages:`, então a raiz
+# NÃO é um workspace que engloba os subprojetos (web, extension, kwin-script) — cada um tem o
+# seu próprio pnpm-workspace.yaml e lockfile, mantendo o isolamento do ADR 0003 (ver rules/0036).
+# Existe só para autorizar o build script do lefthook (que provê o binário nativo do hook).
+allowBuilds:
+  lefthook: true
+onlyBuiltDependencies:
+  - lefthook

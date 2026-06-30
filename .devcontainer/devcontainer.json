@@ -14,13 +14,16 @@
       "extensions": [
         "rust-lang.rust-analyzer",
         "tamasfe.even-better-toml",
-        "dbaeumer.vscode-eslint"
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode"
       ]
     }
   },
   // O mount padrão do workspace já expõe TODO o repo (incluindo platform-macos,
   // editável como texto no container; build do Swift continua no host macOS).
   "workspaceFolder": "/workspaces/Etherbit-Tiling",
-  // Ativa pnpm via corepack após a feature node estar disponível
-  "postCreateCommand": "corepack enable && corepack prepare pnpm@latest --activate"
+  // Ativa pnpm via corepack e instala o dev-tooling da raiz (Prettier/ESLint/lefthook).
+  // O `pnpm install` na raiz dispara `lefthook install` (script `prepare`), ativando o hook
+  // de pre-commit global (ver rules/0036).
+  "postCreateCommand": "corepack enable && corepack prepare pnpm@latest --activate && pnpm install"
 }

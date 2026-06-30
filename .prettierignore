@@ -1,0 +1,16 @@
+# Dependências e artefatos de build
+**/node_modules
+**/dist
+**/dist-release
+**/target
+
+# Lockfiles (gerados; nunca formatar)
+**/*.lock
+**/pnpm-lock.yaml
+**/Cargo.lock
+
+# Changelog gerado pelo semantic-release
+**/CHANGELOG.md
+
+# Bundle IIFE gerado pelo Vite ao lado dos fontes .ts (emptyOutDir: false no KWin)
+platform-linux-kde/kwin-script/contents/code/*.js

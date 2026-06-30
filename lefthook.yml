@@ -1,0 +1,22 @@
+# Hooks de pre-commit do monorepo (ver rules/0036).
+# O lefthook filtra os arquivos staged nativamente via {staged_files} + glob — dispensa lint-staged.
+# Cada comando reformata/linta só o que está staged e re-staga o resultado (stage_fixed: true),
+# então o commit já entra no padrão. Instale com `pnpm install` (script `prepare` → `lefthook install`).
+pre-commit:
+  parallel: true
+  jobs:
+    - name: prettier
+      glob: '*.{ts,js,mjs,cjs,json,jsonc,yaml,yml,css,md}'
+      run: pnpm exec prettier --write {staged_files}
+      stage_fixed: true
+
+    - name: eslint
+      glob: '*.{ts,js,mjs,cjs}'
+      run: pnpm exec eslint --fix {staged_files}
+      stage_fixed: true
+
+    # Conveniência: formata Rust staged com o rustfmt já configurado (rustfmt.toml).
+    - name: rustfmt
+      glob: '*.rs'
+      run: rustfmt --edition 2021 {staged_files}
+      stage_fixed: true

@@ -4,6 +4,7 @@ O ambiente de desenvolvimento do **core (Rust)** e da **extension (TypeScript/Vi
 isolado em um **VS Code Dev Container**. O build do **macOS (Swift)** acontece no **host macOS**.
 
 ## Pré-requisitos
+
 - [Docker](https://www.docker.com/) em execução.
 - [VS Code](https://code.visualstudio.com/) com a extensão **Dev Containers** (`ms-vscode-remote.remote-containers`).
 - Para a camada macOS: um **Mac com Xcode** (o SDK da Apple não roda no container).
@@ -11,30 +12,57 @@ isolado em um **VS Code Dev Container**. O build do **macOS (Swift)** acontece n
 ## Subindo o Dev Container
 
 1. Abra a pasta do projeto no VS Code.
-2. Aceite **"Reopen in Container"** (ou Command Palette → *Dev Containers: Reopen in Container*).
+2. Aceite **"Reopen in Container"** (ou Command Palette → _Dev Containers: Reopen in Container_).
 
 O que o container provê:
+
 - Imagem base **`mcr.microsoft.com/devcontainers/rust:1`** (definida em
   [`docker/Dockerfile.core`](../docker/Dockerfile.core)), com `build-essential`, `libdbus-1-dev` e
   `pkg-config` para a comunicação D-Bus do daemon Linux.
 - **Feature Node** (`ghcr.io/devcontainers/features/node:1`) para o TypeScript/Vite da extensão.
-- **pnpm** habilitado via corepack no `postCreateCommand`.
-- Extensões do VS Code pré-instaladas: `rust-analyzer`, `even-better-toml`, `eslint`.
+- **pnpm** habilitado via corepack no `postCreateCommand`, que também roda `pnpm install` na raiz
+  (instala o dev-tooling de lint/format e ativa o hook de pre-commit).
+- Extensões do VS Code pré-instaladas: `rust-analyzer`, `even-better-toml`, `eslint`, `prettier`.
 
 > A configuração fica em [`.devcontainer/devcontainer.json`](../.devcontainer/devcontainer.json), que
 > aponta o build para `../docker/Dockerfile.core` (Docker centralizado em `docker/`).
+
+## Lint e formatação (global)
+
+O estilo de **todo o repositório** é padronizado por **Prettier** (formatação) + **ESLint** (lint),
+orquestrados por um `package.json` na **raiz** (ver [rules/0036](../rules/0036-padrao-lint-format-global.md)).
+O Rust segue no `rustfmt` (integrado por conveniência); cada subprojeto JS/TS mantém seu próprio
+`package.json`/lockfile (a raiz **não** é um pnpm workspace).
+
+```bash
+# na raiz do repo
+pnpm install        # instala o tooling e ativa o hook de pre-commit (lefthook)
+pnpm format         # Prettier --write em tudo (+ cargo fmt nos dois workspaces Rust)
+pnpm run format:check  # só verifica (é o que o CI roda)
+pnpm lint           # ESLint em todo JS/TS
+pnpm run lint:fix   # ESLint --fix
+```
+
+O hook de **pre-commit** (lefthook) reformata/linta apenas os arquivos _staged_ e os re-staga, então
+o commit já entra no padrão. O CI tem um job `lint` (`prettier --check` + `eslint`) que barra PRs e
+releases fora do padrão.
+
+> **Shell fish:** lembre que `pnpm format` invoca scripts encadeados com `&&` internamente (rodam em
+> `sh`, não no seu fish) — chamar `pnpm format` direto funciona normalmente.
 
 ## Core e Daemon (Rust) — builds isolados
 
 São **dois workspaces Cargo independentes** (ver [rules/0003](../rules/0003-monorepo-poliglota.md)).
 
 **Core (workspace raiz, agnóstico):**
+
 ```bash
 cargo build         # compila etherbit-tiling-core
 cargo test          # testes do core
 ```
 
 **Daemon Linux (workspace próprio, compartilhado por GNOME/KDE):**
+
 ```bash
 cd etherbit-tiling-daemon
 cargo build                          # compila etherbit-tiling-daemon (puxa etherbit-tiling-core por path)
@@ -69,12 +97,13 @@ pnpm build          # bundle ESM de produção em dist/extension.js
 pnpm run install:ext  # build + copia para ~/.local/share/gnome-shell/extensions/etherbit.tiling@ediano.dev/
 ```
 
-O build usa Vite em modo *library* mantendo `gi://`/`resource:///` literais (ver
+O build usa Vite em modo _library_ mantendo `gi://`/`resource:///` literais (ver
 [rules/0010](../rules/0010-tooling-extensao-e-zbus.md)). O UUID é `etherbit.tiling@ediano.dev`.
 
 > **Shell fish:** encadeie comandos com `; and` em vez de `&&`. Ex.: `corepack enable; and pnpm --version`.
 
 ### Recarregar no Wayland
+
 O GNOME Shell **não** recarrega extensões com `Alt+F2` `r` no Wayland (isso é só X11). Para aplicar:
 
 - **Sessão real:** faça **logout/login** após `pnpm run install:ext`, depois
@@ -106,10 +135,11 @@ pnpm run install:script   # build + kpackagetool6 -i/-u + habilita + qdbus recon
 ```
 
 ### Aplicar no Wayland
+
 `kpackagetool6 --type=KWin/Script -i .` instala em `~/.local/share/kwin/scripts/etherbit-tiling/`;
 `kwriteconfig6 --file kwinrc --group Plugins --key etherbit-tilingEnabled true` habilita; e
 `qdbus6 org.kde.KWin /KWin reconfigure` recarrega **sem logout** (substitui o `Alt+F2 r`, que é só X11).
-Config: *Configurações do Sistema → KWin Scripts → Etherbit Tiling (⚙)*.
+Config: _Configurações do Sistema → KWin Scripts → Etherbit Tiling (⚙)_.
 Logs: `journalctl -f QT_CATEGORY=kwin_scripting` (ou `QT_LOGGING_RULES="kwin_*.debug=true"`).
 
 > O Dev Container compila/testa o KWin Script, mas **não roda o KWin**. O teste de runtime (geometria,
@@ -151,7 +181,8 @@ AppKit e da Accessibility API da Apple.
    concluem; `contents/code/main.js` é IIFE (sem `import`/`export` de nível superior).
 6. Em `web/`, `pnpm install` e `pnpm build` concluem; `dist/index.html` não referencia nenhum
    CSS/JS/fonte externo (sem CDN).
-7. `rust-analyzer`, `even-better-toml` e `eslint` aparecem instalados no container.
+7. `rust-analyzer`, `even-better-toml`, `eslint` e `prettier` aparecem instalados no container.
+8. Na raiz, `pnpm install` ativa o hook de pre-commit; `pnpm run format:check` e `pnpm lint` passam.
 
 ## Notas de versionamento
 

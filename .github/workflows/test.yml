@@ -100,6 +100,26 @@ jobs:
       - name: vitest
         run: pnpm test
 
+  # Lint e formatação GLOBAIS do monorepo (ADR 0036): Prettier + ESLint orquestrados pelo
+  # package.json da raiz. Roda na raiz (que NÃO é um pnpm workspace dos subprojetos), independente
+  # dos jobs por plataforma. O `cargo fmt --check` do Rust segue nos jobs test-core/test-daemon.
+  lint:
+    name: Lint & Format (Prettier + ESLint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Habilita pnpm via corepack
+        run: corepack enable
+      - name: Instala dependências (dev-tooling da raiz)
+        run: pnpm install --frozen-lockfile
+      - name: Prettier (--check)
+        run: pnpm run format:check
+      - name: ESLint
+        run: pnpm run lint
+
   # platform-macos/ — Swift. Liberar quando existir Package.swift (ver platform-macos/TESTES.md).
   # test-macos:
   #   name: Testes — macOS (Swift)

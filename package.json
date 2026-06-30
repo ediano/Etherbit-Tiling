@@ -1,0 +1,25 @@
+{
+  "name": "etherbit-tiling-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Camada de dev-tooling do monorepo: Prettier + ESLint + lefthook (lint/format global). NÃO é um pnpm workspace dos subprojetos (ver rules/0036).",
+  "type": "module",
+  "scripts": {
+    "format": "prettier --write . && pnpm run format:rust",
+    "format:check": "prettier --check .",
+    "format:rust": "cargo fmt --all && cargo fmt --manifest-path etherbit-tiling-daemon/Cargo.toml --all",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "prepare": "lefthook install"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.6.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.7.0",
+    "lefthook": "^2.1.9",
+    "prettier": "^3.9.3",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.62.1"
+  }
+}
