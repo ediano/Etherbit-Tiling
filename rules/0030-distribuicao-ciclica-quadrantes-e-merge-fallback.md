@@ -5,6 +5,8 @@
 [0028](0028-eixos-limpos-cosmic-e-kde-sem-abas.md); refina o auto-floating do
 [0021](0021-tamanhos-minimos-geometry-hints.md). Reafirma
 [0016](0016-extensao-ponte-burra-render-no-daemon.md)/[0002](0002-arquitetura-core-agnostico.md))
+A seção **Merge Fallback** foi **removida** por [0040](0040-esmagamento-impositivo-e-menu-de-contexto-kde.md)
+(agrupamento só manual; esmagamento impositivo de min-size). A Distribuição Cíclica em Quadrantes permanece.
 
 ## Contexto
 

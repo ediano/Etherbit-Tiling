@@ -39,7 +39,8 @@ pub struct TabBarView {
     pub tabs: Vec<TabView>,
 }
 
-/// Botão do ponteiro num clique. `Left` ativa/fecha; `Right` desagrupa (menu de contexto do GNOME).
+/// Botão do ponteiro num clique. `Left` ativa/fecha; `Right` abre o **menu de contexto** da guia
+/// (ADR 0040), de onde o "Desagrupar" é confirmado por clique esquerdo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerButton {
     Left,
@@ -54,6 +55,15 @@ pub struct TabAction {
     pub member_id: String,
     /// `"activate"` | `"close"` | `"ungroup"`.
     pub kind: &'static str,
+}
+
+/// Resultado de um clique sobre uma barra de abas (ADR 0040). O clique esquerdo resolve em uma `Action`
+/// imediata (ativar/fechar); o clique direito não age na hora — pede para **abrir o menu de contexto**
+/// da guia (que confirma o "Desagrupar" por clique esquerdo).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BarHit {
+    Action(TabAction),
+    OpenContextMenu { stack_id: String, member_id: String },
 }
 
 /// Retângulo LOCAL à superfície da barra (origem no canto superior-esquerdo da faixa).
@@ -113,38 +123,98 @@ pub fn layout_slots(bar: &TabBarView) -> Vec<TabSlot> {
     slots
 }
 
-/// Resolve a ação de um clique LOCAL `(px, py)` (relativo à superfície da barra `stack_id`) com o
-/// `button`. Esquerdo no "x" → `close`; esquerdo na guia → `activate`; direito na guia → `ungroup`;
-/// fora de qualquer guia → `None`.
+/// Resolve o que um clique LOCAL `(px, py)` (relativo à superfície da barra `stack_id`) com o `button`
+/// faz. Esquerdo no "x" → `Action(close)`; esquerdo na guia → `Action(activate)`; direito na guia →
+/// `OpenContextMenu` (NÃO desagrupa direto — ADR 0040); fora de qualquer guia → `None`.
 pub fn hit_test_local(
     stack_id: &str,
     slots: &[TabSlot],
     px: i32,
     py: i32,
     button: PointerButton,
-) -> Option<TabAction> {
+) -> Option<BarHit> {
     for slot in slots {
         if !slot.tab.contains(px, py) {
             continue;
         }
-        let kind = match button {
+        return match button {
             PointerButton::Left => {
-                if slot.close.contains(px, py) {
-                    "close"
-                } else {
-                    "activate"
-                }
+                let kind = if slot.close.contains(px, py) { "close" } else { "activate" };
+                Some(BarHit::Action(TabAction {
+                    stack_id: stack_id.to_string(),
+                    member_id: slot.member_id.clone(),
+                    kind,
+                }))
             }
-            PointerButton::Right => "ungroup",
-            PointerButton::Other => return None,
+            PointerButton::Right => Some(BarHit::OpenContextMenu {
+                stack_id: stack_id.to_string(),
+                member_id: slot.member_id.clone(),
+            }),
+            PointerButton::Other => None,
         };
-        return Some(TabAction {
-            stack_id: stack_id.to_string(),
-            member_id: slot.member_id.clone(),
-            kind,
-        });
     }
     None
+}
+
+/// Rótulo do item "Desagrupar" do menu de contexto. PT-only na v1 (o helper ainda não tem i18n — ADR
+/// 0040). O item ejeta a janela do stack, devolvendo-a ao grid cíclico.
+pub const UNGROUP_LABEL: &str = "Desagrupar";
+
+/// Largura (px) do menu de contexto da guia.
+pub const MENU_W: i32 = 160;
+/// Altura (px) de cada item do menu.
+pub const MENU_ITEM_H: i32 = 28;
+/// Recuo horizontal (px) do rótulo dentro do item.
+pub const MENU_PAD_X: i32 = 10;
+
+/// Um item do menu de contexto: rótulo a desenhar e o `kind` da `TabAction` que ele dispara.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuItem {
+    pub label: String,
+    /// `kind` ecoado na `TabAction` (hoje só `"ungroup"`).
+    pub kind: &'static str,
+}
+
+/// Modelo (puro) do menu de contexto de uma guia: para qual `(stack_id, member_id)` ele age e seus
+/// itens. Coordenadas/desenho ficam no overlay; aqui só o conteúdo e o hit-test (testáveis sem Wayland).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuModel {
+    pub stack_id: String,
+    pub member_id: String,
+    pub items: Vec<MenuItem>,
+}
+
+impl MenuModel {
+    /// Menu padrão de uma guia: um único item "Desagrupar".
+    pub fn for_tab(stack_id: &str, member_id: &str) -> Self {
+        MenuModel {
+            stack_id: stack_id.to_string(),
+            member_id: member_id.to_string(),
+            items: vec![MenuItem { label: UNGROUP_LABEL.to_string(), kind: "ungroup" }],
+        }
+    }
+}
+
+/// Tamanho (largura, altura) da superfície do menu: largura fixa, altura = nº de itens × `MENU_ITEM_H`.
+pub fn menu_size(model: &MenuModel) -> (i32, i32) {
+    (MENU_W, MENU_ITEM_H * model.items.len() as i32)
+}
+
+/// Resolve um clique LOCAL `(px, py)` (relativo à superfície do menu) sobre um item: devolve a
+/// `TabAction` correspondente (com `stack_id`/`member_id` do menu); fora de qualquer item → `None`
+/// (o chamador trata como dismiss). Os itens são empilhados verticalmente, cada um com `MENU_ITEM_H`.
+pub fn menu_hit_test(model: &MenuModel, px: i32, py: i32) -> Option<TabAction> {
+    let (w, h) = menu_size(model);
+    if px < 0 || px >= w || py < 0 || py >= h {
+        return None;
+    }
+    let idx = (py / MENU_ITEM_H) as usize;
+    let item = model.items.get(idx)?;
+    Some(TabAction {
+        stack_id: model.stack_id.clone(),
+        member_id: model.member_id.clone(),
+        kind: item.kind,
+    })
 }
 
 #[cfg(test)]
@@ -183,11 +253,18 @@ mod tests {
         assert_eq!(slots[0].close.w, CLOSE_W);
     }
 
+    fn action(hit: BarHit) -> TabAction {
+        match hit {
+            BarHit::Action(a) => a,
+            other => panic!("esperava BarHit::Action, veio {other:?}"),
+        }
+    }
+
     #[test]
     fn left_click_on_tab_body_activates() {
         let slots = layout_slots(&bar(&[("a", true), ("b", false), ("c", false)]));
         // Centro da 2ª aba (local x ∈ [100,200)), longe do "x".
-        let hit = hit_test_local("a", &slots, 130, 10, PointerButton::Left).unwrap();
+        let hit = action(hit_test_local("a", &slots, 130, 10, PointerButton::Left).unwrap());
         assert_eq!(hit.kind, "activate");
         assert_eq!(hit.member_id, "b");
         assert_eq!(hit.stack_id, "a");
@@ -197,17 +274,52 @@ mod tests {
     fn left_click_on_close_icon_closes() {
         let slots = layout_slots(&bar(&[("a", true), ("b", false)]));
         // 1ª aba: local x ∈ [0,150); "x" nos últimos 24px (x ∈ [126,150)).
-        let hit = hit_test_local("a", &slots, 140, 10, PointerButton::Left).unwrap();
+        let hit = action(hit_test_local("a", &slots, 140, 10, PointerButton::Left).unwrap());
         assert_eq!(hit.kind, "close");
         assert_eq!(hit.member_id, "a");
     }
 
     #[test]
-    fn right_click_ungroups_even_over_close_icon() {
+    fn right_click_opens_context_menu_even_over_close_icon() {
+        // ADR 0040: o clique direito NÃO desagrupa direto — pede para abrir o menu de contexto da guia.
         let slots = layout_slots(&bar(&[("a", true), ("b", false), ("c", false)]));
         let hit = hit_test_local("a", &slots, 290, 10, PointerButton::Right).unwrap();
-        assert_eq!(hit.kind, "ungroup");
-        assert_eq!(hit.member_id, "c");
+        assert_eq!(
+            hit,
+            BarHit::OpenContextMenu { stack_id: "a".to_string(), member_id: "c".to_string() }
+        );
+    }
+
+    #[test]
+    fn menu_size_matches_item_count() {
+        let model = MenuModel::for_tab("a", "c");
+        assert_eq!(model.items.len(), 1, "menu padrão tem só o 'Desagrupar'");
+        assert_eq!(menu_size(&model), (MENU_W, MENU_ITEM_H));
+    }
+
+    #[test]
+    fn menu_hit_test_on_item_returns_ungroup() {
+        // Clique LOCAL sobre o único item → TabAction de ungroup com o (stack_id, member_id) do menu.
+        let model = MenuModel::for_tab("a", "c");
+        let action = menu_hit_test(&model, MENU_PAD_X, MENU_ITEM_H / 2).unwrap();
+        assert_eq!(action.kind, "ungroup");
+        assert_eq!(action.member_id, "c");
+        assert_eq!(action.stack_id, "a");
+    }
+
+    #[test]
+    fn menu_hit_test_outside_item_is_none() {
+        // Fora dos limites da superfície do menu → None (o chamador trata como dismiss).
+        let model = MenuModel::for_tab("a", "c");
+        assert!(
+            menu_hit_test(&model, MENU_PAD_X, MENU_ITEM_H + 1).is_none(),
+            "abaixo do único item"
+        );
+        assert!(
+            menu_hit_test(&model, MENU_W + 1, MENU_ITEM_H / 2).is_none(),
+            "à direita da superfície"
+        );
+        assert!(menu_hit_test(&model, -1, MENU_ITEM_H / 2).is_none(), "à esquerda da superfície");
     }
 
     #[test]

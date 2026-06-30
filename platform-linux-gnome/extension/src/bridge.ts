@@ -784,69 +784,6 @@ export function addToStack(
   return true;
 }
 
-/// Escolhe o alvo do Merge Fallback (ADR 0030) para a janela colapsada `floatedId` no grupo `key`:
-/// preferência pela janela FOCADA (se for outro id, do mesmo grupo e visível); senão a MAIOR janela
-/// visível do grupo. `undefined` se não há candidato (grupo sem outra janela tilada). A janela
-/// colapsada não está em `visible` (saiu da grade), então nunca é o próprio alvo.
-function pickMergeTarget(
-  key: string,
-  floatedId: number,
-  focusedId: number,
-  snapshots: { id: number; monitor: number; workspace: number }[],
-  visible: { id: number; width: number; height: number }[],
-): number | undefined {
-  const groupOf = new Map(snapshots.map((s) => [s.id, orderKey(s.monitor, s.workspace)]));
-  const sameGroup = (id: number) => groupOf.get(id) === key;
-  const visibleIds = new Set(visible.map((v) => v.id));
-  if (focusedId && focusedId !== floatedId && sameGroup(focusedId) && visibleIds.has(focusedId)) {
-    return focusedId;
-  }
-  let best: number | undefined;
-  let bestArea = -1;
-  for (const v of visible) {
-    if (v.id === floatedId || !sameGroup(v.id)) {
-      continue;
-    }
-    const area = v.width * v.height;
-    if (area > bestArea) {
-      bestArea = area;
-      best = v.id;
-    }
-  }
-  return best;
-}
-
-/// Merge Fallback (ADR 0030, GNOME-only): para cada janela colapsada (em `floatingIds`) que AINDA não
-/// foi tentada (`attempted`), agrupa-a como aba LINEAR no quadrante focado, via `addToStack` (que nunca
-/// recursa — abas ficam planas). Muta `stacks` e devolve os ids efetivamente agrupados, para o guard
-/// anti-loop do chamador. Ids já tentados são ignorados (rede de segurança: caem no floating legado).
-export function mergeFallback(
-  stacks: Map<string, Stack[]>,
-  floatingIds: number[],
-  attempted: Set<number>,
-  snapshots: { id: number; monitor: number; workspace: number }[],
-  visible: { id: number; width: number; height: number }[],
-  focusedId: number,
-): number[] {
-  const snapById = new Map(snapshots.map((s) => [s.id, s]));
-  const merged: number[] = [];
-  for (const fid of floatingIds) {
-    if (attempted.has(fid)) {
-      continue;
-    }
-    const snap = snapById.get(fid);
-    if (!snap) {
-      continue;
-    }
-    const key = orderKey(snap.monitor, snap.workspace);
-    const target = pickMergeTarget(key, fid, focusedId, snapshots, visible);
-    if (target !== undefined && addToStack(stacks, key, target, fid)) {
-      merged.push(fid);
-    }
-  }
-  return merged;
-}
-
 /// Define a aba ativa do stack que contém `member` (clique numa aba). Retorna `true` se mudou.
 export function setActiveMember(stacks: Map<string, Stack[]>, member: number): boolean {
   for (const list of stacks.values()) {

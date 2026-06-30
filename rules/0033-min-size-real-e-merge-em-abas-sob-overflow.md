@@ -7,6 +7,9 @@ tiláveis; emenda [0031](0031-cascata-sempre-spawn-unmaximize-e-preview-transluc
 [0030](0030-distribuicao-ciclica-quadrantes-e-merge-fallback.md), que estava dormente; emenda
 [0028](0028-eixos-limpos-cosmic-e-kde-sem-abas.md) — reintroduz abas no KDE para o caso de overflow,
 buscando paridade com o GNOME; reafirma [0002](0002-arquitetura-core-agnostico.md)/[0016](0016-extensao-ponte-burra-render-no-daemon.md))
+A parte **B** (sinal de overflow `floating`) e a parte **C** (Merge Fallback) foram **descontinuadas** por
+[0040](0040-esmagamento-impositivo-e-menu-de-contexto-kde.md) — esmagamento impositivo de min-size,
+agrupamento só manual. A parte **A** (min-size **real** nas pontes) **permanece**.
 
 ## Contexto
 

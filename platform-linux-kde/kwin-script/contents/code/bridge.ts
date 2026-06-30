@@ -804,11 +804,12 @@ export function toggleGroupDisabled(disabled: Set<string>, key: string): boolean
   return true;
 }
 
-// ---- Merge Fallback / abas (ADR 0030/0033, paridade com GNOME) ----
+// ---- Abas / stacks manuais (ADR 0040, paridade com GNOME) ----
 //
-// Quando o core sinaliza overflow (`floating`: o slot ficou < o mínimo do app), a ponte AGRUPA a janela
-// numa aba do quadrante focado em vez de deixá-la transbordar/flutuar. Cada aba recebe o slot inteiro;
-// as inativas são ocultadas (minimizadas). Helpers PUROS (testáveis sem KWin), com ids `string`.
+// O agrupamento em abas é só MANUAL (drag-to-group na zona `center`; Meta+S). O esmagamento impositivo
+// do core (ADR 0040) garante que toda janela rígida receba ≥ seu mínimo no grid, então não há mais
+// agrupamento automático sob overflow. Cada aba recebe o slot inteiro; as inativas são ocultadas
+// (minimizadas). Helpers PUROS (testáveis sem KWin), com ids `string`.
 
 /// Remove `id` de qualquer stack (de qualquer grupo), dissolvendo stacks que ficarem com < 2 membros e
 /// limpando grupos vazios. Usado ao fechar uma janela. Retorna `true` se algo mudou.
@@ -903,66 +904,6 @@ export function setActiveMember(stacks: Map<string, Stack[]>, member: string): b
     }
   }
   return false;
-}
-
-/// Escolhe o alvo do Merge Fallback para a janela colapsada `floatedId` no grupo `key`: preferência pela
-/// janela FOCADA (se for outro id, do mesmo grupo e visível); senão a MAIOR janela visível do grupo.
-function pickMergeTarget(
-  key: string,
-  floatedId: string,
-  focusedId: string,
-  snapshots: { id: string; monitor: number; workspace: number }[],
-  visible: { id: string; width: number; height: number }[],
-): string | undefined {
-  const groupOf = new Map(snapshots.map((s) => [s.id, orderKey(s.monitor, s.workspace)]));
-  const sameGroup = (id: string) => groupOf.get(id) === key;
-  const visibleIds = new Set(visible.map((v) => v.id));
-  if (focusedId && focusedId !== floatedId && sameGroup(focusedId) && visibleIds.has(focusedId)) {
-    return focusedId;
-  }
-  let best: string | undefined;
-  let bestArea = -1;
-  for (const v of visible) {
-    if (v.id === floatedId || !sameGroup(v.id)) {
-      continue;
-    }
-    const area = v.width * v.height;
-    if (area > bestArea) {
-      bestArea = area;
-      best = v.id;
-    }
-  }
-  return best;
-}
-
-/// Merge Fallback (ADR 0030/0033): para cada janela colapsada (em `floatingIds`) que AINDA não foi
-/// tentada (`attempted`), agrupa-a como aba no quadrante focado via `addToStack`. Muta `stacks` e devolve
-/// os ids efetivamente agrupados (para o guard anti-loop do chamador). Espelha a ponte GNOME.
-export function mergeFallback(
-  stacks: Map<string, Stack[]>,
-  floatingIds: string[],
-  attempted: Set<string>,
-  snapshots: { id: string; monitor: number; workspace: number }[],
-  visible: { id: string; width: number; height: number }[],
-  focusedId: string,
-): string[] {
-  const snapById = new Map(snapshots.map((s) => [s.id, s]));
-  const merged: string[] = [];
-  for (const fid of floatingIds) {
-    if (attempted.has(fid)) {
-      continue;
-    }
-    const snap = snapById.get(fid);
-    if (!snap) {
-      continue;
-    }
-    const key = orderKey(snap.monitor, snap.workspace);
-    const target = pickMergeTarget(key, fid, focusedId, snapshots, visible);
-    if (target !== undefined && addToStack(stacks, key, target, fid)) {
-      merged.push(fid);
-    }
-  }
-  return merged;
 }
 
 function isFiniteNumber(value: unknown): value is number {

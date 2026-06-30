@@ -7,6 +7,9 @@ emenda [0029](0029-daemon-sem-framework-visual.md) — a camada visual do previe
 **helper nativo separado**, nunca o daemon de geometria; reafirma o ciclo de Unmaximize de
 [0022](0022-stacknode-arvore-fechar-desagrupar-unmaximize.md); reafirma
 [0002](0002-arquitetura-core-agnostico.md)/[0016](0016-extensao-ponte-burra-render-no-daemon.md))
+A invariante "cascata sempre, `Σ tracks == avail`, nunca overflow" foi emendada por
+[0040](0040-esmagamento-impositivo-e-menu-de-contexto-kde.md): a track rígida recebe sempre ≥ seu mínimo,
+tolerando overflow (deslocamento compensatório).
 
 ## Contexto
 
