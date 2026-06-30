@@ -33,6 +33,14 @@ void main() {
 /// tamanho atual a cada chamada (o relayout reaplica após mover/redimensionar). Nunca lança.
 export function applyRoundedCorners(actor: Clutter.Actor, radius: number): void {
   try {
+    // Tamanho do ator ANTES de anexar/atualizar. Logo após `move_resize_frame`, a alocação é
+    // assíncrona e uma janela recém-criada ainda mede 0×0; anexar a OffscreenEffect (base do
+    // ShaderEffect) montaria um framebuffer 0×0 → `cogl_framebuffer_set_viewport: width>0 && height>0`.
+    // Aborta sem efeito; o relayout seguinte reaplica quando o ator já tiver tamanho válido.
+    const [w, h] = actor.get_size();
+    if (w <= 0 || h <= 0) {
+      return;
+    }
     let effect = actor.get_effect(EFFECT_NAME) as Clutter.ShaderEffect | null;
     if (!effect) {
       // shader_type tem default FRAGMENT (Cogl.ShaderType) — não precisamos passá-lo.
@@ -41,7 +49,6 @@ export function applyRoundedCorners(actor: Clutter.Actor, radius: number): void 
       actor.add_effect_with_name(EFFECT_NAME, effect);
       effect.set_uniform_value('tex', 0);
     }
-    const [w, h] = actor.get_size();
     effect.set_uniform_value('width', w);
     effect.set_uniform_value('height', h);
     effect.set_uniform_value('radius', radius);
