@@ -2,20 +2,17 @@
 //
 // PONTE BURRA (ver ADR rules/0016 e rules/0017): o script NÃO decide layout. Responsabilidades:
 //  - ler a config nativa do script (kwinrc) e propagá-la ao daemon;
-//  - manter o ESTADO LEVE na ponte (o daemon é sem estado): a ORDEM estável das janelas, os STACKS
-//    (abas) e os grupos com tiling desligado — enviados a cada `SyncWindows` via `state_json`;
+//  - manter o ESTADO LEVE na ponte (o daemon é sem estado): a ORDEM estável das janelas, as ÁRVORES
+//    BSP persistentes e os grupos com tiling desligado — enviados a cada `SyncWindows` via `state_json`;
 //  - escutar windowAdded/windowRemoved/windowActivated e pedir o layout ao daemon (`SyncWindows`),
 //    aplicando os retângulos via `window.frameGeometry`;
-//  - registrar os atalhos globais (Meta+Y = tiling por desktop; Meta+S = agrupar em abas);
-//  - durante um ARRASTO, resolver a zona no daemon (`ResolveDropZone`, com o retângulo da janela sob
-//    o cursor) e desenhar o indicador nativo (`workspace.showOutline`). Ao soltar: empilha (zona
-//    `stack`) ou troca de posição (swap), conforme a zona resolvida.
+//  - registrar os atalhos globais (Meta+Y = tiling por desktop; Meta+Shift+Y = chave geral);
+//  - durante um ARRASTO, resolver a zona LOCALMENTE (eixos limpos, ADR 0028) e desenhar o indicador
+//    nativo (`workspace.showOutline`). Ao soltar: SWAP (centro de uma janela) ou split 50/50 do slot
+//    do alvo / inserção global de 50%, conforme a zona resolvida.
 //
-// Abas no KDE (paridade FUNCIONAL com o GNOME, ver rules/0017): a aba ativa fica visível; as demais
-// são MINIMIZADAS (afordância nativa: aparecem na barra de tarefas/alt-tab). ATIVAR uma janela do
-// stack (taskbar/alt-tab) a traz à frente — a troca de aba é dirigida por ativação. Não há barra QML
-// desenhada pelo script (um KWin *Script*, ao contrário do St.Widget do GNOME, não instancia overlay
-// QML posicionado de forma confiável — isso seria um KWin *Effect*). A matemática vive 100% no Rust.
+// Tiling PURO no KDE (ADR 0028): SEM abas/stacks. O drop nunca empilha — o centro de uma janela faz
+// SWAP (troca as duas) e as bordas dividem o slot do alvo. A matemática vive 100% no Rust.
 
 import { DEFAULT_CONFIG, type TilingConfig } from './config.js';
 import {
@@ -23,9 +20,7 @@ import {
   serializeMonitors,
   serializeState,
   parseLayout,
-  parseTabBars,
   parseFloating,
-  parsePendingActions,
   parseLayoutTrees,
   resolveHotZone,
   serializeScope,
@@ -34,13 +29,8 @@ import {
   orderKey,
   appendToOrder,
   removeFromOrder,
-  removeIdFromStacks,
   sortByOrder,
-  toggleStackGroup,
   toggleGroupDisabled,
-  addToStack,
-  setActiveMember,
-  type Stack,
   type TreeNode,
   type HotZone,
   type Rect,
@@ -114,14 +104,8 @@ callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'Ping', (status: string) => {
 
 /// Ordem estável das janelas por `(monitor, desktop)`, chaveada pelo `internalId` (string).
 const order = new Map<string, string[]>();
-/// Stacks (abas) por `(monitor, desktop)`. Membros são `internalId` (string).
-const stacks = new Map<string, Stack[]>();
 /// Grupos `(monitor, desktop)` com tiling desligado (Meta+Y).
 const disabled = new Set<string>();
-/// Ids tiláveis (internalId) por grupo no último layout — base do Meta+S.
-const groupTiled = new Map<string, string[]>();
-/// internalIds que NÓS minimizamos como abas inativas (para restaurar depois).
-const stackHidden = new Set<string>();
 /// internalIds que NÓS elevamos (keepAbove) por auto-floating — para baixar ao voltarem ao grid.
 const floatingAbove = new Set<string>();
 /// Árvores BSP persistentes por `(monitor, desktop)`, com folhas em internalId (forma canônica).
@@ -258,11 +242,11 @@ function windowUnderPointObj(x: number, y: number, excludeId: string): KWinWindo
 }
 
 /// Libera as janelas do grid para o comportamento flutuante do sistema (chave geral desligada):
-/// desminimiza as abas que NÓS ocultamos e baixa (remove keepAbove) as que elevamos por auto-floating.
-/// Envolto em `applying` para não disparar retile reentrante via `minimizedChanged`/`keepAboveChanged`.
-/// O estado leve (ordem/stacks/árvores) é PRESERVADO — religar reorganiza tudo de volta. Idempotente.
+/// baixa (remove keepAbove) as que elevamos por auto-floating. Envolto em `applying` para não disparar
+/// retile reentrante via `keepAboveChanged`. O estado leve (ordem/árvores) é PRESERVADO — religar
+/// reorganiza tudo de volta. Idempotente.
 function releaseToFloating(): void {
-  if (stackHidden.size === 0 && floatingAbove.size === 0) {
+  if (floatingAbove.size === 0) {
     return;
   }
   applying = true;
@@ -272,9 +256,6 @@ function releaseToFloating(): void {
         continue;
       }
       const id = windowId(win);
-      if (stackHidden.has(id) && win.minimized) {
-        win.minimized = false;
-      }
       if (floatingAbove.has(id) && win.keepAbove) {
         win.keepAbove = false;
       }
@@ -282,11 +263,10 @@ function releaseToFloating(): void {
   } finally {
     applying = false;
   }
-  stackHidden.clear();
   floatingAbove.clear();
 }
 
-/// Coleta janelas + monitores na ORDEM estável, pede o layout ao daemon (com o estado de stacks/
+/// Coleta janelas + monitores na ORDEM estável, pede o layout ao daemon (com o estado de árvores +
 /// grupos desligados) e aplica os retângulos (pull). Não faz nada durante um arrasto nem reentrante.
 function retile(): void {
   if (draggedId !== null || applying) {
@@ -409,37 +389,16 @@ function retile(): void {
     'SyncWindows',
     serializeWindows(snapshots),
     serializeMonitors(monitorsFrom(outputs)),
-    serializeState(stacks, disabled, transportOf, trees, focusedStable),
+    serializeState(disabled, transportOf, trees, focusedStable),
     (layoutJson: string) => {
       syncAckSeq = mySeq;
       // Persiste as árvores reconciliadas (traduzidas de volta para internalId).
       trees = parseLayoutTrees(layoutJson, transportToStable);
       const commands = parseLayout(layoutJson);
-      const tabBars = parseTabBars(layoutJson);
-      debug(
-        'SyncWindows OK (seq',
-        mySeq,
-        ') — retângulos:',
-        commands.length,
-        'barras de abas:',
-        tabBars.length,
-      );
+      debug('SyncWindows OK (seq', mySeq, ') — retângulos:', commands.length);
       // Janelas isoladas por auto-floating (mínimo não cabe): aplicar e ELEVAR (keepAbove).
       const floating = parseFloating(layoutJson);
       const floatingHere = new Set<string>();
-
-      // Abas inativas a ocultar (minimizar): todo membro de stack que não é o ativo (por internalId).
-      const shouldHide = new Set<string>();
-      for (const bar of tabBars) {
-        for (const member of bar.members) {
-          if (member !== bar.active) {
-            const w = byId.get(member);
-            if (w) {
-              shouldHide.add(windowId(w));
-            }
-          }
-        }
-      }
 
       applying = true;
       // Alguma janela do snapshot morreu entre o envio do SyncWindows e esta resposta? Ao detectar,
@@ -447,21 +406,9 @@ function retile(): void {
       // recalcular a árvore BSP com o conjunto atual — preenchendo o quadrante da janela fechada.
       let sawDead = false;
       try {
-        // Restaura quem deixou de estar oculto (virou a aba ativa, ou o stack foi desfeito).
-        for (const sid of stackHidden) {
-          if (!shouldHide.has(sid)) {
-            const w = stableToWin.get(sid);
-            if (w && isLiveWindow(w)) {
-              w.minimized = false;
-            } else if (w) {
-              sawDead = true;
-            }
-          }
-        }
-        // Aplica a geometria das janelas visíveis (singles + aba ativa de cada stack). Pula janelas
-        // MAXIMIZADAS — sobrescrever a geometria as desmaximizaria. O compositor as mantém maximizadas
-        // por cima do slot reservado; ao desmaximizar, um novo relayout aplica o slot (Unmaximize
-        // Recovery).
+        // Aplica a geometria das janelas tiladas. Pula janelas MAXIMIZADAS — sobrescrever a geometria
+        // as desmaximizaria. O compositor as mantém maximizadas por cima do slot reservado; ao
+        // desmaximizar, um novo relayout aplica o slot (Unmaximize Recovery).
         for (const command of commands) {
           const win = byId.get(command.id);
           if (!win) {
@@ -478,17 +425,6 @@ function retile(): void {
               width: command.width,
               height: command.height,
             };
-          }
-        }
-        // Oculta as abas inativas recém-empilhadas.
-        for (const sid of shouldHide) {
-          if (!stackHidden.has(sid)) {
-            const w = stableToWin.get(sid);
-            if (w && isLiveWindow(w)) {
-              w.minimized = true;
-            } else if (w) {
-              sawDead = true;
-            }
           }
         }
         // Aplica a geometria das flutuantes (centralizadas pelo core) e as eleva acima do grid.
@@ -534,98 +470,17 @@ function retile(): void {
       for (const sid of floatingHere) {
         floatingAbove.add(sid);
       }
-      stackHidden.clear();
-      for (const sid of shouldHide) {
-        stackHidden.add(sid);
-      }
 
-      // Ids tiláveis (internalId) por grupo — base do toggle de abas (Meta+S).
-      collectGroupTiled(commands, tabBars, byId, outputs);
-
-      // Entrega por PULL: aplica as ações de aba (cliques na barra wgpu do KDE) que o daemon DRENOU
-      // nesta resposta — o KWin Script é pull-only e não consome o sinal `TabAction` (ADR 0022/0025).
-      // `activate`/`ungroup` mutam o estado leve e exigem re-tile; `close` fecha a janela e o
-      // `windowRemoved` seguinte re-tila sozinho. Ids de TRANSPORTE → internalId via
-      // `transportToStable` (e a janela via `byId`); lookup ausente (id reatribuído entre o clique e
-      // este sync) = no-op defensivo, como o resto da ponte.
-      let actionMutated = false;
-      for (const act of parsePendingActions(layoutJson)) {
-        if (act.action === 'close') {
-          const win = byId.get(act.member_id);
-          if (win && isLiveWindow(win)) {
-            win.closeWindow();
-          }
-          continue;
-        }
-        const sid = transportToStable.get(act.member_id);
-        if (sid === undefined) {
-          continue;
-        }
-        if (act.action === 'activate') {
-          actionMutated = setActiveMember(stacks, sid) || actionMutated;
-          // CORREÇÃO DO FOCO: marcar a aba ativa não bastava — a janela continuava atrás e sem foco
-          // (o usuário tinha de fechar a outra para interagir). Trazemos a janela-alvo à frente E ao
-          // foco do compositor: desminimiza (caso fosse aba inativa) e ATRIBUI `workspace.activeWindow`
-          // (read-write na API do KWin: ativar = levantar ao topo da pilha + focar). A aba antes ativa
-          // vira membro inativo e é minimizada pelo `retile` seguinte (disparado por `actionMutated`).
-          const win = stableToWin.get(sid) ?? byId.get(act.member_id);
-          if (win && isLiveWindow(win)) {
-            if (win.minimized) {
-              win.minimized = false;
-            }
-            workspace.activeWindow = win;
-          }
-        } else if (act.action === 'ungroup') {
-          actionMutated = removeIdFromStacks(stacks, sid) || actionMutated;
-        }
-      }
-
-      // Janela morreu durante o apply (snapshot velho) OU uma ação de aba mutou o estado: re-tila uma
-      // vez (o `applying` já é false) para encaixar o quadrante. Converge na próxima passada.
-      if (sawDead || actionMutated) {
+      // Janela morreu durante o apply (snapshot velho): re-tila uma vez (o `applying` já é false) para
+      // encaixar o quadrante. Converge na próxima passada.
+      if (sawDead) {
         retile();
       }
     },
   );
 }
 
-/// Recalcula `groupTiled` (ids tiláveis por grupo, ordem estável) a partir do último layout.
-function collectGroupTiled(
-  commands: ReturnType<typeof parseLayout>,
-  tabBars: ReturnType<typeof parseTabBars>,
-  byId: Map<number, KWinWindow>,
-  outputs: KWinOutput[],
-): void {
-  const transportIds = new Set<number>();
-  for (const c of commands) {
-    transportIds.add(c.id);
-  }
-  for (const bar of tabBars) {
-    for (const m of bar.members) {
-      transportIds.add(m);
-    }
-  }
-  groupTiled.clear();
-  for (const tid of transportIds) {
-    const win = byId.get(tid);
-    if (!win) {
-      continue;
-    }
-    const monitor = outputs.indexOf(win.output);
-    const key = orderKey(monitor < 0 ? 0 : monitor, desktopIndexOf(win));
-    const arr = groupTiled.get(key);
-    if (arr) {
-      arr.push(windowId(win));
-    } else {
-      groupTiled.set(key, [windowId(win)]);
-    }
-  }
-  for (const [key, arr] of groupTiled) {
-    groupTiled.set(key, sortByOrder(order, key, arr));
-  }
-}
-
-// ---- Atalhos globais (Meta+Shift+Y geral / Meta+Y por workspace / Meta+S abas) ----
+// ---- Atalhos globais (Meta+Shift+Y geral / Meta+Y por workspace) ----
 
 registerShortcut(
   'EtherbitToggleEnabled',
@@ -647,19 +502,6 @@ registerShortcut(
   'Meta+Y',
   () => {
     toggleGroupDisabled(disabled, activeGroupKey());
-    retile();
-  },
-);
-registerShortcut(
-  'EtherbitToggleTabbing',
-  'Etherbit: agrupa/desagrupa as janelas do quadrante em abas',
-  'Meta+S',
-  () => {
-    const key = activeGroupKey();
-    const ids = groupTiled.get(key) ?? [];
-    const aw = workspace.activeWindow;
-    const active = aw ? windowId(aw) : (ids[0] ?? '');
-    toggleStackGroup(stacks, key, ids, active);
     retile();
   },
 );
@@ -715,7 +557,23 @@ function onMoveStart(win: KWinWindow): void {
   }
 }
 
-/// Um passo do arrasto: calcula a zona quente LOCALMENTE (ADR 0026 — sem D-Bus por passo) e atualiza o
+/// Tamanho mínimo (px) da janela com `internalId == id`, ou `(0,0)` se ausente/morta. Alimenta o
+/// esticão da metade local do preview (ADR 0028).
+function draggedMinSize(id: string): { width: number; height: number } {
+  for (const win of workspace.windowList()) {
+    if (windowId(win) !== id || !isLiveWindow(win)) {
+      continue;
+    }
+    const min = win.minSize;
+    if (min) {
+      return { width: Math.max(0, Math.round(min.width)), height: Math.max(0, Math.round(min.height)) };
+    }
+    return { width: 0, height: 0 };
+  }
+  return { width: 0, height: 0 };
+}
+
+/// Um passo do arrasto: calcula a zona quente LOCALMENTE (ADR 0028 — sem D-Bus por passo) e atualiza o
 /// outline nativo com o retângulo resultante. Throttle por posição (pula se o cursor não moveu).
 function onMoveStep(): void {
   if (draggedId === null || resolving) {
@@ -737,12 +595,13 @@ function onMoveStep(): void {
       }
     : null;
   const monitor = monitorRectUnder(cursor.x, cursor.y);
-  const hot = resolveHotZone({ x: cursor.x, y: cursor.y }, targetRect, monitor);
+  // Min da janela em arrasto: estica a metade local do preview se o min-size exigir (ADR 0028).
+  const hot = resolveHotZone({ x: cursor.x, y: cursor.y }, targetRect, monitor, draggedMinSize(draggedId));
   lastHot = hot;
   // Fallback nativo: contorno do retângulo-destino (caso o overlay do daemon esteja indisponível).
   updateOutline(hot.dropZone === 'none' ? null : hot.outline);
-  // HUD translúcido das 9 células via overlay wgpu do daemon. Envia só quando a CÉLULA realçada muda
-  // (a chave embute escopo+zona+contorno), mantendo o D-Bus fora do caminho quente por-pixel.
+  // HUD translúcido via overlay wgpu do daemon. Envia só quando a CÉLULA realçada muda (a chave embute
+  // escopo+zona+contorno), mantendo o D-Bus fora do caminho quente por-pixel.
   const o = hot.outline;
   const hudKey = `${hot.scope}|${hot.dropZone}|${o.x},${o.y},${o.width},${o.height}`;
   if (hudKey !== lastHudKey) {
@@ -758,8 +617,9 @@ function onMoveStep(): void {
   resolving = false;
 }
 
-/// Fim do arrasto: esconde o outline e consolida o drop. Zona `stack` → empilha em abas; zona de lado
-/// → MoveWindow (move+split na árvore persistente, traduzindo ids via os mapas do último retile).
+/// Fim do arrasto: esconde o outline e consolida o drop (ADR 0028). Centro de uma janela → SWAP (o core
+/// troca as duas); borda sobre uma janela → split do slot do alvo; gap vazio → inserção global de 50% /
+/// maximizar. Tudo via MoveWindow (move na árvore persistente, traduzindo ids via os mapas do retile).
 function onMoveFinish(win: KWinWindow): void {
   workspace.hideOutline();
   // Esconde o HUD translúcido do overlay do daemon (fim do arrasto).
@@ -783,13 +643,11 @@ function onMoveFinish(win: KWinWindow): void {
   }
   const cursor = workspace.cursorPos;
   const target = windowUnderPointObj(cursor.x, cursor.y, dragged);
-  const monitor = collectOutputs().indexOf(win.output);
-  const key = orderKey(monitor < 0 ? 0 : monitor, desktopIndexOf(win));
   const draggedT = lastTransportOf.get(dragged);
 
-  // MoveWindow (ADR 0026): IDs como string decimal (o `callDBus` do KWin não empacota uint64 — ADR
-  // 0009); `scope` define local (1/3 na submatriz) vs global (bloco de 50%).
-  const moveWindow = (targetT: number, zoneStr: string, scope: 'local' | 'global' | 'grid'): void => {
+  // MoveWindow (ADR 0028): IDs como string decimal (o `callDBus` do KWin não empacota uint64 — ADR
+  // 0009); `scope` define local (split do slot do alvo / swap no centro) vs global (50% / maximizar).
+  const moveWindow = (targetT: number, zoneStr: string, scope: 'local' | 'global'): void => {
     if (draggedT === undefined) {
       retile();
       return;
@@ -799,7 +657,7 @@ function onMoveFinish(win: KWinWindow): void {
       OBJECT_PATH,
       IFACE,
       'MoveWindow',
-      serializeState(stacks, disabled, lastTransportOf, trees, dragged),
+      serializeState(disabled, lastTransportOf, trees, dragged),
       String(draggedT),
       String(targetT),
       zoneStr,
@@ -811,12 +669,8 @@ function onMoveFinish(win: KWinWindow): void {
     );
   };
 
-  // Escopo grid: fixa na célula unitária da matriz 3×3 do workspace (não exige janela-alvo).
-  if (hot && hot.scope === 'grid' && hot.dropZone !== 'none') {
-    moveWindow(0, hot.dropZone, 'grid');
-    return;
-  }
-  // Escopo global (gap vazio): insere como nó principal do workspace (50%) — não exige janela-alvo.
+  // Escopo global (gap vazio): insere como nó principal do workspace (50%) ou maximiza no centro — não
+  // exige janela-alvo.
   if (hot && hot.scope === 'global' && hot.dropZone !== 'none') {
     moveWindow(0, hot.dropZone, 'global');
     return;
@@ -825,12 +679,11 @@ function onMoveFinish(win: KWinWindow): void {
     retile();
     return;
   }
-  const targetId = windowId(target);
-  // Centro de uma janela-alvo (escopo local) → empilha em abas (estado de stacks; o core não muta a
-  // árvore).
-  if (hot && hot.scope === 'local' && hot.dropZone === 'center') {
-    addToStack(stacks, key, targetId, dragged);
-    retile();
+  // Escopo local sobre uma janela-alvo: o core trata QUALQUER zona — `center` = swap (troca as duas);
+  // `left/right/top/bottom` = split 50/50 do slot do alvo. Traduz targetId → transporte e delega.
+  const targetT = lastTransportOf.get(windowId(target));
+  if (hot && hot.scope === 'local' && hot.dropZone !== 'none' && targetT !== undefined) {
+    moveWindow(targetT, hot.dropZone, 'local');
     return;
   }
   retile();
@@ -872,7 +725,7 @@ function applyResize(win: KWinWindow): void {
       IFACE,
       'ResizeWindow',
       monitorsJson,
-      serializeState(stacks, disabled, lastTransportOf, trees, start.id),
+      serializeState(disabled, lastTransportOf, trees, start.id),
       // ID como string decimal (o `callDBus` não empacota uint64; daemon faz `parse::<u64>()`). ADR 0009.
       String(idT),
       d.edge,
@@ -910,25 +763,19 @@ workspace.windowAdded.connect((win) => {
 workspace.windowRemoved.connect((win) => {
   // A janela já pode estar parcialmente destruída: ler `internalId` pode lançar. Se conseguirmos,
   // limpamos o estado leve por id; de qualquer forma re-tilamos para encaixar o quadrante vazio
-  // (ids órfãos em `order`/`stacks` são inertes — o próximo retile só considera janelas vivas).
+  // (ids órfãos em `order` são inertes — o próximo retile só considera janelas vivas).
   try {
     const id = windowId(win);
     removeFromOrder(order, id);
-    removeIdFromStacks(stacks, id);
-    stackHidden.delete(id);
   } catch (e) {
     // referência morta — segue direto para o retile
   }
   retile();
 });
-// Ativar uma janela do stack (taskbar/alt-tab) a torna a aba ativa (troca de aba dirigida por
-// ativação — paridade funcional com o clique na barra do GNOME). Ignora durante a aplicação.
-workspace.windowActivated.connect((win) => {
+// O foco mudar pode reorganizar o grid (ordem estável por grupo). Ignora durante a aplicação.
+workspace.windowActivated.connect(() => {
   if (applying) {
     return;
-  }
-  if (win) {
-    setActiveMember(stacks, windowId(win));
   }
   retile();
 });

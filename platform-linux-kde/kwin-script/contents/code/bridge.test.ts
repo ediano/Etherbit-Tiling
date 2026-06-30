@@ -4,9 +4,7 @@ import {
   serializeWindows,
   serializeMonitors,
   parseLayout,
-  parseTabBars,
   parseFloating,
-  parsePendingActions,
   parseLayoutTrees,
   parsePreview,
   orderKey,
@@ -15,10 +13,6 @@ import {
   sortByOrder,
   serializeState,
   serializeTarget,
-  removeIdFromStacks,
-  toggleStackGroup,
-  addToStack,
-  setActiveMember,
   toggleGroupDisabled,
   treeToTransport,
   treeFromTransport,
@@ -26,7 +20,6 @@ import {
   resolveHotZone,
   serializeScope,
   serializeHudCells,
-  type Stack,
   type TreeNode,
   type TransportNode,
   type WindowSnapshot,
@@ -109,93 +102,7 @@ describe('parseFloating', () => {
   });
 });
 
-describe('parseTabBars', () => {
-  const bar = {
-    stack_id: 7,
-    x: 12,
-    y: 12,
-    width: 976,
-    height: 28,
-    content: { x: 12, y: 40, width: 976, height: 748 },
-    members: [7, 8],
-    active: 8,
-  };
-
-  it('parseia as barras do formato objeto', () => {
-    expect(parseTabBars(JSON.stringify({ rects: [], tab_bars: [bar] }))).toEqual([bar]);
-  });
-
-  it('formato legado (array) → sem barras', () => {
-    expect(parseTabBars('[{"id":1,"x":0,"y":0,"width":1,"height":1}]')).toEqual([]);
-  });
-
-  it('descarta barra malformada', () => {
-    expect(parseTabBars(JSON.stringify({ tab_bars: [{ ...bar, members: ['x'] }] }))).toEqual([]);
-  });
-});
-
-describe('parsePendingActions', () => {
-  const close = { stack_id: 1, member_id: 2, action: 'close' };
-  const ungroup = { stack_id: 1, member_id: 3, action: 'ungroup' };
-
-  it('parseia as ações do formato objeto, preservando a ordem', () => {
-    const json = JSON.stringify({ rects: [], tab_bars: [], pending_actions: [close, ungroup] });
-    expect(parsePendingActions(json)).toEqual([close, ungroup]);
-  });
-
-  it('campo ausente (daemon antigo) → sem ações', () => {
-    expect(parsePendingActions(JSON.stringify({ rects: [], tab_bars: [] }))).toEqual([]);
-  });
-
-  it('formato legado (array) e JSON inválido → sem ações', () => {
-    expect(parsePendingActions('[{"id":1}]')).toEqual([]);
-    expect(parsePendingActions('{bad')).toEqual([]);
-  });
-
-  it('descarta entradas malformadas ou de ação desconhecida', () => {
-    const json = JSON.stringify({
-      pending_actions: [
-        close,
-        { stack_id: 1, member_id: 4, action: 'explode' }, // ação desconhecida
-        { stack_id: 1, action: 'close' }, // sem member_id
-        { stack_id: 'x', member_id: 5, action: 'close' }, // id não-numérico
-      ],
-    });
-    expect(parsePendingActions(json)).toEqual([close]);
-  });
-});
-
-describe('estado de abas (stacks, ids string) e tiling por grupo', () => {
-  it('toggleStackGroup empilha e desfaz (ids internalId)', () => {
-    const stacks = new Map<string, Stack[]>();
-    const key = orderKey(0, 0);
-    expect(toggleStackGroup(stacks, key, ['a', 'b', 'c'], 'b')).toBe(true);
-    expect(stacks.get(key)).toEqual([{ members: ['a', 'b', 'c'], active: 'b' }]);
-    expect(toggleStackGroup(stacks, key, ['a', 'b', 'c'], 'b')).toBe(true);
-    expect(stacks.has(key)).toBe(false);
-  });
-
-  it('addToStack cria e depois adiciona à pilha do alvo', () => {
-    const stacks = new Map<string, Stack[]>();
-    const key = orderKey(0, 0);
-    expect(addToStack(stacks, key, 'a', 'b')).toBe(true);
-    expect(stacks.get(key)).toEqual([{ members: ['a', 'b'], active: 'b' }]);
-    expect(addToStack(stacks, key, 'a', 'c')).toBe(true);
-    expect(stacks.get(key)).toEqual([{ members: ['a', 'b', 'c'], active: 'c' }]);
-  });
-
-  it('setActiveMember muda a aba ativa', () => {
-    const stacks = new Map<string, Stack[]>([[orderKey(0, 0), [{ members: ['a', 'b'], active: 'a' }]]]);
-    expect(setActiveMember(stacks, 'b')).toBe(true);
-    expect(stacks.get(orderKey(0, 0))?.[0]?.active).toBe('b');
-  });
-
-  it('removeIdFromStacks dissolve stack que fica com 1 membro', () => {
-    const stacks = new Map<string, Stack[]>([[orderKey(0, 0), [{ members: ['a', 'b'], active: 'b' }]]]);
-    expect(removeIdFromStacks(stacks, 'b')).toBe(true);
-    expect(stacks.has(orderKey(0, 0))).toBe(false);
-  });
-
+describe('estado de tiling por grupo e árvores (ids string)', () => {
   it('toggleGroupDisabled liga e desliga', () => {
     const disabled = new Set<string>();
     toggleGroupDisabled(disabled, orderKey(0, 1));
@@ -204,32 +111,48 @@ describe('estado de abas (stacks, ids string) e tiling por grupo', () => {
     expect(disabled.has(orderKey(0, 1))).toBe(false);
   });
 
-  it('serializeState traduz internalId → id de transporte e ignora membros ausentes', () => {
-    const stacks = new Map<string, Stack[]>([[orderKey(0, 0), [{ members: ['a', 'b', 'z'], active: 'b' }]]]);
+  it('serializeState traduz as folhas das árvores e os grupos desligados (sem stacks)', () => {
     const disabled = new Set<string>([orderKey(1, 2)]);
-    // 'z' não tem transporte → fica de fora; sobra [1,2], ativa 'b'→2.
     const transportOf = new Map<string, number>([
       ['a', 1],
       ['b', 2],
     ]);
     const trees = new Map<string, TreeNode | null>([[orderKey(0, 0), { win: 'a' }]]);
-    expect(JSON.parse(serializeState(stacks, disabled, transportOf, trees, 'b'))).toEqual({
-      stacks: [{ monitor: 0, workspace: 0, members: [1, 2], active: 2 }],
+    // Tiling puro (ADR 0028): `stacks` viaja vazio (compat); foco 'b' → 2.
+    expect(JSON.parse(serializeState(disabled, transportOf, trees, 'b'))).toEqual({
+      stacks: [],
       disabled_groups: [[1, 2]],
       trees: [{ monitor: 0, workspace: 0, root: { win: 1 } }],
       focused_id: 2,
     });
   });
 
-  it('serializeState omite stack que fica com < 2 membros traduzíveis', () => {
-    const stacks = new Map<string, Stack[]>([[orderKey(0, 0), [{ members: ['a', 'z'], active: 'a' }]]]);
-    const transportOf = new Map<string, number>([['a', 1]]);
-    expect(JSON.parse(serializeState(stacks, new Set(), transportOf, new Map(), ''))).toEqual({
+  it('serializeState com estado vazio → JSON mínimo', () => {
+    expect(JSON.parse(serializeState(new Set(), new Map(), new Map(), ''))).toEqual({
       stacks: [],
       disabled_groups: [],
       trees: [],
       focused_id: 0,
     });
+  });
+
+  it('árvore: nó `stack` legado COLAPSA para a folha do 1º membro traduzível (migração ADR 0028)', () => {
+    const transportOf = new Map<string, number>([
+      ['a', 1],
+      ['b', 2],
+    ]);
+    const toStable = new Map<number, string>([
+      [1, 'a'],
+      [2, 'b'],
+    ]);
+    // Árvore antiga com um `stack` de 2 membros: a conversão colapsa no 1º membro (sem reconstruir).
+    const legacy: TreeNode = { stack: { members: ['a', 'b'], active: 'b' } };
+    expect(treeToTransport(legacy, transportOf)).toEqual({ win: 1 });
+    // 'a' sem transporte → cai para o próximo membro traduzível ('b' → 2).
+    expect(treeToTransport(legacy, new Map([['b', 2]]))).toEqual({ win: 2 });
+    // Mesma migração na volta (transporte → internalId).
+    const legacyT: TransportNode = { stack: { members: [1, 2], active: 2 } };
+    expect(treeFromTransport(legacyT, toStable)).toEqual({ win: 'a' });
   });
 
   it('árvore: round-trip internalId ↔ transporte e colapso de célula intraduzível (grid)', () => {
@@ -241,7 +164,7 @@ describe('estado de abas (stacks, ids string) e tiling por grupo', () => {
       [1, 'a'],
       [2, 'b'],
     ]);
-    // Grid de 2 colunas (split binário) — ADR 0026.
+    // Grid de 2 colunas (split binário) — ADR 0028.
     const tree: TreeNode = {
       grid: {
         cols: [0.5, 0.5],
@@ -273,7 +196,6 @@ describe('estado de abas (stacks, ids string) e tiling por grupo', () => {
     const toStable = new Map<number, string>([[1, 'a']]);
     const json = JSON.stringify({
       rects: [],
-      tab_bars: [],
       trees: [{ monitor: 0, workspace: 0, root: { win: 1 } }],
     });
     const trees = parseLayoutTrees(json, toStable);
@@ -346,44 +268,57 @@ describe('ordem estável das janelas (ids string/internalId)', () => {
     expect(sortByOrder(order, '0:0', ['a', 'z', 'b', 'c'])).toEqual(['c', 'a', 'b', 'z']);
   });
 
-  // ---- HUD do jogo da velha (resolveHotZone — ADR 0026, célula 3×3 estrita) ----
-  const MON = { x: 0, y: 0, width: 900, height: 900 }; // células de 300×300
+  // ---- HUD dos "eixos limpos" (resolveHotZone — ADR 0028, tiling puro sem abas) ----
+  const MON = { x: 0, y: 0, width: 900, height: 900 };
   const FULL = { x: 0, y: 0, width: 900, height: 900 }; // janela cobrindo o monitor
+  const NOMIN = { width: 0, height: 0 }; // sem min-size → 50/50 puro
 
-  it('terço central de uma janela → fusão em abas (center local)', () => {
-    const hz = resolveHotZone({ x: 450, y: 450 }, FULL, MON);
+  it('miolo central de uma janela → SWAP (center local), outline = alvo inteiro', () => {
+    const hz = resolveHotZone({ x: 450, y: 450 }, FULL, MON, NOMIN);
     expect(hz.scope).toBe('local');
     expect(hz.dropZone).toBe('center');
     expect(hz.outline).toEqual(FULL);
   });
 
-  it('canto superior-esquerdo sobre janela → célula 3×3 (grid, top_left)', () => {
-    const hz = resolveHotZone({ x: 150, y: 150 }, FULL, MON);
-    expect(hz.scope).toBe('grid');
-    expect(hz.dropZone).toBe('top_left');
-    expect(hz.cells).toHaveLength(9);
-    expect(hz.hot).toEqual([0]);
-    expect(hz.outline).toEqual({ x: 0, y: 0, width: 300, height: 300 });
+  it('fora do centro, lado esquerdo de uma janela → split 50/50 local (left)', () => {
+    const hz = resolveHotZone({ x: 100, y: 450 }, FULL, MON, NOMIN);
+    expect(hz.scope).toBe('local');
+    expect(hz.dropZone).toBe('left');
+    expect(hz.outline).toEqual({ x: 0, y: 0, width: 450, height: 900 });
   });
 
-  it('densidade: canto colado à borda NÃO vira 50% (continua grid)', () => {
-    const hz = resolveHotZone({ x: 5, y: 5 }, FULL, MON);
-    expect(hz.scope).toBe('grid');
-    expect(hz.dropZone).toBe('top_left');
-    expect(hz.outline).toEqual({ x: 0, y: 0, width: 300, height: 300 });
+  it('fora do centro, base de uma janela → split 50/50 local (bottom)', () => {
+    const hz = resolveHotZone({ x: 450, y: 800 }, FULL, MON, NOMIN);
+    expect(hz.scope).toBe('local');
+    expect(hz.dropZone).toBe('bottom');
+    expect(hz.outline).toEqual({ x: 0, y: 450, width: 900, height: 450 });
   });
 
-  it('gap sem janela → global 50% pela borda', () => {
-    const hz = resolveHotZone({ x: 10, y: 450 }, null, MON);
+  it('min da arrastada ESTICA a metade local no eixo do split (ADR 0028)', () => {
+    // Lado esquerdo (split horizontal); min de largura 600 > metade 450 → extent = 600 (≤ 95%).
+    const hz = resolveHotZone({ x: 100, y: 450 }, FULL, MON, { width: 600, height: 0 });
+    expect(hz.scope).toBe('local');
+    expect(hz.dropZone).toBe('left');
+    expect(hz.outline).toEqual({ x: 0, y: 0, width: 600, height: 900 });
+  });
+
+  it('gap sem janela, borda da tela → global 50%', () => {
+    const hz = resolveHotZone({ x: 10, y: 450 }, null, MON, NOMIN);
     expect(hz.scope).toBe('global');
     expect(hz.dropZone).toBe('left');
     expect(hz.outline).toEqual({ x: 0, y: 0, width: 450, height: 900 });
   });
 
-  it('serializeScope mapeia local/global/grid', () => {
+  it('gap sem janela, miolo central da tela → maximizar (center global)', () => {
+    const hz = resolveHotZone({ x: 450, y: 450 }, null, MON, NOMIN);
+    expect(hz.scope).toBe('global');
+    expect(hz.dropZone).toBe('center');
+    expect(hz.outline).toEqual(MON);
+  });
+
+  it('serializeScope mapeia local/global', () => {
     expect(serializeScope('global')).toBe('global');
     expect(serializeScope('local')).toBe('local');
-    expect(serializeScope('grid')).toBe('grid');
   });
 
   it('serializeHudCells marca a célula realçada e usa literais (sem object spread)', () => {

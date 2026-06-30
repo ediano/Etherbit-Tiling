@@ -54,33 +54,6 @@ export interface DropPreview {
   height: number;
 }
 
-/// Espelha o `TabBarDto` do daemon: a faixa da barra de abas de um stack + o conteúdo da aba ativa.
-/// `members`/`active`/`stack_id` são ids de TRANSPORTE (números opacos), que o KWin traduz de volta
-/// ao `internalId` via o `byId` do retile.
-export interface TabBar {
-  stack_id: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  content: { x: number; y: number; width: number; height: number };
-  members: number[];
-  active: number;
-}
-
-/// Ações de aba que a barra wgpu do KDE pode disparar (espelha as do `TabHit` no daemon).
-export type TabActionKind = 'activate' | 'close' | 'ungroup';
-
-/// Espelha o `TabActionDto` do daemon: um clique do usuário na barra de abas RENDERIZADA pelo daemon
-/// (wgpu/layer-shell), entregue à ponte por PULL no `layout_json` do próximo `SyncWindows` — o KWin
-/// Script é pull-only e não consome o sinal `TabAction` (ver ADR 0022). `member_id`/`stack_id` são
-/// ids de TRANSPORTE; a ponte os traduz de volta ao `internalId` e aplica.
-export interface PendingAction {
-  stack_id: number;
-  member_id: number;
-  action: TabActionKind;
-}
-
 /// Serializa as janelas para o `windows_json` do contrato D-Bus.
 export function serializeWindows(windows: WindowSnapshot[]): string {
   return JSON.stringify(windows);
@@ -153,102 +126,6 @@ export function parseFloating(json: string): LayoutCommand[] {
   return commands;
 }
 
-/// Parse defensivo das barras de abas do `layout_json` (objeto `{ rects, tab_bars }`). Formato
-/// legado (array) → sem barras. Descarta entradas malformadas em vez de lançar.
-export function parseTabBars(json: string): TabBar[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(json);
-  } catch {
-    return [];
-  }
-  if (Array.isArray(parsed) || typeof parsed !== 'object' || parsed === null) {
-    return [];
-  }
-  const raw = (parsed as Record<string, unknown>).tab_bars;
-  if (!Array.isArray(raw)) {
-    return [];
-  }
-  const bars: TabBar[] = [];
-  for (const entry of raw) {
-    const bar = toTabBar(entry);
-    if (bar) {
-      bars.push(bar);
-    }
-  }
-  return bars;
-}
-
-/// Parse defensivo das ações de aba pendentes do `layout_json` (objeto `{ ..., pending_actions }`).
-/// Ausente (daemon antigo) ou formato legado (array) → vazio. Descarta entradas malformadas ou de
-/// ação desconhecida em vez de lançar. Ver ADR 0022/0025.
-export function parsePendingActions(json: string): PendingAction[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(json);
-  } catch {
-    return [];
-  }
-  if (Array.isArray(parsed) || typeof parsed !== 'object' || parsed === null) {
-    return [];
-  }
-  const raw = (parsed as Record<string, unknown>).pending_actions;
-  if (!Array.isArray(raw)) {
-    return [];
-  }
-  const actions: PendingAction[] = [];
-  for (const entry of raw) {
-    if (typeof entry !== 'object' || entry === null) {
-      continue;
-    }
-    const v = entry as Record<string, unknown>;
-    if (
-      isFiniteNumber(v.stack_id) &&
-      isFiniteNumber(v.member_id) &&
-      (v.action === 'activate' || v.action === 'close' || v.action === 'ungroup')
-    ) {
-      actions.push({ stack_id: v.stack_id, member_id: v.member_id, action: v.action });
-    }
-  }
-  return actions;
-}
-
-function toTabBar(value: unknown): TabBar | null {
-  if (typeof value !== 'object' || value === null) {
-    return null;
-  }
-  const v = value as Record<string, unknown>;
-  const c = v.content as Record<string, unknown> | undefined;
-  if (
-    !isFiniteNumber(v.stack_id) ||
-    !isFiniteNumber(v.x) ||
-    !isFiniteNumber(v.y) ||
-    !isFiniteNumber(v.width) ||
-    !isFiniteNumber(v.height) ||
-    !isFiniteNumber(v.active) ||
-    !Array.isArray(v.members) ||
-    !v.members.every(isFiniteNumber) ||
-    typeof c !== 'object' ||
-    c === null ||
-    !isFiniteNumber(c.x) ||
-    !isFiniteNumber(c.y) ||
-    !isFiniteNumber(c.width) ||
-    !isFiniteNumber(c.height)
-  ) {
-    return null;
-  }
-  return {
-    stack_id: v.stack_id,
-    x: v.x,
-    y: v.y,
-    width: v.width,
-    height: v.height,
-    content: { x: c.x, y: c.y, width: c.width, height: c.height },
-    members: v.members as number[],
-    active: v.active,
-  };
-}
-
 function isLayoutCommand(value: unknown): value is LayoutCommand {
   if (typeof value !== 'object' || value === null) {
     return false;
@@ -288,12 +165,15 @@ export function parsePreview(json: string): DropPreview | null {
   return { zone: v.zone, x: v.x, y: v.y, width: v.width, height: v.height };
 }
 
-// ---- HUD de preview do jogo da velha (cálculo LOCAL na ponte — ADR 0026) ----
+// ---- HUD de preview dos "eixos limpos" (cálculo LOCAL na ponte — ADR 0028) ----
 //
-// Espelha o `resolveHotZone` da ponte GNOME: durante o arrasto, calcula a zona sob o cursor SEM chamar
-// o Rust (sobre uma janela = célula da matriz 3×3 do monitor ou centro=merge; gap vazio = bloco de
-// 50%). O HUD translúcido das 9 células é desenhado pelo OVERLAY wgpu do daemon (ShowDropHud), com o
-// `workspace.showOutline` nativo como fallback. O core só é acionado no DROP (MoveWindow). Puro/testável.
+// Tiling PURO, sem abas. Durante o arrasto, calcula a zona sob o cursor SEM chamar o Rust:
+//  - Sobre uma janela, miolo central → `center` local (no drop vira SWAP: troca as duas janelas).
+//  - Sobre uma janela, fora do centro → split 50/50 do CORPO do alvo pelo lado mais próximo
+//    (escopo `local`): a zona local divide o slot do alvo, não o monitor.
+//  - Gap vazio → bloco de 50% pela borda mais próxima, ou monitor inteiro no miolo (escopo `global`).
+// O HUD translúcido é desenhado pelo OVERLAY wgpu do daemon (ShowDropHud), com o `workspace.showOutline`
+// nativo como fallback. O core só é acionado no DROP (MoveWindow). Puro/testável.
 
 /// Retângulo simples em px absolutos de tela.
 export interface Rect {
@@ -305,36 +185,24 @@ export interface Rect {
 
 /// Resultado do HUD: a zona quente sob o cursor, as células e o destino do drop.
 export interface HotZone {
-  scope: 'local' | 'global' | 'grid';
+  scope: 'local' | 'global';
   dropZone: string;
   cells: Rect[];
   hot: number[];
   outline: Rect;
 }
 
-/// Zonas das 9 células da matriz 3×3 do monitor (índice = row*3 + col). Espelha `zone_to_cell` do core.
-const GRID_ZONES: string[] = [
-  'top_left',
-  'top',
-  'top_right',
-  'left',
-  'center',
-  'right',
-  'bottom_left',
-  'bottom',
-  'bottom_right',
-];
-
 /// Calcula a zona quente do HUD sob o cursor, sem D-Bus. `target` = retângulo da janela sob o cursor
-/// (`null` num gap vazio); `monitor` = área útil do monitor sob o cursor.
-///  - Terço CENTRAL de uma janela → `center` local (fusão em abas).
-///  - Qualquer outra parte SOBRE uma janela → CÉLULA da matriz 3×3 do monitor (escopo `grid`): o app se
-///    fixa na célula 1/9 sem esticar para 50% (densidade não dispara mais 50% acidental).
-///  - Gap vazio → bloco de 50% pela borda mais próxima (escopo `global`).
+/// (`null` num gap vazio); `monitor` = área útil do monitor sob o cursor; `draggedMin` = tamanho mínimo
+/// da janela em arrasto (estica a metade local do preview se necessário — ADR 0028; `(0,0)` = 50/50 puro).
+///  - Miolo CENTRAL de uma janela → `center` local (no drop o core faz SWAP das duas janelas).
+///  - Qualquer outra parte SOBRE uma janela → split 50/50 do CORPO do alvo pelo lado mais próximo (local).
+///  - Gap vazio → 50% pela borda mais próxima, ou monitor inteiro no miolo central (escopo `global`).
 export function resolveHotZone(
   pointer: { x: number; y: number },
   target: Rect | null,
   monitor: Rect,
+  draggedMin: { width: number; height: number },
 ): HotZone {
   if (target && target.width > 0 && target.height > 0) {
     const tfx = (pointer.x - target.x) / target.width;
@@ -344,14 +212,63 @@ export function resolveHotZone(
       const whole = { x: target.x, y: target.y, width: target.width, height: target.height };
       return { scope: 'local', dropZone: 'center', cells: [whole], hot: [0], outline: whole };
     }
-    return gridHotZone(pointer, monitor);
+    return localHotZone(pointer, target, draggedMin);
   }
   const mfx = monitor.width > 0 ? (pointer.x - monitor.x) / monitor.width : 0.5;
   const mfy = monitor.height > 0 ? (pointer.y - monitor.y) / monitor.height : 0.5;
   return globalHotZone(mfx, mfy, monitor);
 }
 
+/// Escopo LOCAL fora do centro: split 50/50 do CORPO do `target` pelo lado mais próximo do cursor.
+/// Espelha o `globalHotZone`, mas sobre o retângulo do alvo (a zona local divide o slot do alvo). A
+/// metade ENCOSTADA ao cursor é o destino; ela ESTICA no eixo do split se o min-size da janela arrastada
+/// exigir: `extent = clamp(max(metade, min), 5%, 95%)` da dimensão do alvo naquele eixo (ADR 0028).
+function localHotZone(
+  pointer: { x: number; y: number },
+  target: Rect,
+  draggedMin: { width: number; height: number },
+): HotZone {
+  const fx = (pointer.x - target.x) / target.width;
+  const fy = (pointer.y - target.y) / target.height;
+  const dl = fx;
+  const dr = 1 - fx;
+  const dt = fy;
+  const db = 1 - fy;
+  const nearest = Math.min(dl, dr, dt, db);
+  // Esticão do preview: largura/altura da metade respeitando o min da arrastada, em px, no eixo do split.
+  const extentX = clampExtent(Math.max(target.width / 2, draggedMin.width), target.width);
+  const extentY = clampExtent(Math.max(target.height / 2, draggedMin.height), target.height);
+  let dropZone: string;
+  let block: Rect;
+  if (nearest === dl) {
+    dropZone = 'left';
+    block = { x: target.x, y: target.y, width: extentX, height: target.height };
+  } else if (nearest === dr) {
+    dropZone = 'right';
+    block = { x: target.x + target.width - extentX, y: target.y, width: extentX, height: target.height };
+  } else if (nearest === dt) {
+    dropZone = 'top';
+    block = { x: target.x, y: target.y, width: target.width, height: extentY };
+  } else {
+    dropZone = 'bottom';
+    block = { x: target.x, y: target.y + target.height - extentY, width: target.width, height: extentY };
+  }
+  return { scope: 'local', dropZone, cells: [block], hot: [0], outline: block };
+}
+
+/// `clamp(value, 5%*disp, 95%*disp)`: limita a metade esticada por min-size aos extremos do alvo no eixo.
+function clampExtent(value: number, disp: number): number {
+  const lo = 0.05 * disp;
+  const hi = 0.95 * disp;
+  return Math.min(hi, Math.max(lo, value));
+}
+
 function globalHotZone(mfx: number, mfy: number, monitor: Rect): HotZone {
+  // Miolo central da tela vazia → maximizar (bloco = monitor inteiro). Antes de escolher a borda.
+  if (mfx > 1 / 3 && mfx < 2 / 3 && mfy > 1 / 3 && mfy < 2 / 3) {
+    const whole = { x: monitor.x, y: monitor.y, width: monitor.width, height: monitor.height };
+    return { scope: 'global', dropZone: 'center', cells: [whole], hot: [0], outline: whole };
+  }
   const dl = mfx;
   const dr = 1 - mfx;
   const dt = mfy;
@@ -377,37 +294,11 @@ function globalHotZone(mfx: number, mfy: number, monitor: Rect): HotZone {
   return { scope: 'global', dropZone, cells: [block], hot: [0], outline: block };
 }
 
-/// Escopo GRID: a célula 1/9 da matriz 3×3 do monitor sob o cursor. Desenha as 9 células e acende a do
-/// cursor; o drop fixa o app naquela célula (span 1×1, sem auto-expansão).
-function gridHotZone(pointer: { x: number; y: number }, monitor: Rect): HotZone {
-  const cw = monitor.width / 3;
-  const ch = monitor.height / 3;
-  const cells: Rect[] = [];
-  for (let row = 0; row < 3; row += 1) {
-    for (let col = 0; col < 3; col += 1) {
-      cells.push({ x: monitor.x + col * cw, y: monitor.y + row * ch, width: cw, height: ch });
-    }
-  }
-  const col = Math.min(2, Math.max(0, Math.floor((pointer.x - monitor.x) / cw)));
-  const row = Math.min(2, Math.max(0, Math.floor((pointer.y - monitor.y) / ch)));
-  const i = row * 3 + col;
-  return {
-    scope: 'grid',
-    dropZone: GRID_ZONES[i] as string,
-    cells,
-    hot: [i],
-    outline: cells[i] as Rect,
-  };
-}
-
-/// Serializa o escopo do drop para o `MoveWindow` (ADR 0026): `"global"` (50%), `"grid"` (célula 3×3)
-/// ou `"local"` (fusão/centro).
-export function serializeScope(scope: 'local' | 'global' | 'grid'): string {
+/// Serializa o escopo do drop para o `MoveWindow` (ADR 0028): `"global"` (50%/maximizar) ou `"local"`
+/// (split do slot do alvo / swap no centro).
+export function serializeScope(scope: 'local' | 'global'): string {
   if (scope === 'global') {
     return 'global';
-  }
-  if (scope === 'grid') {
-    return 'grid';
   }
   return 'local';
 }
@@ -473,17 +364,11 @@ export function sortByOrder(order: Map<string, string[]>, key: string, ids: stri
     .map((e) => e.id);
 }
 
-// ---- Estado de abas (stacks) e de tiling por grupo (estado leve da ponte) ----
+// ---- Árvores BSP persistentes e tiling por grupo (estado leve da ponte) ----
 //
-// Espelha os helpers do GNOME, mas com ids STRING (`internalId`). O `state_json` do contrato usa ids
-// de TRANSPORTE (números) — então `serializeState` recebe um `transportOf` (internalId → id opaco)
-// para traduzir os membros na hora de enviar. Helpers PUROS (testáveis sem KWin).
-
-/// Um stack: membros (internalId) na ordem das abas + a aba ativa (visível).
-export interface Stack {
-  members: string[];
-  active: string;
-}
+// Tiling PURO (ADR 0028): SEM abas/stacks. O `state_json` do contrato usa ids de TRANSPORTE (números)
+// — então `serializeState` recebe um `transportOf` (internalId → id opaco) para traduzir as folhas das
+// árvores na hora de enviar. Helpers PUROS (testáveis sem KWin).
 
 /// Célula de um `grid` com ids INTERNOS (espelha `etherbit_tiling_core::GridChild`).
 export interface TreeGridCell {
@@ -504,13 +389,15 @@ export interface TransportGridCell {
 }
 
 /// Árvore persistente com ids INTERNOS (internalId string) — a forma canônica guardada na ponte.
-/// ADR 0026: o `grid` elástico 3×3 substitui o `split` binário.
+/// ADR 0028: tiling PURO; a árvore só tem `win`/`grid`. A variante `stack` permanece nos TIPOS apenas
+/// para PARSEAR árvores antigas (migração) — a conversão a COLAPSA para a folha do 1º membro.
 export type TreeNode =
   | { win: string }
   | { stack: { members: string[]; active: string } }
   | { grid: { cols: number[]; rows: number[]; cells: TreeGridCell[] } };
 
-/// Árvore com ids de TRANSPORTE (números), como trafega no contrato D-Bus (igual ao GNOME).
+/// Árvore com ids de TRANSPORTE (números), como trafega no contrato D-Bus (igual ao GNOME). A variante
+/// `stack` só existe para parsear payloads legados — a conversão produz `{ win }`.
 export type TransportNode =
   | { win: number }
   | { stack: { members: number[]; active: number } }
@@ -527,24 +414,15 @@ export function treeToTransport(
     return t === undefined ? null : { win: t };
   }
   if ('stack' in node) {
-    // Traduz cada membro; membros sem transporte (janela fechada) caem. < 2 → degrada (folha/colapso).
-    const members: number[] = [];
+    // Migração para tiling puro (ADR 0028): COLAPSA o stack legado na FOLHA do 1º membro traduzível
+    // (em vez de reconstruir o stack). Sem membro traduzível → cai (colapso).
     for (const m of node.stack.members) {
       const t = transportOf.get(m);
       if (t !== undefined) {
-        members.push(t);
+        return { win: t };
       }
     }
-    if (members.length === 0) {
-      return null;
-    }
-    if (members.length === 1) {
-      return { win: members[0] as number };
-    }
-    const activeT = transportOf.get(node.stack.active);
-    const active =
-      activeT !== undefined && members.includes(activeT) ? activeT : (members[0] as number);
-    return { stack: { members, active } };
+    return null;
   }
   // grid: traduz cada célula; as intraduzíveis caem. 0 → null; 1 → achata no sobrevivente.
   const cells: TransportGridCell[] = [];
@@ -573,23 +451,14 @@ export function treeFromTransport(
     return s === undefined ? null : { win: s };
   }
   if ('stack' in node) {
-    const members: string[] = [];
+    // Migração para tiling puro (ADR 0028): COLAPSA o stack legado na FOLHA do 1º membro traduzível.
     for (const m of node.stack.members) {
       const s = toStable.get(m);
       if (s !== undefined) {
-        members.push(s);
+        return { win: s };
       }
     }
-    if (members.length === 0) {
-      return null;
-    }
-    if (members.length === 1) {
-      return { win: members[0] as string };
-    }
-    const activeS = toStable.get(node.stack.active);
-    const active =
-      activeS !== undefined && members.includes(activeS) ? activeS : (members[0] as string);
-    return { stack: { members, active } };
+    return null;
   }
   const cells: TreeGridCell[] = [];
   for (const c of node.grid.cells) {
@@ -613,38 +482,15 @@ export function parseOrderKey(key: string): [number, number] {
   return [Number(m) || 0, Number(w) || 0];
 }
 
-/// Serializa o estado leve para o `state_json`, traduzindo os membros (internalId) para ids de
-/// transporte via `transportOf`. Só viajam stacks com ≥ 2 membros presentes (traduzíveis).
+/// Serializa o estado leve para o `state_json`, traduzindo as folhas das árvores (internalId) para ids
+/// de transporte via `transportOf`. Tiling PURO (ADR 0028): sem stacks — só grupos com tiling desligado
+/// + árvores + foco. O campo `stacks: []` segue no JSON por compat (o daemon tem `#[serde(default)]`).
 export function serializeState(
-  stacks: Map<string, Stack[]>,
   disabled: Set<string>,
   transportOf: Map<string, number>,
   trees: Map<string, TreeNode | null>,
   focusedStable: string,
 ): string {
-  const stackDtos: Array<{
-    monitor: number;
-    workspace: number;
-    members: number[];
-    active: number;
-  }> = [];
-  for (const [key, list] of stacks) {
-    const [monitor, workspace] = parseOrderKey(key);
-    for (const s of list) {
-      const members: number[] = [];
-      for (const m of s.members) {
-        const t = transportOf.get(m);
-        if (t !== undefined) {
-          members.push(t);
-        }
-      }
-      if (members.length >= 2) {
-        const activeT = transportOf.get(s.active);
-        const active = activeT !== undefined ? activeT : (members[0] as number);
-        stackDtos.push({ monitor, workspace, members, active });
-      }
-    }
-  }
   const disabledDtos: Array<[number, number]> = [];
   for (const key of disabled) {
     disabledDtos.push(parseOrderKey(key));
@@ -657,7 +503,7 @@ export function serializeState(
   }
   const focused_id = transportOf.get(focusedStable) ?? 0;
   return JSON.stringify({
-    stacks: stackDtos,
+    stacks: [],
     disabled_groups: disabledDtos,
     trees: treeDtos,
     focused_id,
@@ -736,100 +582,6 @@ export function serializeTarget(
   rect: { x: number; y: number; width: number; height: number } | null,
 ): string {
   return rect ? JSON.stringify(rect) : '';
-}
-
-/// Remove `id` (internalId) de qualquer stack, dissolvendo stacks com < 2 membros e limpando grupos
-/// vazios. Retorna `true` se algo mudou.
-export function removeIdFromStacks(stacks: Map<string, Stack[]>, id: string): boolean {
-  let changed = false;
-  for (const [key, list] of stacks) {
-    for (const s of list) {
-      const idx = s.members.indexOf(id);
-      if (idx !== -1) {
-        s.members.splice(idx, 1);
-        if (s.active === id) {
-          s.active = s.members[0] ?? '';
-        }
-        changed = true;
-      }
-    }
-    const kept = list.filter((s) => s.members.length >= 2);
-    if (kept.length !== list.length) {
-      changed = true;
-    }
-    if (kept.length === 0) {
-      stacks.delete(key);
-    } else {
-      stacks.set(key, kept);
-    }
-  }
-  return changed;
-}
-
-/// Toggle de agrupamento do grupo `key` (atalho Super+S). Se já há stack → desfaz; senão empilha
-/// TODOS os `ids` (internalId, na ordem estável) num único stack, com `active` visível.
-export function toggleStackGroup(
-  stacks: Map<string, Stack[]>,
-  key: string,
-  ids: string[],
-  active: string,
-): boolean {
-  const existing = stacks.get(key);
-  if (existing && existing.length > 0) {
-    stacks.delete(key);
-    return true;
-  }
-  if (ids.length < 2) {
-    return false;
-  }
-  const activeId = ids.includes(active) ? active : (ids[0] as string);
-  stacks.set(key, [{ members: [...ids], active: activeId }]);
-  return true;
-}
-
-/// Empilha o arrastado na janela-alvo (drag-to-group). Se o alvo já está num stack do grupo, adiciona
-/// o arrastado; senão cria `[targetId, draggedId]`. O arrastado vira a aba ativa.
-export function addToStack(
-  stacks: Map<string, Stack[]>,
-  key: string,
-  targetId: string,
-  draggedId: string,
-): boolean {
-  if (targetId === draggedId) {
-    return false;
-  }
-  removeIdFromStacks(stacks, draggedId);
-  let list = stacks.get(key);
-  if (!list) {
-    list = [];
-    stacks.set(key, list);
-  }
-  const target = list.find((s) => s.members.includes(targetId));
-  if (target) {
-    if (!target.members.includes(draggedId)) {
-      target.members.push(draggedId);
-    }
-    target.active = draggedId;
-  } else {
-    list.push({ members: [targetId, draggedId], active: draggedId });
-  }
-  return true;
-}
-
-/// Define a aba ativa do stack que contém `member`. Retorna `true` se mudou.
-export function setActiveMember(stacks: Map<string, Stack[]>, member: string): boolean {
-  for (const list of stacks.values()) {
-    for (const s of list) {
-      if (s.members.includes(member)) {
-        if (s.active !== member) {
-          s.active = member;
-          return true;
-        }
-        return false;
-      }
-    }
-  }
-  return false;
 }
 
 /// Liga/desliga o tiling do grupo `key` (atalho Super+Y).
