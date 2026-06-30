@@ -200,7 +200,12 @@ impl OutputHandler for App {
     }
     fn new_output(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _o: wl_output::WlOutput) {}
     fn update_output(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _o: wl_output::WlOutput) {}
-    fn output_destroyed(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _o: wl_output::WlOutput) {
+    fn output_destroyed(
+        &mut self,
+        _c: &Connection,
+        _q: &QueueHandle<Self>,
+        _o: wl_output::WlOutput,
+    ) {
     }
 }
 

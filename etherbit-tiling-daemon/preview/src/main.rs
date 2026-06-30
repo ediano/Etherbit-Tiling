@@ -19,11 +19,7 @@ async fn main() -> Result<()> {
     let (tx, rx) = watch::channel::<Option<overlay::PreviewRect>>(None);
 
     let _connection = service::serve(tx).await?;
-    println!(
-        "Etherbit preview — servindo {} em {}",
-        service::BUS_NAME,
-        service::OBJECT_PATH
-    );
+    println!("Etherbit preview — servindo {} em {}", service::BUS_NAME, service::OBJECT_PATH);
 
     // O event loop Wayland é bloqueante (calloop): roda numa thread dedicada. É o ÚNICO ponto que
     // exige uma sessão Wayland real com wlr-layer-shell (KWin) — validado em hardware, não no CI.
