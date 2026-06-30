@@ -265,10 +265,12 @@ export interface Rect {
 
 /// Resultado do HUD: a zona quente sob o cursor, as células a desenhar e o destino do drop.
 export interface HotZone {
-  /// `local` = subdivide a submatriz da janela-alvo; `global` = bloco de 50% do workspace.
-  scope: 'local' | 'global';
+  /// `grid` = célula unitária da matriz 3×3 do monitor (o caso comum sobre uma janela); `local` =
+  /// fusão em abas (centro de uma janela-alvo); `global` = bloco de 50% do workspace (gap vazio).
+  scope: 'local' | 'global' | 'grid';
   /// Comando a enviar no drop: `left|right|top|bottom|top_left|top_right|bottom_left|bottom_right|
-  /// center|none`. `center` = fusão em abas (a ponte chama `addToStack`, não o MoveWindow).
+  /// center|none`. `center` com escopo `local` = fusão em abas (a ponte chama `addToStack`); com
+  /// escopo `grid` = a célula central (1,1) da matriz.
   dropZone: string;
   /// Células do jogo da velha a DESENHAR (9 no local; 1 bloco no global). GNOME usa todas; KDE ignora.
   cells: Rect[];
@@ -278,29 +280,67 @@ export interface HotZone {
   outline: Rect;
 }
 
-/// Faixa (fração do MONITOR) junto às bordas da tela que aciona o escopo GLOBAL.
-const SCREEN_EDGE_FRAC = 0.12;
+/// Zonas das 9 células da matriz 3×3 do monitor, em ordem row-major (índice = row*3 + col). Espelha
+/// `zone_to_cell` do core (top_left = (0,0) … bottom_right = (2,2)).
+const GRID_ZONES: readonly string[] = [
+  'top_left',
+  'top',
+  'top_right',
+  'left',
+  'center',
+  'right',
+  'bottom_left',
+  'bottom',
+  'bottom_right',
+];
 
 /// Calcula a zona quente do HUD sob o cursor, sem D-Bus. `target` é o retângulo da janela sob o cursor
 /// (ou `null` se o cursor está num gap vazio). `monitor` é a área útil do monitor sob o cursor.
+///  - Terço CENTRAL de uma janela-alvo → `center` local (fusão em abas).
+///  - Qualquer outra parte SOBRE uma janela → CÉLULA da matriz 3×3 do monitor (escopo `grid`): o app se
+///    fixa naquela célula 1/9 sem esticar para 50% (ADR 0026 — quadrantes estritos). Decoupla "estou
+///    sobre uma janela" de "estou perto da borda da tela": densidade não dispara mais 50% acidental.
+///  - Gap vazio (sem janela sob o cursor) → bloco de 50% pela borda mais próxima (escopo `global`).
 export function resolveHotZone(
   pointer: { x: number; y: number },
   target: Rect | null,
   monitor: Rect,
 ): HotZone {
+  if (target && target.width > 0 && target.height > 0) {
+    const tfx = (pointer.x - target.x) / target.width;
+    const tfy = (pointer.y - target.y) / target.height;
+    if (tfx > 1 / 3 && tfx < 2 / 3 && tfy > 1 / 3 && tfy < 2 / 3) {
+      const whole = { x: target.x, y: target.y, width: target.width, height: target.height };
+      return { scope: 'local', dropZone: 'center', cells: [whole], hot: [0], outline: whole };
+    }
+    return gridHotZone(pointer, monitor);
+  }
   const mfx = monitor.width > 0 ? (pointer.x - monitor.x) / monitor.width : 0.5;
   const mfy = monitor.height > 0 ? (pointer.y - monitor.y) / monitor.height : 0.5;
-  const nearScreenEdge =
-    mfx < SCREEN_EDGE_FRAC ||
-    mfx > 1 - SCREEN_EDGE_FRAC ||
-    mfy < SCREEN_EDGE_FRAC ||
-    mfy > 1 - SCREEN_EDGE_FRAC;
+  return globalHotZone(mfx, mfy, monitor);
+}
 
-  // Global: perto das bordas da tela OU sem janela sob o cursor (gap vazio).
-  if (nearScreenEdge || !target || target.width <= 0 || target.height <= 0) {
-    return globalHotZone(mfx, mfy, monitor);
+/// Escopo GRID: a célula 1/9 da matriz 3×3 do monitor sob o cursor. Desenha as 9 células e acende a do
+/// cursor; o drop fixa o app naquela célula (span 1×1, sem auto-expansão).
+function gridHotZone(pointer: { x: number; y: number }, monitor: Rect): HotZone {
+  const cw = monitor.width / 3;
+  const ch = monitor.height / 3;
+  const cells: Rect[] = [];
+  for (let row = 0; row < 3; row += 1) {
+    for (let col = 0; col < 3; col += 1) {
+      cells.push({ x: monitor.x + col * cw, y: monitor.y + row * ch, width: cw, height: ch });
+    }
   }
-  return localHotZone(pointer, target);
+  const col = Math.min(2, Math.max(0, Math.floor((pointer.x - monitor.x) / cw)));
+  const row = Math.min(2, Math.max(0, Math.floor((pointer.y - monitor.y) / ch)));
+  const i = row * 3 + col;
+  return {
+    scope: 'grid',
+    dropZone: GRID_ZONES[i] as string,
+    cells,
+    hot: [i],
+    outline: cells[i] as Rect,
+  };
 }
 
 /// Escopo GLOBAL: a borda da tela mais próxima vira um bloco de 50% do monitor.
@@ -330,73 +370,16 @@ function globalHotZone(mfx: number, mfy: number, monitor: Rect): HotZone {
   return { scope: 'global', dropZone, cells: [block], hot: [0], outline: block };
 }
 
-/// Escopo LOCAL: 3×3 dentro da janela-alvo. Centro = merge; eixos = linha/coluna inteira; cantos =
-/// célula única.
-function localHotZone(pointer: { x: number; y: number }, target: Rect): HotZone {
-  const cw = target.width / 3;
-  const ch = target.height / 3;
-  const cells: Rect[] = [];
-  for (let row = 0; row < 3; row += 1) {
-    for (let col = 0; col < 3; col += 1) {
-      cells.push({ x: target.x + col * cw, y: target.y + row * ch, width: cw, height: ch });
-    }
+/// Serializa o escopo do drop para o `MoveWindow` (ADR 0026): `"global"` (50%), `"grid"` (célula 3×3)
+/// ou `"local"` (fusão/centro).
+export function serializeScope(scope: 'local' | 'global' | 'grid'): string {
+  if (scope === 'global') {
+    return 'global';
   }
-  const idx = (r: number, c: number): number => r * 3 + c;
-  const fx = (pointer.x - target.x) / target.width;
-  const fy = (pointer.y - target.y) / target.height;
-  const col = Math.min(2, Math.max(0, Math.floor(fx * 3)));
-  const row = Math.min(2, Math.max(0, Math.floor(fy * 3)));
-
-  // Centro → fusão em abas (a janela-alvo inteira acende).
-  if (col === 1 && row === 1) {
-    return { scope: 'local', dropZone: 'center', cells, hot: [idx(1, 1)], outline: { ...target } };
+  if (scope === 'grid') {
+    return 'grid';
   }
-  // Eixos → linha/coluna inteira (faixa de 1/3 do lado).
-  if (col === 1 && row === 0) {
-    return localAxis('top', cells, [idx(0, 0), idx(0, 1), idx(0, 2)], {
-      x: target.x,
-      y: target.y,
-      width: target.width,
-      height: ch,
-    });
-  }
-  if (col === 1 && row === 2) {
-    return localAxis('bottom', cells, [idx(2, 0), idx(2, 1), idx(2, 2)], {
-      x: target.x,
-      y: target.y + 2 * ch,
-      width: target.width,
-      height: ch,
-    });
-  }
-  if (row === 1 && col === 0) {
-    return localAxis('left', cells, [idx(0, 0), idx(1, 0), idx(2, 0)], {
-      x: target.x,
-      y: target.y,
-      width: cw,
-      height: target.height,
-    });
-  }
-  if (row === 1 && col === 2) {
-    return localAxis('right', cells, [idx(0, 2), idx(1, 2), idx(2, 2)], {
-      x: target.x + 2 * cw,
-      y: target.y,
-      width: cw,
-      height: target.height,
-    });
-  }
-  // Cantos → célula única; o nome do canto vai ao core (que mapeia para a borda horizontal dominante).
-  const cornerZone = `${row === 0 ? 'top' : 'bottom'}_${col === 0 ? 'left' : 'right'}`;
-  const i = idx(row, col);
-  return { scope: 'local', dropZone: cornerZone, cells, hot: [i], outline: cells[i] as Rect };
-}
-
-function localAxis(dropZone: string, cells: Rect[], hot: number[], outline: Rect): HotZone {
-  return { scope: 'local', dropZone, cells, hot, outline };
-}
-
-/// Serializa o escopo do drop para o `MoveWindow` (ADR 0026): `"global"` ou `"local"`.
-export function serializeScope(scope: 'local' | 'global'): string {
-  return scope === 'global' ? 'global' : 'local';
+  return 'local';
 }
 
 // ---- Ordem estável das janelas (estado leve da ponte) ----

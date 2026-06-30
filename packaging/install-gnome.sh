@@ -10,6 +10,48 @@
 # (sem sudo). Wayland: o GNOME Shell só recarrega extensões após logout/login.
 set -euo pipefail
 
+# --- Trava de ambiente gráfico (fail-safe) -------------------------------------
+# Impede execução cruzada: rodar o instalador do GNOME sob KDE (ou vice-versa)
+# embaralharia configs/serviços de DEs distintos. Detecção via sinais freedesktop
+# ($XDG_CURRENT_DESKTOP pode ser lista separada por ':', ex. "ubuntu:GNOME").
+#   - GNOME detectado        → segue.
+#   - KDE/Plasma detectado    → erro + exit 1 (a trava principal).
+#   - Ambiente indeterminado  → pergunta [s/N] (padrão: parar); sem TTY, aborta.
+# Bypass total: ETHERBIT_SKIP_DE_CHECK=1.
+guard_desktop() {
+  if [ "${ETHERBIT_SKIP_DE_CHECK:-0}" = "1" ]; then
+    echo ">> ETHERBIT_SKIP_DE_CHECK=1 — trava de ambiente desativada."
+    return 0
+  fi
+  local signals
+  signals="$(printf '%s:%s:%s' \
+    "${XDG_CURRENT_DESKTOP:-}" "${XDG_SESSION_DESKTOP:-}" "${DESKTOP_SESSION:-}" \
+    | tr '[:upper:]' '[:lower:]')"
+  case "$signals" in
+    *gnome*) return 0 ;;  # GNOME detectado — segue.
+  esac
+  case "$signals" in
+    *kde*|*plasma*)
+      echo "erro: este é o instalador do GNOME, mas o ambiente atual parece ser KDE/Plasma." >&2
+      echo "       Use o install-kde.sh. Para forçar: ETHERBIT_SKIP_DE_CHECK=1 bash <este-script>." >&2
+      exit 1
+      ;;
+  esac
+  echo "aviso: não foi possível confirmar que o ambiente é o GNOME (XDG_CURRENT_DESKTOP='${XDG_CURRENT_DESKTOP:-vazio}')." >&2
+  if [ -t 0 ]; then
+    printf 'Continuar a instalação do GNOME mesmo assim? [s/N] ' >&2
+    local resp=""
+    read -r resp || resp=""
+    case "$resp" in
+      [sSyY]*) echo ">> Prosseguindo a pedido do usuário."; return 0 ;;
+      *) echo "Instalação cancelada." >&2; exit 1 ;;
+    esac
+  fi
+  echo "       Sessão não interativa — abortando por segurança. Para forçar: ETHERBIT_SKIP_DE_CHECK=1 bash <este-script>." >&2
+  exit 1
+}
+guard_desktop
+
 UUID="etherbit.tiling@ediano.dev"
 REPO="${ETHERBIT_RELEASE_REPO:-ediano/etherbit-tiling-releases}"
 TARBALL="etherbit-tiling-gnome.tar.gz"

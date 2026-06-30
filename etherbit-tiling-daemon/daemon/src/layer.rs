@@ -157,6 +157,12 @@ impl TabBarOverlay {
         self.bars.iter().find(|b| b.stack_id == stack_id)
     }
 
+    /// Pinta o preenchimento translúcido de UMA célula do HUD do jogo da velha (cobre a superfície
+    /// inteira): `HUD_HOT` para a célula sob o cursor, `HUD_FILL` para as demais.
+    pub fn render_fill(&self, view: &wgpu::TextureView, color: crate::render::Color) {
+        self.renderer.draw_fill(&self.ctx.device, &self.ctx.queue, view, color);
+    }
+
     /// Redesenha uma barra na sua superfície (`view` = textura da swapchain da layer-surface). Dois
     /// passes: (1) os quads (faixa/guias/"x") com `LoadOp::Clear`; (2) o TEXTO dos títulos por cima com
     /// `LoadOp::Load` (preserva os quads). É `&mut self` porque o glyphon exige `&mut` em
@@ -312,6 +318,12 @@ struct BarSurface {
     wl: LayerSurface,
     width: u32,
     height: u32,
+    /// `true` se esta superfície é uma CÉLULA do HUD do jogo da velha (preenchimento translúcido), e
+    /// não uma barra de abas. Distingue o caminho de desenho em `draw` e evita que `apply_bars`/
+    /// `apply_hud` se sobrescrevam (cada um só recria as suas).
+    is_hud: bool,
+    /// Só para HUD: `true` se é a célula sob o cursor (cor mais opaca).
+    hot: bool,
 }
 
 /// Estado do event loop Wayland: globais, seat/pointer/output, o overlay (render) e as superfícies por
@@ -331,6 +343,8 @@ struct App {
     rt: tokio::runtime::Handle,
     exit: bool,
     last_bars: Vec<BarInput>,
+    /// Último estado do HUD aplicado (`None` = escondido), para não recriar superfícies à toa.
+    last_hud: Option<Vec<crate::protocol::HudCellDto>>,
 }
 
 impl App {
@@ -355,8 +369,9 @@ impl App {
     /// é desprezível e evita um diff frágil de superfícies.
     fn apply_bars(&mut self, inputs: &[BarInput]) {
         self.overlay.update_bars(inputs);
-        // Solta as superfícies antigas (gpu antes de wl, pela ordem de campos).
-        self.surfaces.clear();
+        // Solta só as superfícies de BARRA (preserva as do HUD, que têm ciclo próprio durante o
+        // arrasto). `gpu` é dropado antes de `wl` pela ordem de campos do `BarSurface`.
+        self.surfaces.retain(|s| s.is_hud);
         // Coleta a geometria ANTES do laço para não emprestar `self.overlay` enquanto muta `surfaces`.
         let geoms: Vec<(u64, i32, i32, u32, u32)> = self
             .overlay
@@ -364,6 +379,7 @@ impl App {
             .iter()
             .map(|b| (b.stack_id, b.bar.x, b.bar.y, b.bar.w.max(1) as u32, b.bar.h.max(1) as u32))
             .collect();
+        crate::dlog!("overlay: materializando {} superfície(s) de barra de abas", geoms.len());
         for (stack_id, bx, by, bw, bh) in geoms {
             let (output, (ox, oy)) = self.output_for(bx, by);
             let surface = self.compositor.create_surface(&self.qh);
@@ -388,7 +404,60 @@ impl App {
                 Some(s) => s,
                 None => continue,
             };
-            self.surfaces.push(BarSurface { stack_id, gpu, wl: layer, width: bw, height: bh });
+            self.surfaces.push(BarSurface {
+                stack_id,
+                gpu,
+                wl: layer,
+                width: bw,
+                height: bh,
+                is_hud: false,
+                hot: false,
+            });
+        }
+    }
+
+    /// Recria as superfícies do HUD do jogo da velha (overlay translúcido durante o arrasto, KDE). Uma
+    /// superfície layer-shell `Overlay` por célula, com preenchimento translúcido (a célula `hot` é
+    /// mais opaca). `cells` vazio = esconde o HUD. Preserva as barras de abas (recria só as do HUD).
+    /// Estratégia "recriar do zero" como `apply_bars`: o HUD muda por TRANSIÇÃO de célula (não por
+    /// pixel — a ponte só chama `ShowDropHud` quando a célula realçada muda), então o custo é tolerável
+    /// (otimização possível: criar as 9 uma vez e só redesenhar a flag `hot`).
+    fn apply_hud(&mut self, cells: &[crate::protocol::HudCellDto]) {
+        // Solta só as superfícies do HUD (preserva as barras de abas).
+        self.surfaces.retain(|s| !s.is_hud);
+        for c in cells {
+            let (bw, bh) = (c.width.max(1) as u32, c.height.max(1) as u32);
+            let (output, (ox, oy)) = self.output_for(c.x, c.y);
+            let surface = self.compositor.create_surface(&self.qh);
+            let layer = self.layer_shell.create_layer_surface(
+                &self.qh,
+                surface,
+                Layer::Overlay,
+                Some("etherbit-drop-hud"),
+                output.as_ref(),
+            );
+            layer.set_anchor(Anchor::TOP | Anchor::LEFT);
+            layer.set_size(bw, bh);
+            // Margem = posição absoluta menos a origem do output ancorado (multi-monitor).
+            layer.set_margin((c.y - oy).max(0), 0, 0, (c.x - ox).max(0));
+            layer.set_exclusive_zone(0);
+            // Não captura teclado nem deve interceptar o move interativo (o arrasto está em curso).
+            layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+            layer.commit();
+
+            let gpu = match self.create_gpu_surface(&layer) {
+                Some(s) => s,
+                None => continue,
+            };
+            self.surfaces.push(BarSurface {
+                stack_id: 0,
+                gpu,
+                wl: layer,
+                width: bw,
+                height: bh,
+                is_hud: true,
+                hot: c.hot,
+            });
         }
     }
 
@@ -431,7 +500,6 @@ impl App {
     /// Desenha a barra da superfície `idx` (estática: só redesenha em configure/recriação). Clona o
     /// `TabBar` para soltar o empréstimo imutável do overlay antes do `render_bar` (`&mut self`).
     fn draw(&mut self, idx: usize) {
-        let stack_id = self.surfaces[idx].stack_id;
         let frame = match self.surfaces[idx].gpu.get_current_texture() {
             Ok(frame) => frame,
             Err(err) => {
@@ -440,6 +508,15 @@ impl App {
             }
         };
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        if self.surfaces[idx].is_hud {
+            // Célula do HUD do jogo da velha: preenchimento translúcido (hot = mais opaca).
+            let color =
+                if self.surfaces[idx].hot { crate::render::HUD_HOT } else { crate::render::HUD_FILL };
+            self.overlay.render_fill(&view, color);
+            frame.present();
+            return;
+        }
+        let stack_id = self.surfaces[idx].stack_id;
         let bar = match self.overlay.bar_for_stack(stack_id) {
             Some(b) => b.clone(),
             None => return,
@@ -665,14 +742,16 @@ impl ProvidesRegistryState for App {
 pub async fn run_event_loop(
     overlay: TabBarOverlay,
     bars_rx: watch::Receiver<Vec<BarInput>>,
+    hud_rx: watch::Receiver<Option<Vec<crate::protocol::HudCellDto>>>,
 ) -> Result<()> {
     let rt = tokio::runtime::Handle::current();
-    tokio::task::block_in_place(move || run_blocking(overlay, bars_rx, rt))
+    tokio::task::block_in_place(move || run_blocking(overlay, bars_rx, hud_rx, rt))
 }
 
 fn run_blocking(
     overlay: TabBarOverlay,
     mut bars_rx: watch::Receiver<Vec<BarInput>>,
+    mut hud_rx: watch::Receiver<Option<Vec<crate::protocol::HudCellDto>>>,
     rt: tokio::runtime::Handle,
 ) -> Result<()> {
     let conn = match Connection::connect_to_env() {
@@ -726,6 +805,7 @@ fn run_blocking(
         rt,
         exit: false,
         last_bars: Vec::new(),
+        last_hud: None,
     };
 
     // Roundtrip inicial: popula outputs/seats antes de materializar superfícies.
@@ -759,6 +839,15 @@ fn run_blocking(
             if inputs != app.last_bars {
                 app.last_bars = inputs.clone();
                 app.apply_bars(&inputs);
+            }
+        }
+        // Poll do HUD do jogo da velha (mesma estratégia): recria as células só quando o estado MUDA
+        // (a ponte só republica por transição de célula durante o arrasto).
+        if hud_rx.has_changed().unwrap_or(false) {
+            let cells = hud_rx.borrow_and_update().clone();
+            if cells != app.last_hud {
+                app.last_hud = cells.clone();
+                app.apply_hud(cells.as_deref().unwrap_or(&[]));
             }
         }
     }

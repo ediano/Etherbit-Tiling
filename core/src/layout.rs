@@ -272,12 +272,15 @@ pub enum Edge {
 }
 
 /// Escopo de um drop (ADR 0026): `Local` subdivide DENTRO da submatriz da janela-alvo (faixa de 1/3 no
-/// eixo); `Global` insere a arrastada como NÓ PRINCIPAL do workspace (bloco de 50%). A ponte decide o
-/// escopo (cursor sobre o corpo de uma janela = local; perto das bordas da tela ou em gap = global).
+/// eixo); `Global` insere a arrastada como NÓ PRINCIPAL do workspace (bloco de 50%); `Grid` fixa a
+/// arrastada numa CÉLULA UNITÁRIA da matriz 3×3 do workspace (a `zone` dá a célula — ver `zone_to_cell`),
+/// sem esticar o span para 50% das vizinhas. A ponte decide o escopo (cursor sobre o corpo de uma janela
+/// = local; canto/quadrante com densidade = grid; perto das bordas da tela em gap = global).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropScope {
     Local,
     Global,
+    Grid,
 }
 
 /// Proporção mínima de um nó (evita folhas degeneradas); o resize faz clamp a isto.
@@ -1411,6 +1414,14 @@ pub fn move_window(
     zone: DropZone,
     scope: DropScope,
 ) -> LayoutTree {
+    // Escopo `Grid`: fixa a arrastada na CÉLULA UNITÁRIA da matriz 3×3 do workspace (a `zone` dá a
+    // célula). Tratado antes do eixo binário — `Center` aqui é uma célula válida (1,1), não fusão.
+    if scope == DropScope::Grid {
+        return match zone_to_cell(zone) {
+            Some((col, row)) => place_in_grid_cell(tree, dragged, col, row),
+            None => tree.clone(),
+        };
+    }
     let (axis, dragged_first) = match zone {
         DropZone::Left | DropZone::TopLeft | DropZone::BottomLeft => (Axis::Horizontal, true),
         DropZone::Right | DropZone::TopRight | DropZone::BottomRight => (Axis::Horizontal, false),
@@ -1420,6 +1431,7 @@ pub fn move_window(
         _ => return tree.clone(),
     };
     match scope {
+        DropScope::Grid => tree.clone(), // já tratado acima (early-return); braço p/ exaustividade.
         DropScope::Global => {
             // Só o grupo que CONTÉM a arrastada é afetado (o daemon aplica a todas as árvores; as
             // demais são no-op). Sem isto, a arrastada seria inserida em grupos a que não pertence.
@@ -1449,6 +1461,63 @@ pub fn move_window(
                 root: Some(split_leaf_into(root, target, dragged, axis, dragged_first, 1.0 / 3.0)),
             }
         }
+    }
+}
+
+/// Mapeia uma `zone` do jogo da velha para a célula `(col, row)` (0-based) da matriz 3×3 do workspace.
+/// `Stack`/`None` não têm célula. Espelha a numeração do HUD (top_left = (0,0) … bottom_right = (2,2)).
+fn zone_to_cell(zone: DropZone) -> Option<(u8, u8)> {
+    Some(match zone {
+        DropZone::TopLeft => (0, 0),
+        DropZone::Top => (1, 0),
+        DropZone::TopRight => (2, 0),
+        DropZone::Left => (0, 1),
+        DropZone::Center => (1, 1),
+        DropZone::Right => (2, 1),
+        DropZone::BottomLeft => (0, 2),
+        DropZone::Bottom => (1, 2),
+        DropZone::BottomRight => (2, 2),
+        DropZone::Stack | DropZone::None => return None,
+    })
+}
+
+/// Fixa `dragged` na célula `(col, row)` de uma matriz 3×3 do workspace (span **1×1** — NÃO expande para
+/// metades vizinhas), reflowando as demais folhas nas células livres em ordem row-major. As células
+/// vazias ficam sem janela (sem auto-expansão, ADR 0026). Excedentes (>8 outras folhas) aninham-se
+/// balanceadas na última célula livre. Só o grupo que CONTÉM `dragged` muda (os demais são no-op no
+/// daemon). Stacks são preservados pela âncora: o `reconcile` do `SyncWindows` seguinte os re-materializa
+/// a partir do estado da ponte (este resultado é só topologia; a geometria vem do próximo sync).
+fn place_in_grid_cell(tree: &LayoutTree, dragged: u64, col: u8, row: u8) -> LayoutTree {
+    if !tree.root.as_ref().map(|r| node_contains(r, dragged)).unwrap_or(false) {
+        return tree.clone();
+    }
+    let removed = collapse_leaf(tree.clone(), dragged);
+    let others: Vec<u64> = collect_leaf_ids(&removed);
+
+    let (col, row) = (col.min(2), row.min(2));
+    let target_idx = (row as usize) * 3 + (col as usize);
+    let free: Vec<usize> = (0..9usize).filter(|i| *i != target_idx).collect();
+
+    let mut cells: Vec<GridChild> =
+        vec![Node::cell(Node::Leaf(dragged), col, row)];
+    let n = others.len();
+    for (k, &idx) in free.iter().enumerate() {
+        if k >= n {
+            break; // sem mais janelas → células livres ficam vazias (sem auto-expandir).
+        }
+        let (c, r) = ((idx % 3) as u8, (idx / 3) as u8);
+        if k + 1 == free.len() && n > free.len() {
+            // Última célula livre com excedente → aninha o restante balanceado num sub-nó.
+            let rest = &others[k..];
+            let node = balanced_node(rest, Rectf { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }, 0.0)
+                .unwrap_or_else(|| Node::Leaf(rest[0]));
+            cells.push(Node::cell(node, c, r));
+        } else {
+            cells.push(Node::cell(Node::Leaf(others[k]), c, r));
+        }
+    }
+    LayoutTree {
+        root: Some(Node::Grid { cols: vec![1.0 / 3.0; 3], rows: vec![1.0 / 3.0; 3], cells }),
     }
 }
 
@@ -2493,6 +2562,50 @@ mod tests {
         // 2 no topo, mais baixa que 1 (1/3 vs 2/3); empilhadas verticalmente.
         assert!(r2.y < r1.y);
         assert!(r2.height < r1.height);
+    }
+
+    #[test]
+    fn move_window_grid_fixa_celula_unitaria_sem_esticar() {
+        // [1,2,3,4]; soltar 4 no canto SUPERIOR-DIREITO em escopo GRID (densidade 4) → 4 ocupa uma
+        // célula 1/9 da matriz 3×3 (≈1/3 de largura e altura), NÃO 50% da tela.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2, 3, 4], &[], None, &area, &opts());
+        let moved = move_window(&tree, 4, 0, DropZone::TopRight, DropScope::Grid);
+        let geo = compute_geometry(&moved, &area, &opts(), &[], &[1, 2, 3, 4]);
+        assert_eq!(geo.rects.len(), 4, "nenhuma janela perdida");
+        let r4 = geo.rects.iter().find(|r| r.id == 4).unwrap();
+        // Coluna direita, linha superior (inner x=12..988, y=12..788).
+        assert!(r4.x > 600, "4 na coluna direita (x={})", r4.x);
+        assert_eq!(r4.y, 12, "4 na linha superior (y={})", r4.y);
+        // Célula unitária: ~1/3 da largura interna (≈320), MUITO menor que a metade (484).
+        assert!(r4.width >= 300 && r4.width <= 340, "largura de célula 1/3 (w={})", r4.width);
+        assert!(r4.height >= 240 && r4.height <= 270, "altura de célula 1/3 (h={})", r4.height);
+    }
+
+    #[test]
+    fn move_window_grid_center_e_celula_central_nao_fusao() {
+        // Em escopo GRID, a zona Center é a célula (1,1) da matriz — NÃO fusão em abas.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2, 3, 4], &[], None, &area, &opts());
+        let moved = move_window(&tree, 4, 0, DropZone::Center, DropScope::Grid);
+        let geo = compute_geometry(&moved, &area, &opts(), &[], &[1, 2, 3, 4]);
+        let r4 = geo.rects.iter().find(|r| r.id == 4).unwrap();
+        assert!(r4.x > 300 && r4.x < 360, "coluna central (x={})", r4.x);
+        assert!(r4.y > 250 && r4.y < 300, "linha central (y={})", r4.y);
+    }
+
+    #[test]
+    fn bootstrap_uma_janela_ocupa_area_inteira() {
+        // 1ª janela (árvore vazia) → raiz que ocupa 100% da área interna (nunca flutuante/parcial).
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1], &[], None, &area, &opts());
+        assert_eq!(tree.root, Some(Node::Leaf(1)));
+        let geo = compute_geometry(&tree, &area, &opts(), &[], &[1]);
+        assert_eq!(geo.rects.len(), 1);
+        assert_eq!(
+            (geo.rects[0].x, geo.rects[0].y, geo.rects[0].width, geo.rects[0].height),
+            (12, 12, 976, 776)
+        );
     }
 
     #[test]

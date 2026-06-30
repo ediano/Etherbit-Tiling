@@ -347,53 +347,58 @@ describe('clampGeometry', () => {
     expect(clampGeometry(ok)).toEqual(ok);
   });
 
-  // ---- HUD do jogo da velha (resolveHotZone — ADR 0026) ----
-  const MON = { x: 0, y: 0, width: 900, height: 900 };
-  const TARGET = { x: 300, y: 300, width: 300, height: 300 }; // miolo do monitor (longe das bordas)
+  // ---- HUD do jogo da velha (resolveHotZone — ADR 0026, célula 3×3 estrita) ----
+  const MON = { x: 0, y: 0, width: 900, height: 900 }; // células de 300×300
+  const FULL = { x: 0, y: 0, width: 900, height: 900 }; // janela cobrindo o monitor
 
-  it('centro do alvo → fusão (center) com a janela-alvo inteira no outline', () => {
-    const hz = resolveHotZone({ x: 450, y: 450 }, TARGET, MON);
+  it('terço central de uma janela → fusão em abas (center local)', () => {
+    const hz = resolveHotZone({ x: 450, y: 450 }, FULL, MON);
     expect(hz.scope).toBe('local');
     expect(hz.dropZone).toBe('center');
-    expect(hz.cells).toHaveLength(9);
-    expect(hz.outline).toEqual(TARGET);
+    expect(hz.outline).toEqual(FULL);
   });
 
-  it('eixo esquerdo do alvo → coluna inteira (left), faixa de 1/3', () => {
-    const hz = resolveHotZone({ x: 350, y: 450 }, TARGET, MON);
-    expect(hz.scope).toBe('local');
-    expect(hz.dropZone).toBe('left');
-    expect(hz.hot).toHaveLength(3); // coluna inteira (3 células)
-    expect(hz.outline).toEqual({ x: 300, y: 300, width: 100, height: 300 });
-  });
-
-  it('eixo superior do alvo → linha inteira (top)', () => {
-    const hz = resolveHotZone({ x: 450, y: 350 }, TARGET, MON);
-    expect(hz.dropZone).toBe('top');
-    expect(hz.outline).toEqual({ x: 300, y: 300, width: 300, height: 100 });
-  });
-
-  it('canto do alvo → célula única (top_left)', () => {
-    const hz = resolveHotZone({ x: 350, y: 350 }, TARGET, MON);
+  it('canto superior-esquerdo sobre janela → célula 3×3 (grid, top_left)', () => {
+    const hz = resolveHotZone({ x: 150, y: 150 }, FULL, MON);
+    expect(hz.scope).toBe('grid');
     expect(hz.dropZone).toBe('top_left');
-    expect(hz.hot).toHaveLength(1);
-    expect(hz.outline).toEqual({ x: 300, y: 300, width: 100, height: 100 });
+    expect(hz.cells).toHaveLength(9);
+    expect(hz.hot).toEqual([0]);
+    expect(hz.outline).toEqual({ x: 0, y: 0, width: 300, height: 300 });
   });
 
-  it('perto da borda da tela → escopo global, bloco de 50%', () => {
-    const hz = resolveHotZone({ x: 10, y: 450 }, TARGET, MON);
+  it('canto superior-direito sobre janela → célula 3×3 (grid, top_right)', () => {
+    const hz = resolveHotZone({ x: 750, y: 150 }, FULL, MON);
+    expect(hz.scope).toBe('grid');
+    expect(hz.dropZone).toBe('top_right');
+    expect(hz.outline).toEqual({ x: 600, y: 0, width: 300, height: 300 });
+  });
+
+  it('eixo superior (fora do centro) sobre janela → célula central-superior (grid, top)', () => {
+    const hz = resolveHotZone({ x: 450, y: 150 }, FULL, MON);
+    expect(hz.scope).toBe('grid');
+    expect(hz.dropZone).toBe('top');
+    expect(hz.outline).toEqual({ x: 300, y: 0, width: 300, height: 300 });
+  });
+
+  it('densidade: célula de canto colada à borda NÃO vira 50% (continua grid)', () => {
+    // Janela cobrindo todo o monitor; cursor no canto extremo → célula top_left, não bloco de 50%.
+    const hz = resolveHotZone({ x: 5, y: 5 }, FULL, MON);
+    expect(hz.scope).toBe('grid');
+    expect(hz.dropZone).toBe('top_left');
+    expect(hz.outline).toEqual({ x: 0, y: 0, width: 300, height: 300 });
+  });
+
+  it('sem janela sob o cursor (gap) → escopo global 50% pela borda', () => {
+    const hz = resolveHotZone({ x: 10, y: 450 }, null, MON);
     expect(hz.scope).toBe('global');
     expect(hz.dropZone).toBe('left');
     expect(hz.outline).toEqual({ x: 0, y: 0, width: 450, height: 900 });
   });
 
-  it('sem janela sob o cursor (gap) → escopo global', () => {
-    const hz = resolveHotZone({ x: 450, y: 450 }, null, MON);
-    expect(hz.scope).toBe('global');
-  });
-
-  it('serializeScope mapeia local/global', () => {
+  it('serializeScope mapeia local/global/grid', () => {
     expect(serializeScope('global')).toBe('global');
     expect(serializeScope('local')).toBe('local');
+    expect(serializeScope('grid')).toBe('grid');
   });
 });

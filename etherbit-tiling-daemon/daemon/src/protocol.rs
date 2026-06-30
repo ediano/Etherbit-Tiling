@@ -289,10 +289,12 @@ fn parse_edge(s: &str) -> Edge {
 }
 
 /// Rótulo do escopo do drop → `DropScope` (ADR 0026). `"global"` = nó principal do workspace (50%);
-/// qualquer outro (incl. `"local"`/ausente) = subdivisão local da janela-alvo.
+/// `"grid"` = célula unitária da matriz 3×3 do workspace; qualquer outro (incl. `"local"`/ausente) =
+/// subdivisão local da janela-alvo.
 fn parse_scope(s: &str) -> DropScope {
     match s {
         "global" => DropScope::Global,
+        "grid" => DropScope::Grid,
         _ => DropScope::Local,
     }
 }
@@ -618,9 +620,10 @@ pub fn sync_windows_dto(
     }
 
     crate::dlog!(
-        "sync_windows: {n_windows} recebida(s) → {} tileável(is) → {} rect(s), {} flutuante(s), {} grupo(s)",
+        "sync_windows: {n_windows} recebida(s) → {} tileável(is) → {} rect(s), {} barra(s), {} flutuante(s), {} grupo(s)",
         tileable.len(),
         rects.len(),
+        tab_bars.len(),
         floating.len(),
         out_trees.len()
     );
@@ -662,6 +665,30 @@ fn parse_target(target_json: &str) -> Result<Option<PreviewRect>> {
     }
     let g: GeomDto = serde_json::from_str(target_json).context("target_json inválido")?;
     Ok(Some(PreviewRect { x: g.x, y: g.y, width: g.width, height: g.height }))
+}
+
+/// Célula do HUD do jogo da velha desenhado pelo overlay wgpu do daemon (KDE) durante o arrasto.
+/// Geometria ABSOLUTA de tela + flag `hot` (a célula sob o cursor, realçada). A ponte envia as 9
+/// células (ou 1 bloco) a cada transição de célula via `ShowDropHud`. Sem IDs (só geometria).
+/// Só é consumido no caminho `wgpu-ui` (overlay); sem a feature, fica inerte.
+#[cfg_attr(not(feature = "wgpu-ui"), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HudCellDto {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    #[serde(default)]
+    pub hot: bool,
+}
+
+/// Parseia o `cells_json` do `ShowDropHud` (`[{x,y,width,height,hot}]`). `""` → vazio (esconde o HUD).
+#[cfg_attr(not(feature = "wgpu-ui"), allow(dead_code))]
+pub fn parse_hud_cells(cells_json: &str) -> Result<Vec<HudCellDto>> {
+    if cells_json.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_str(cells_json).context("cells_json inválido")
 }
 
 /// Aplica um drag-to-tile: move `dragged_id` para junto de `target_id` no lado da `zone`, rachando a
@@ -957,6 +984,23 @@ mod tests {
     fn resolve_rejects_invalid_json() {
         assert!(resolve_drop_zone("nope", 20, 400, "", OPTS).is_err());
         assert!(resolve_drop_zone(AREAS, 300, 150, "{bad", OPTS).is_err());
+    }
+
+    #[test]
+    fn parse_hud_cells_handles_empty_valid_and_invalid() {
+        // Vazio → sem células (esconde o HUD).
+        assert!(parse_hud_cells("").expect("vazio ok").is_empty());
+        assert!(parse_hud_cells("   ").expect("branco ok").is_empty());
+        // Válido: 2 células, a segunda realçada; `hot` ausente assume `false` (serde default).
+        let cells = parse_hud_cells(
+            r#"[{"x":0,"y":0,"width":300,"height":300},{"x":300,"y":0,"width":300,"height":300,"hot":true}]"#,
+        )
+        .expect("válido ok");
+        assert_eq!(cells.len(), 2);
+        assert!(!cells[0].hot);
+        assert_eq!(cells[1], HudCellDto { x: 300, y: 0, width: 300, height: 300, hot: true });
+        // Malformado → erro (não derruba o daemon: o método D-Bus mapeia para fdo::Error via guard).
+        assert!(parse_hud_cells("{nope").is_err());
     }
 
     #[test]

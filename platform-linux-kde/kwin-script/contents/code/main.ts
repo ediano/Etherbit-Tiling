@@ -29,6 +29,7 @@ import {
   parseLayoutTrees,
   resolveHotZone,
   serializeScope,
+  serializeHudCells,
   resizeDeltaFrom,
   orderKey,
   appendToOrder,
@@ -138,6 +139,9 @@ let lastCursor: QPoint | null = null;
 let resolving = false;
 /// Zona quente resolvida no último passo do arrasto (define o drop: stack/split + escopo).
 let lastHot: HotZone | null = null;
+/// Assinatura da última célula realçada enviada ao overlay (HUD): evita reenviar `ShowDropHud` por
+/// passo — só quando a célula sob o cursor muda (ADR 0026 — D-Bus por transição, não por pixel).
+let lastHudKey = '';
 /// Resize manual em curso: internalId + frame inicial (para derivar borda/delta ao soltar).
 let resizeStart: { id: string; rect: { x: number; y: number; width: number; height: number } } | null =
   null;
@@ -172,11 +176,14 @@ function isLiveWindow(win: KWinWindow): boolean {
 /// de maximização (API estável). Os gaps do tiling fazem uma janela TILADA medir menos que essa área,
 /// evitando falso-positivo no caso comum. Base do Unmaximize Recovery (a maximizada fica fora do grid).
 function isMaximized(win: KWinWindow): boolean {
-  // Guarda estrita: uma janela destruída faz `clientArea`/`frameGeometry` lançar TypeError no
-  // binding C++. Tratamos como "não maximizada" (a chamada já pula janelas mortas adiante).
+  // Guarda estrita: uma janela destruída faz o binding C++ lançar TypeError. Lemos PRIMEIRO uma
+  // propriedade da PRÓPRIA janela (`frameGeometry`, um GET): um wrapper órfão lança já aqui, antes de
+  // passar a referência morta para `workspace.clientArea(..., win)` — que logaria "Could not convert
+  // argument 1 ... to const KWin::Window*" no binding (ruído não-capturável pelo try). Só com a
+  // janela comprovadamente viva chamamos `clientArea`. Tratamos o throw como "não maximizada".
   try {
-    const max = workspace.clientArea(KWin.MaximizeArea, win);
     const g = win.frameGeometry;
+    const max = workspace.clientArea(KWin.MaximizeArea, win);
     return (
       Math.abs(g.x - max.x) <= 1 &&
       Math.abs(g.y - max.y) <= 1 &&
@@ -357,7 +364,14 @@ function retile(): void {
       transportOf.set(entry.stableId, id);
       transportToStable.set(id, entry.stableId);
       const g = entry.win.frameGeometry;
-      const min = entry.win.minSize;
+      const normal = entry.win.normalWindow;
+      const resizable = entry.win.resizeable;
+      const maximizable = entry.win.maximizable;
+      // "Forçar frame, ignorar hints" (ADR 0021/0026): janelas que SERÃO tiladas (normal + resizable
+      // + maximizable) NÃO enviam geometry hints. Apps com travas rígidas (incrementos de célula de
+      // texto) seriam AUTO-FLUTUADOS/"perdidos" pelo core quando o mínimo não cabe na célula 3×3.
+      // Zerando o mínimo, o app é FIXADO na célula em vez de fugir do grid. Espelha a ponte GNOME.
+      const min = normal && resizable && maximizable ? null : entry.win.minSize;
       snapshots.push({
         id,
         app_id: entry.win.resourceClass || entry.win.resourceName || '',
@@ -366,9 +380,9 @@ function retile(): void {
         y: g.y,
         width: g.width,
         height: g.height,
-        normal: entry.win.normalWindow,
-        resizable: entry.win.resizeable,
-        maximizable: entry.win.maximizable,
+        normal,
+        resizable,
+        maximizable,
         monitor: entry.monitor,
         workspace: entry.desktop,
         min_width: min ? Math.max(0, Math.round(min.width)) : 0,
@@ -401,8 +415,15 @@ function retile(): void {
       // Persiste as árvores reconciliadas (traduzidas de volta para internalId).
       trees = parseLayoutTrees(layoutJson, transportToStable);
       const commands = parseLayout(layoutJson);
-      debug('SyncWindows OK (seq', mySeq, ') — retângulos recebidos:', commands.length);
       const tabBars = parseTabBars(layoutJson);
+      debug(
+        'SyncWindows OK (seq',
+        mySeq,
+        ') — retângulos:',
+        commands.length,
+        'barras de abas:',
+        tabBars.length,
+      );
       // Janelas isoladas por auto-floating (mínimo não cabe): aplicar e ELEVAR (keepAbove).
       const floating = parseFloating(layoutJson);
       const floatingHere = new Set<string>();
@@ -682,6 +703,7 @@ function onMoveStart(win: KWinWindow): void {
     lastCursor = null;
     resolving = false;
     lastHot = null;
+    lastHudKey = '';
     return;
   }
   if (win.resize) {
@@ -717,7 +739,22 @@ function onMoveStep(): void {
   const monitor = monitorRectUnder(cursor.x, cursor.y);
   const hot = resolveHotZone({ x: cursor.x, y: cursor.y }, targetRect, monitor);
   lastHot = hot;
+  // Fallback nativo: contorno do retângulo-destino (caso o overlay do daemon esteja indisponível).
   updateOutline(hot.dropZone === 'none' ? null : hot.outline);
+  // HUD translúcido das 9 células via overlay wgpu do daemon. Envia só quando a CÉLULA realçada muda
+  // (a chave embute escopo+zona+contorno), mantendo o D-Bus fora do caminho quente por-pixel.
+  const o = hot.outline;
+  const hudKey = `${hot.scope}|${hot.dropZone}|${o.x},${o.y},${o.width},${o.height}`;
+  if (hudKey !== lastHudKey) {
+    lastHudKey = hudKey;
+    callDBus(
+      BUS_NAME,
+      OBJECT_PATH,
+      IFACE,
+      'ShowDropHud',
+      serializeHudCells(hot.cells, hot.hot.length > 0 ? hot.hot[0]! : -1),
+    );
+  }
   resolving = false;
 }
 
@@ -725,6 +762,9 @@ function onMoveStep(): void {
 /// → MoveWindow (move+split na árvore persistente, traduzindo ids via os mapas do último retile).
 function onMoveFinish(win: KWinWindow): void {
   workspace.hideOutline();
+  // Esconde o HUD translúcido do overlay do daemon (fim do arrasto).
+  callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'HideDropHud');
+  lastHudKey = '';
   const dragged = draggedId;
   const hot = lastHot;
   draggedId = null;
@@ -749,7 +789,7 @@ function onMoveFinish(win: KWinWindow): void {
 
   // MoveWindow (ADR 0026): IDs como string decimal (o `callDBus` do KWin não empacota uint64 — ADR
   // 0009); `scope` define local (1/3 na submatriz) vs global (bloco de 50%).
-  const moveWindow = (targetT: number, zoneStr: string, scope: 'local' | 'global'): void => {
+  const moveWindow = (targetT: number, zoneStr: string, scope: 'local' | 'global' | 'grid'): void => {
     if (draggedT === undefined) {
       retile();
       return;
@@ -771,7 +811,12 @@ function onMoveFinish(win: KWinWindow): void {
     );
   };
 
-  // Escopo global: insere como nó principal do workspace (50%) — não exige janela-alvo.
+  // Escopo grid: fixa na célula unitária da matriz 3×3 do workspace (não exige janela-alvo).
+  if (hot && hot.scope === 'grid' && hot.dropZone !== 'none') {
+    moveWindow(0, hot.dropZone, 'grid');
+    return;
+  }
+  // Escopo global (gap vazio): insere como nó principal do workspace (50%) — não exige janela-alvo.
   if (hot && hot.scope === 'global' && hot.dropZone !== 'none') {
     moveWindow(0, hot.dropZone, 'global');
     return;
@@ -781,15 +826,11 @@ function onMoveFinish(win: KWinWindow): void {
     return;
   }
   const targetId = windowId(target);
-  // Centro da janela-alvo → empilha em abas (estado de stacks; o core não muta a árvore).
-  if (hot && hot.dropZone === 'center') {
+  // Centro de uma janela-alvo (escopo local) → empilha em abas (estado de stacks; o core não muta a
+  // árvore).
+  if (hot && hot.scope === 'local' && hot.dropZone === 'center') {
     addToStack(stacks, key, targetId, dragged);
     retile();
-    return;
-  }
-  const targetT = lastTransportOf.get(targetId);
-  if (hot && hot.dropZone !== 'none' && targetT !== undefined) {
-    moveWindow(targetT, hot.dropZone, 'local');
     return;
   }
   retile();

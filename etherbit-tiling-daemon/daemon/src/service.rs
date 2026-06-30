@@ -41,6 +41,10 @@ pub struct Tiling {
     /// a UI wgpu; `send_replace` mantém apenas o estado mais recente (sem backpressure).
     #[cfg(feature = "wgpu-ui")]
     bars_tx: watch::Sender<Vec<BarInput>>,
+    /// Publica as células do HUD do jogo da velha para o overlay wgpu (KDE) desenhar durante o
+    /// arrasto. `None` = HUD escondido. UI transitória (não estado de janelas/layout). Só com wgpu-ui.
+    #[cfg(feature = "wgpu-ui")]
+    hud_tx: watch::Sender<Option<Vec<protocol::HudCellDto>>>,
 }
 
 impl Tiling {
@@ -223,7 +227,9 @@ impl Tiling {
         // uma sessão com layer-shell o receptor fica ocioso — `send_replace` nunca falha.
         #[cfg(feature = "wgpu-ui")]
         {
-            let _ = self.bars_tx.send_replace(protocol::bars_from_tab_bars(&dto.tab_bars));
+            let bars = protocol::bars_from_tab_bars(&dto.tab_bars);
+            crate::dlog!("sync_windows: publicando {} barra(s) de abas ao overlay", bars.len());
+            let _ = self.bars_tx.send_replace(bars);
         }
 
         // Entrega por PULL: drena as ações de aba pendentes na PRÓPRIA resposta (a ponte já consome
@@ -253,6 +259,31 @@ impl Tiling {
         guard("resolve_drop_zone", || {
             protocol::resolve_drop_zone(&monitors_json, x, y, &target_json, opts)
         })
+    }
+
+    /// Mostra/atualiza o HUD do jogo da velha (overlay wgpu do daemon, KDE) durante o arrasto. A ponte
+    /// envia as 9 células (ou 1 bloco) em coords ABSOLUTAS de tela, com `hot=true` na célula sob o
+    /// cursor. Chamada por TRANSIÇÃO de célula (não por pixel): o cálculo da zona é local na ponte
+    /// (ADR 0026), o daemon só pinta. UI transitória — não toca no estado de janelas/layout. Sem a UI
+    /// wgpu é no-op (a ponte degrada para o `showOutline` nativo do KWin).
+    async fn show_drop_hud(&self, cells_json: String) -> fdo::Result<()> {
+        #[cfg(feature = "wgpu-ui")]
+        {
+            let cells = guard("show_drop_hud", || protocol::parse_hud_cells(&cells_json))?;
+            let _ = self.hud_tx.send_replace(Some(cells));
+        }
+        #[cfg(not(feature = "wgpu-ui"))]
+        let _ = cells_json;
+        Ok(())
+    }
+
+    /// Esconde o HUD do jogo da velha (fim do arrasto / drop).
+    async fn hide_drop_hud(&self) -> fdo::Result<()> {
+        #[cfg(feature = "wgpu-ui")]
+        {
+            let _ = self.hud_tx.send_replace(None);
+        }
+        Ok(())
     }
 
     /// Aplica um drag-to-tile do jogo da velha (ADR 0026): move `dragged_id` para junto de `target_id`
@@ -346,6 +377,9 @@ pub struct Shared {
     /// Receptor das barras atuais para o event loop redesenhar.
     #[cfg(feature = "wgpu-ui")]
     pub bars_rx: watch::Receiver<Vec<BarInput>>,
+    /// Receptor das células do HUD do jogo da velha (`None` = escondido) para o event loop desenhar.
+    #[cfg(feature = "wgpu-ui")]
+    pub hud_rx: watch::Receiver<Option<Vec<protocol::HudCellDto>>>,
 }
 
 /// Sobe o serviço no barramento de sessão e o mantém vivo. Devolve a conexão e os `Shared` (fila de
@@ -355,12 +389,16 @@ pub async fn serve(config: Config) -> Result<(zbus::Connection, Shared)> {
         Arc::new(Mutex::new(VecDeque::new()));
     #[cfg(feature = "wgpu-ui")]
     let (bars_tx, bars_rx) = watch::channel(Vec::new());
+    #[cfg(feature = "wgpu-ui")]
+    let (hud_tx, hud_rx) = watch::channel(None);
 
     let tiling = Tiling {
         config,
         pending_actions: pending_actions.clone(),
         #[cfg(feature = "wgpu-ui")]
         bars_tx,
+        #[cfg(feature = "wgpu-ui")]
+        hud_tx,
     };
     let connection = zbus::connection::Builder::session()?
         .name(BUS_NAME)?
@@ -371,6 +409,8 @@ pub async fn serve(config: Config) -> Result<(zbus::Connection, Shared)> {
         pending_actions,
         #[cfg(feature = "wgpu-ui")]
         bars_rx,
+        #[cfg(feature = "wgpu-ui")]
+        hud_rx,
     };
     Ok((connection, shared))
 }
