@@ -19,6 +19,12 @@ import {
   resizeDeltaFrom,
   resolveHotZone,
   serializeScope,
+  parseTabBars,
+  mergeFallback,
+  addToStack,
+  removeIdFromStacks,
+  setActiveMember,
+  type Stack,
   type TreeNode,
   type TransportNode,
   type WindowSnapshot,
@@ -109,16 +115,19 @@ describe('estado de tiling por grupo e árvores (ids string)', () => {
     expect(disabled.has(orderKey(0, 1))).toBe(false);
   });
 
-  it('serializeState traduz as folhas das árvores e os grupos desligados (sem stacks)', () => {
+  it('serializeState traduz as folhas das árvores, os stacks reais e os grupos desligados', () => {
     const disabled = new Set<string>([orderKey(1, 2)]);
     const transportOf = new Map<string, number>([
       ['a', 1],
       ['b', 2],
     ]);
     const trees = new Map<string, TreeNode | null>([[orderKey(0, 0), { win: 'a' }]]);
-    // Tiling puro (ADR 0028): `stacks` viaja vazio (compat); foco 'b' → 2.
-    expect(JSON.parse(serializeState(disabled, transportOf, trees, 'b'))).toEqual({
-      stacks: [],
+    const stacks = new Map<string, Stack[]>([
+      [orderKey(0, 0), [{ members: ['a', 'b'], active: 'b' }]],
+    ]);
+    // ADR 0033: os stacks reais (≥ 2 membros traduzíveis) viajam para o core materializar; foco 'b' → 2.
+    expect(JSON.parse(serializeState(stacks, disabled, transportOf, trees, 'b'))).toEqual({
+      stacks: [{ monitor: 0, workspace: 0, members: [1, 2], active: 2 }],
       disabled_groups: [[1, 2]],
       trees: [{ monitor: 0, workspace: 0, root: { win: 1 } }],
       focused_id: 2,
@@ -126,7 +135,7 @@ describe('estado de tiling por grupo e árvores (ids string)', () => {
   });
 
   it('serializeState com estado vazio → JSON mínimo', () => {
-    expect(JSON.parse(serializeState(new Set(), new Map(), new Map(), ''))).toEqual({
+    expect(JSON.parse(serializeState(new Map(), new Set(), new Map(), new Map(), ''))).toEqual({
       stacks: [],
       disabled_groups: [],
       trees: [],
@@ -134,7 +143,7 @@ describe('estado de tiling por grupo e árvores (ids string)', () => {
     });
   });
 
-  it('árvore: nó `stack` legado COLAPSA para a folha do 1º membro traduzível (migração ADR 0028)', () => {
+  it('árvore: nó `stack` é PRESERVADO na tradução; poda membros sem transporte (ADR 0033)', () => {
     const transportOf = new Map<string, number>([
       ['a', 1],
       ['b', 2],
@@ -143,14 +152,14 @@ describe('estado de tiling por grupo e árvores (ids string)', () => {
       [1, 'a'],
       [2, 'b'],
     ]);
-    // Árvore antiga com um `stack` de 2 membros: a conversão colapsa no 1º membro (sem reconstruir).
-    const legacy: TreeNode = { stack: { members: ['a', 'b'], active: 'b' } };
-    expect(treeToTransport(legacy, transportOf)).toEqual({ win: 1 });
-    // 'a' sem transporte → cai para o próximo membro traduzível ('b' → 2).
-    expect(treeToTransport(legacy, new Map([['b', 2]]))).toEqual({ win: 2 });
-    // Mesma migração na volta (transporte → internalId).
-    const legacyT: TransportNode = { stack: { members: [1, 2], active: 2 } };
-    expect(treeFromTransport(legacyT, toStable)).toEqual({ win: 'a' });
+    // Stack de 2 membros: a conversão PRESERVA o stack (não colapsa) com `active` traduzido.
+    const node: TreeNode = { stack: { members: ['a', 'b'], active: 'b' } };
+    expect(treeToTransport(node, transportOf)).toEqual({ stack: { members: [1, 2], active: 2 } });
+    // 'a' sem transporte → resta só 'b' (1 membro) → colapsa na folha do sobrevivente.
+    expect(treeToTransport(node, new Map([['b', 2]]))).toEqual({ win: 2 });
+    // Mesma preservação na volta (transporte → internalId).
+    const nodeT: TransportNode = { stack: { members: [1, 2], active: 2 } };
+    expect(treeFromTransport(nodeT, toStable)).toEqual({ stack: { members: ['a', 'b'], active: 'b' } });
   });
 
   it('árvore: round-trip internalId ↔ transporte e colapso de célula intraduzível (grid)', () => {
@@ -317,5 +326,82 @@ describe('ordem estável das janelas (ids string/internalId)', () => {
   it('serializeScope mapeia local/global', () => {
     expect(serializeScope('global')).toBe('global');
     expect(serializeScope('local')).toBe('local');
+  });
+});
+
+describe('Merge Fallback / abas (ADR 0033, paridade com GNOME — ids string)', () => {
+  const key = orderKey(0, 0);
+
+  it('addToStack cria stack [target, dragged] com o arrastado ativo', () => {
+    const stacks = new Map<string, Stack[]>();
+    expect(addToStack(stacks, key, 'a', 'b')).toBe(true);
+    expect(stacks.get(key)).toEqual([{ members: ['a', 'b'], active: 'b' }]);
+    // Adicionar 'c' ao stack que já contém 'a' → entra no mesmo stack e vira ativo.
+    expect(addToStack(stacks, key, 'a', 'c')).toBe(true);
+    expect(stacks.get(key)).toEqual([{ members: ['a', 'b', 'c'], active: 'c' }]);
+  });
+
+  it('removeIdFromStacks dissolve o stack que fica com < 2 membros', () => {
+    const stacks = new Map<string, Stack[]>([[key, [{ members: ['a', 'b'], active: 'b' }]]]);
+    expect(removeIdFromStacks(stacks, 'b')).toBe(true);
+    expect(stacks.has(key)).toBe(false); // sobrou 1 membro → dissolve, grupo vazio removido
+  });
+
+  it('setActiveMember troca a aba ativa do stack que contém o membro', () => {
+    const stacks = new Map<string, Stack[]>([[key, [{ members: ['a', 'b'], active: 'b' }]]]);
+    expect(setActiveMember(stacks, 'a')).toBe(true);
+    expect(stacks.get(key)?.[0]?.active).toBe('a');
+    expect(setActiveMember(stacks, 'a')).toBe(false); // já ativa → sem mudança
+  });
+
+  it('mergeFallback agrupa a janela em overflow no alvo FOCADO do mesmo grupo', () => {
+    const stacks = new Map<string, Stack[]>();
+    const attempted = new Set<string>();
+    const snapshots = [
+      { id: 'big', monitor: 0, workspace: 0 },
+      { id: 'foco', monitor: 0, workspace: 0 },
+    ];
+    const visible = [{ id: 'foco', width: 800, height: 600 }];
+    // 'big' estourou o min (não está em `visible`); o foco 'foco' é o alvo do merge.
+    const merged = mergeFallback(stacks, ['big'], attempted, snapshots, visible, 'foco');
+    expect(merged).toEqual(['big']);
+    expect(stacks.get(key)).toEqual([{ members: ['foco', 'big'], active: 'big' }]);
+  });
+
+  it('mergeFallback ignora ids já tentados (guard anti-loop)', () => {
+    const stacks = new Map<string, Stack[]>();
+    const attempted = new Set<string>(['big']);
+    const snapshots = [
+      { id: 'big', monitor: 0, workspace: 0 },
+      { id: 'foco', monitor: 0, workspace: 0 },
+    ];
+    const visible = [{ id: 'foco', width: 800, height: 600 }];
+    expect(mergeFallback(stacks, ['big'], attempted, snapshots, visible, 'foco')).toEqual([]);
+    expect(stacks.has(key)).toBe(false);
+  });
+
+  it('parseTabBars lê as barras do layout_json (objeto) e descarta malformadas', () => {
+    const json = JSON.stringify({
+      rects: [],
+      tab_bars: [
+        {
+          stack_id: 1,
+          x: 0,
+          y: 0,
+          width: 400,
+          height: 28,
+          content: { x: 0, y: 28, width: 400, height: 372 },
+          members: [1, 2],
+          active: 2,
+        },
+        { stack_id: 9 }, // malformada → descartada
+      ],
+    });
+    const bars = parseTabBars(json);
+    expect(bars).toHaveLength(1);
+    expect(bars[0]?.members).toEqual([1, 2]);
+    expect(bars[0]?.active).toBe(2);
+    // Formato legado (array) → sem barras.
+    expect(parseTabBars('[]')).toEqual([]);
   });
 });

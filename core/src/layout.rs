@@ -169,9 +169,11 @@ pub struct TabBarRect {
 pub struct LayoutResult {
     pub rects: Vec<WindowRect>,
     pub tab_bars: Vec<TabBarRect>,
-    /// Janelas removidas do tiling por AUTO-FLOATING: quando os mínimos não cabem na árvore, a
-    /// janela mais restritiva é isolada e centralizada sobre o grid. A ponte aplica estes
-    /// retângulos e ELEVA a janela acima das tiladas (não a oculta). Vazio no caso comum.
+    /// Sinal de OVERFLOW ("não cabe", ADR 0030/0033): janelas cujo slot final ficou abaixo do
+    /// mínimo (em algum eixo) mesmo após a cascata elástica comprimir o máximo possível. A ponte usa
+    /// esta lista para disparar o Merge Fallback (colapsar em abas, onde cada aba recebe o slot
+    /// inteiro) em vez de forçar um frame < min — que o cliente Wayland recusa, transbordando. O
+    /// retângulo é o slot computado (informativo). Vazio no caso comum (tudo coube via cascata).
     pub floating: Vec<WindowRect>,
 }
 
@@ -1095,6 +1097,10 @@ fn geometry_from_tree(
     let inner = inner_rect(area, opts.outer_gap as f64);
     let mut leaves = Vec::new();
     geom_leaves_min(root, inner, opts.inner_gap as f64, min, focused, &mut leaves);
+    // Detecta "não cabe" ANTES de consumir `leaves`: janelas cujo slot final (pós-cascata) ficou
+    // abaixo do mínimo — o sinal que a ponte usa para o Merge Fallback (abas) em vez de forçar um
+    // frame < min (que o cliente Wayland recusa, transbordando/sendo ejetado).
+    let floating = detect_overflow(&leaves, min);
     let mut stack_nodes = HashMap::new();
     collect_stack_nodes(root, &mut stack_nodes);
     for (id, r) in leaves {
@@ -1110,7 +1116,30 @@ fn geometry_from_tree(
             });
         }
     }
-    LayoutResult { rects, tab_bars, floating: Vec::new() }
+    LayoutResult { rects, tab_bars, floating }
+}
+
+/// Detecta as folhas cujo slot final ficou MENOR que o mínimo (em qualquer eixo) mesmo depois de a
+/// cascata elástica (`geom_leaves_min` → `solve_tracks`) ter comprimido o máximo possível. É o gatilho
+/// de "não cabe": só dispara quando a compressão não resolveu. Compara valores ARREDONDADOS (como os
+/// rects efetivamente aplicados, para não dar falso-positivo de 1px) e usa `<` ESTRITO — igualar
+/// exatamente o mínimo não é overflow. A âncora de um stack já carrega o `max` dos membros (+ header)
+/// em `min`, então a checagem cobre stacks pelo slot cheio. Folha sem entrada em `min` é ignorada.
+fn detect_overflow(leaves: &[(u64, Rectf)], min: &MinSizes) -> Vec<WindowRect> {
+    let mut out = Vec::new();
+    for (id, r) in leaves {
+        let Some(&(mw, mh)) = min.get(id) else { continue };
+        if round(r.w) < mw || round(r.h) < mh {
+            out.push(WindowRect {
+                id: *id,
+                x: round(r.x),
+                y: round(r.y),
+                width: round(r.w),
+                height: round(r.h),
+            });
+        }
+    }
+    out
 }
 
 /// Monta o mapa de tamanhos mínimos por FOLHA do grupo a partir das janelas e dos stacks. Uma folha
@@ -1152,10 +1181,11 @@ fn build_min_sizes(
 /// Calcula a geometria RESPEITANDO os tamanhos mínimos das janelas (geometry hints). Monta os mínimos
 /// por folha e tila a árvore COMPLETA: a cascata elástica (`geom_leaves_min` → `solve_tracks`) garante
 /// que a janela focada/nova receba seu mínimo real e que os vizinhos se desloquem em cascata pelo
-/// workspace. **Nunca flutua** (ADR 0031, "cascata sempre"): mesmo quando o mínimo total estoura a tela,
-/// `solve_tracks` comprime proporcionalmente sem sobrepor (o clamp final por janela é do compositor).
-/// `LayoutResult.floating` sai SEMPRE vazio — o campo é mantido no contrato só por retrocompatibilidade.
-/// É o ponto de entrada usado pelo daemon; `compute_geometry` é o caso sem restrições de mínimo.
+/// workspace. A cascata (ADR 0031) comprime proporcionalmente sem sobrepor; quando nem assim o slot
+/// alcança o mínimo de uma janela, ela é reportada em `LayoutResult.floating` como OVERFLOW ("não
+/// cabe", ADR 0033) para a ponte disparar o Merge Fallback (abas) em vez de forçar um frame < min,
+/// que o cliente Wayland recusa. É o ponto de entrada usado pelo daemon; `compute_geometry` é o caso
+/// sem restrições de mínimo.
 pub fn compute_constrained(
     tree: &LayoutTree,
     area: &WorkArea,
@@ -2920,15 +2950,18 @@ mod tests {
     }
 
     #[test]
-    fn min_inviavel_comprime_e_nao_floata() {
-        // ADR 0031 (cascata sempre, nunca flutua): min_width 2000 > área. SEM foco, a cascata comprime
-        // proporcionalmente — a restrita satura na maior largura possível e a vizinha cede. NINGUÉM
-        // flutua (`floating` vazio); as duas seguem tiladas; nada se sobrepõe.
+    fn min_inviavel_comprime_e_sinaliza_overflow() {
+        // ADR 0033: min_width 2000 > área. A cascata comprime proporcionalmente — a restrita satura na
+        // maior largura possível e a vizinha cede; as duas SEGUEM tiladas (nada some), mas como o slot
+        // da restrita ficou < seu mínimo, ela é SINALIZADA em `floating` (overflow) para o Merge Fallback.
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
         let windows = vec![win_min(1, 2000, 0), win(2, 0)];
         let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows, None);
-        assert!(res.floating.is_empty(), "ADR 0031: nunca flutua");
+        assert!(
+            res.floating.iter().any(|r| r.id == 1),
+            "slot < min → sinaliza overflow da restrita"
+        );
         assert_eq!(res.rects.len(), 2, "as 2 seguem no grid");
         let r1 = res.rects.iter().find(|r| r.id == 1).unwrap();
         assert!(r1.width >= 900, "a restrita satura na maior largura possível (got {})", r1.width);
@@ -2947,15 +2980,18 @@ mod tests {
     }
 
     #[test]
-    fn nunca_floata_mesmo_no_impossivel() {
-        // Caso impossível: as duas com min gigante (> tela). Pela regra "cascata sempre" (ADR 0031),
-        // o motor NÃO flutua nem some com ninguém — comprime as duas proporcionalmente, preenchendo a
-        // área sem sobreposição geométrica (o clamp final por janela fica a cargo do compositor).
+    fn impossivel_comprime_e_sinaliza_ambas_em_overflow() {
+        // Caso impossível: as duas com min gigante (> tela). A cascata NÃO some com ninguém — comprime
+        // as duas proporcionalmente, preenchendo a área sem sobreposição. Como AMBAS ficam < o próprio
+        // mínimo, ambas são sinalizadas em `floating` (overflow) — a ponte resolve via Merge Fallback.
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
         let windows = vec![win_min(1, 2000, 0), win_min(2, 2000, 0)];
         let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows, None);
-        assert!(res.floating.is_empty(), "ADR 0031: nunca flutua");
+        assert!(
+            res.floating.iter().any(|r| r.id == 1) && res.floating.iter().any(|r| r.id == 2),
+            "as duas estouram o mínimo → overflow"
+        );
         assert_eq!(res.rects.len(), 2, "as 2 seguem tiladas");
         // Preenchem a área interna sem estourar (Σ larguras + gap ≈ inner), sem sobreposição.
         let total: i32 = res.rects.iter().map(|r| r.width).sum();
@@ -2972,6 +3008,28 @@ mod tests {
         let m = build_min_sizes(&windows, &stacks, &[1, 2], &opts());
         assert_eq!(m.get(&1), Some(&(500, 200 + 28)));
         assert_eq!(m.get(&2), None);
+    }
+
+    #[test]
+    fn detect_overflow_sinaliza_so_abaixo_do_min_estrito() {
+        // Slot exatamente == min → NÃO é overflow (`<` estrito). 1px abaixo em qualquer eixo → sinaliza.
+        // Folha sem entrada no mapa de mínimos é ignorada.
+        let mut min = MinSizes::new();
+        min.insert(1, (300, 200)); // 1: slot exatamente no mínimo → não estoura
+        min.insert(2, (300, 200)); // 2: 1px abaixo na largura → estoura
+        min.insert(3, (300, 200)); // 3: 1px abaixo na altura → estoura
+        let leaves = vec![
+            (1u64, Rectf { x: 0.0, y: 0.0, w: 300.0, h: 200.0 }),
+            (2u64, Rectf { x: 0.0, y: 0.0, w: 299.0, h: 200.0 }),
+            (3u64, Rectf { x: 0.0, y: 0.0, w: 300.0, h: 199.0 }),
+            (4u64, Rectf { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }), // sem min → ignorada
+        ];
+        let over = detect_overflow(&leaves, &min);
+        let ids: Vec<u64> = over.iter().map(|r| r.id).collect();
+        assert!(!ids.contains(&1), "slot == min não é overflow");
+        assert!(ids.contains(&2), "1px abaixo na largura → overflow");
+        assert!(ids.contains(&3), "1px abaixo na altura → overflow");
+        assert!(!ids.contains(&4), "folha sem min é ignorada");
     }
 
     #[test]
@@ -3049,7 +3107,7 @@ mod tests {
         let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], Some(1), &area, &opts());
         let windows = vec![win_min(1, 2000, 0), win(2, 0)];
         let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows, Some(1));
-        assert!(res.floating.is_empty(), "ADR 0031: nunca flutua");
+        assert!(res.floating.iter().any(|r| r.id == 1), "a focada satura abaixo do min → overflow");
         assert_eq!(res.rects.len(), 2, "as 2 seguem no grid");
         let w = |id: u64| res.rects.iter().find(|r| r.id == id).unwrap().width;
         assert!(w(1) >= w(2), "a focada satura (mais larga); o vizinho cede");
@@ -3064,7 +3122,7 @@ mod tests {
         let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], Some(1), &area, &opts());
         let windows = vec![win_min(1, 4000, 0), win(2, 0), win(3, 0)];
         let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2, 3], &windows, Some(1));
-        assert!(res.floating.is_empty(), "ADR 0031: nunca flutua");
+        assert!(res.floating.iter().any(|r| r.id == 1), "a focada com min inviável → overflow");
         assert_eq!(res.rects.len(), 3, "as 3 seguem no grid");
         let w = |id: u64| res.rects.iter().find(|r| r.id == id).unwrap().width;
         assert!(w(1) >= w(2) && w(1) >= w(3), "a focada nunca cede a prioridade");
@@ -3103,15 +3161,16 @@ mod tests {
     #[test]
     fn cascata_global_em_quadrante_profundo() {
         // ADR 0031: app de mínimo rígido nascendo como W6 num sub-quadrante profundo do ciclo deve
-        // empurrar os ramos vizinhos do WORKSPACE em cascata, sem flutuar nem sobrepor. Abrimos 6
-        // janelas (a 6ª focada, com min rígido) e provamos que ninguém flutua e nada se sobrepõe.
+        // empurrar os ramos vizinhos do WORKSPACE em cascata, sem sobrepor. Com viés de foco, a cascata
+        // consegue dar ao W6 o seu min real (700x500 cabe em 1000x800 comprimindo os demais), então
+        // NÃO há overflow. Abrimos 6 janelas (a 6ª focada, com min rígido) e provamos que ninguém estoura.
         let area = area_1000x800();
         let ids = [1u64, 2, 3, 4, 5, 6];
         let tree = reconcile(&LayoutTree::default(), &ids, &[], Some(6), &area, &opts());
         let windows =
             vec![win(1, 0), win(2, 0), win(3, 0), win(4, 0), win(5, 0), win_min(6, 700, 500)];
         let res = compute_constrained(&tree, &area, &opts(), &[], &ids, &windows, Some(6));
-        assert!(res.floating.is_empty(), "ADR 0031: nunca flutua, nem em quadrante profundo");
+        assert!(res.floating.is_empty(), "a cascata com viés satisfaz o min do W6 — sem overflow");
         assert_eq!(res.rects.len(), 6, "as 6 seguem tiladas");
         assert_no_overlap(&res.rects);
     }
