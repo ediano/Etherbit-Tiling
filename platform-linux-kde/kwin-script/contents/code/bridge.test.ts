@@ -24,7 +24,12 @@ import {
   addToStack,
   removeIdFromStacks,
   setActiveMember,
+  toggleStackGroup,
+  buildTabBarViews,
+  serializeTabBars,
+  parseTabActions,
   type Stack,
+  type TabBar,
   type TreeNode,
   type TransportNode,
   type WindowSnapshot,
@@ -411,5 +416,107 @@ describe('Merge Fallback / abas (ADR 0033, paridade com GNOME — ids string)', 
     expect(bars[0]?.active).toBe(2);
     // Formato legado (array) → sem barras.
     expect(parseTabBars('[]')).toEqual([]);
+  });
+});
+
+describe('barras de abas visuais (ADR 0039 — helper de overlay)', () => {
+  const bar = (members: number[], active: number, stackId = members[0] ?? 0): TabBar => ({
+    stack_id: stackId,
+    x: 10,
+    y: 20,
+    width: 300,
+    height: 28,
+    content: { x: 10, y: 48, width: 300, height: 300 },
+    members,
+    active,
+  });
+
+  it('buildTabBarViews traduz transporte→estável, injeta título e marca a ativa', () => {
+    const toStable = new Map<number, string>([
+      [1, 'uuid-a'],
+      [2, 'uuid-b'],
+    ]);
+    const titleOf = (sid: string) => (sid === 'uuid-a' ? 'Firefox' : 'Konsole');
+    const views = buildTabBarViews([bar([1, 2], 2)], toStable, titleOf);
+    expect(views).toHaveLength(1);
+    expect(views[0]?.stack_id).toBe('uuid-a');
+    expect(views[0]?.x).toBe(10);
+    expect(views[0]?.w).toBe(300);
+    expect(views[0]?.tabs).toEqual([
+      { member_id: 'uuid-a', title: 'Firefox', active: false },
+      { member_id: 'uuid-b', title: 'Konsole', active: true },
+    ]);
+  });
+
+  it('buildTabBarViews pula membros sem tradução e descarta barra sem abas', () => {
+    const toStable = new Map<number, string>([[2, 'uuid-b']]); // 1 não traduz
+    const views = buildTabBarViews([bar([1, 2], 2), bar([7, 8], 7)], toStable, () => 't');
+    // 1ª barra fica só com o membro 2; 2ª barra (7,8) não traduz nenhum → descartada.
+    expect(views).toHaveLength(1);
+    expect(views[0]?.tabs).toEqual([{ member_id: 'uuid-b', title: 't', active: true }]);
+    // stack_id cai para o 1º membro traduzível quando o stack_id não traduz.
+    expect(views[0]?.stack_id).toBe('uuid-b');
+  });
+
+  it('serializeTabBars produz JSON consumível pelo helper (ShowTabs)', () => {
+    const json = serializeTabBars([
+      {
+        stack_id: 's',
+        x: 1,
+        y: 2,
+        w: 3,
+        h: 4,
+        tabs: [{ member_id: 's', title: 'T', active: true }],
+      },
+    ]);
+    expect(JSON.parse(json)).toEqual([
+      {
+        stack_id: 's',
+        x: 1,
+        y: 2,
+        w: 3,
+        h: 4,
+        tabs: [{ member_id: 's', title: 'T', active: true }],
+      },
+    ]);
+  });
+
+  it('parseTabActions lê ações válidas e descarta kind desconhecido/malformado', () => {
+    const json = JSON.stringify([
+      { stack_id: 's', member_id: 'a', kind: 'activate' },
+      { stack_id: 's', member_id: 'b', kind: 'close' },
+      { stack_id: 's', member_id: 'c', kind: 'ungroup' },
+      { stack_id: 's', member_id: 'd', kind: 'explode' }, // kind inválido → descartado
+      { stack_id: 's', kind: 'close' }, // sem member_id → descartado
+    ]);
+    const actions = parseTabActions(json);
+    expect(actions).toEqual([
+      { stack_id: 's', member_id: 'a', kind: 'activate' },
+      { stack_id: 's', member_id: 'b', kind: 'close' },
+      { stack_id: 's', member_id: 'c', kind: 'ungroup' },
+    ]);
+    // JSON inválido / não-array → vazio.
+    expect(parseTabActions('{')).toEqual([]);
+    expect(parseTabActions('{"x":1}')).toEqual([]);
+  });
+
+  it('toggleStackGroup agrupa todas as janelas e depois desfaz', () => {
+    const stacks = new Map<string, Stack[]>();
+    const key = orderKey(0, 0);
+    // Agrupa as 3 janelas numa aba, ativando a 2ª.
+    expect(toggleStackGroup(stacks, key, ['a', 'b', 'c'], 'b')).toBe(true);
+    expect(stacks.get(key)).toEqual([{ members: ['a', 'b', 'c'], active: 'b' }]);
+    // Chamar de novo desfaz (remove a chave).
+    expect(toggleStackGroup(stacks, key, ['a', 'b', 'c'], 'b')).toBe(true);
+    expect(stacks.has(key)).toBe(false);
+    // Menos de 2 janelas não agrupa.
+    expect(toggleStackGroup(stacks, key, ['a'], 'a')).toBe(false);
+  });
+
+  it('toggleStackGroup cai para o 1º id quando o ativo não está no grupo', () => {
+    const stacks = new Map<string, Stack[]>();
+    const key = orderKey(0, 0);
+    expect(toggleStackGroup(stacks, key, ['a', 'b'], 'z')).toBe(true);
+    expect(stacks.get(key)?.[0]?.active).toBe('a');
   });
 });

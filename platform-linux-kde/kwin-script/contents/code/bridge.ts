@@ -627,6 +627,99 @@ function toTabBar(value: unknown): TabBar | null {
   };
 }
 
+// ---- Barras de abas VISUAIS no helper de overlay (ADR 0039) ----
+//
+// O KWin Script não pinta nem captura ponteiro; o helper `etherbit-tiling-preview` desenha as barras e
+// resolve os cliques. Aqui traduzimos as `TabBar` do daemon (ids de TRANSPORTE) para `TabBarView` (ids
+// ESTÁVEIS + título), enviadas por `ShowTabs`, e fazemos o parse das ações devolvidas por
+// `DrainTabActions`. Helpers PUROS (testáveis sem KWin).
+
+/// View de uma barra de abas para o helper: geometria + abas com TÍTULO e flag de ativa. Os ids são
+/// ESTÁVEIS (internalId) — o helper só os ecoa de volta nas ações.
+export interface TabBarView {
+  stack_id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  tabs: Array<{ member_id: string; title: string; active: boolean }>;
+}
+
+/// Uma ação de aba devolvida pelo helper: clique resolvido em ativar/fechar/desagrupar.
+export interface TabAction {
+  stack_id: string;
+  member_id: string;
+  kind: 'activate' | 'close' | 'ungroup';
+}
+
+/// Traduz as `TabBar` do daemon (ids de TRANSPORTE) para `TabBarView` (ids ESTÁVEIS + título), prontas
+/// para o `ShowTabs`. `titleOf(stableId)` resolve o título (no KWin, `win.caption`) — INJETADO para
+/// manter esta função pura (sem globais do KWin). Membros que não traduzem são pulados; barra sem
+/// nenhuma aba traduzível é descartada.
+export function buildTabBarViews(
+  tabBars: TabBar[],
+  toStable: Map<number, string>,
+  titleOf: (stableId: string) => string,
+): TabBarView[] {
+  const views: TabBarView[] = [];
+  for (const bar of tabBars) {
+    const tabs: TabBarView['tabs'] = [];
+    for (const member of bar.members) {
+      const sid = toStable.get(member);
+      if (sid === undefined) {
+        continue;
+      }
+      tabs.push({ member_id: sid, title: titleOf(sid), active: member === bar.active });
+    }
+    const firstMember = tabs[0];
+    if (firstMember === undefined) {
+      continue;
+    }
+    const stackStable = toStable.get(bar.stack_id) ?? firstMember.member_id;
+    views.push({ stack_id: stackStable, x: bar.x, y: bar.y, w: bar.width, h: bar.height, tabs });
+  }
+  return views;
+}
+
+/// Serializa as views para o argumento JSON do `ShowTabs`.
+export function serializeTabBars(views: TabBarView[]): string {
+  return JSON.stringify(views);
+}
+
+/// Parse defensivo do JSON de `DrainTabActions` (`[{stack_id,member_id,kind}]`). Descarta entradas
+/// malformadas ou de `kind` desconhecido. Ids são ESTÁVEIS (internalId), como enviados em `ShowTabs`.
+export function parseTabActions(json: string): TabAction[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+  const out: TabAction[] = [];
+  for (const entry of parsed) {
+    if (typeof entry !== 'object' || entry === null) {
+      continue;
+    }
+    const e = entry as Record<string, unknown>;
+    const kind = e.kind;
+    if (
+      typeof e.member_id !== 'string' ||
+      (kind !== 'activate' && kind !== 'close' && kind !== 'ungroup')
+    ) {
+      continue;
+    }
+    out.push({
+      stack_id: typeof e.stack_id === 'string' ? e.stack_id : '',
+      member_id: e.member_id,
+      kind,
+    });
+  }
+  return out;
+}
+
 /// Lê as árvores devolvidas pelo daemon (transporte) e as traduz para internalId para a ponte
 /// PERSISTIR por grupo. Defensivo: entradas malformadas são puladas; folhas intraduzíveis colapsam.
 export function parseLayoutTrees(
@@ -771,6 +864,28 @@ export function addToStack(
   } else {
     list.push({ members: [targetId, draggedId], active: draggedId });
   }
+  return true;
+}
+
+/// Agrupa/desagrupa em UMA aba todas as janelas (`ids`, já na ordem) do grupo `key` — atalho Meta+S,
+/// paridade com o GNOME. Se o grupo já tem stack, DESFAZ (remove a chave); senão cria um único stack com
+/// todos os `ids`, ativando `activeId` (ou o primeiro). Exige ≥2 janelas para agrupar. `true` se mudou.
+export function toggleStackGroup(
+  stacks: Map<string, Stack[]>,
+  key: string,
+  ids: string[],
+  activeId: string,
+): boolean {
+  const existing = stacks.get(key);
+  if (existing && existing.length > 0) {
+    stacks.delete(key);
+    return true;
+  }
+  if (ids.length < 2) {
+    return false;
+  }
+  const active = ids.includes(activeId) ? activeId : (ids[0] as string);
+  stacks.set(key, [{ members: [...ids], active }]);
   return true;
 }
 

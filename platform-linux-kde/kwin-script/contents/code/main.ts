@@ -11,8 +11,10 @@
 //    nativo (`workspace.showOutline`). Ao soltar: SWAP (centro de uma janela) ou split 50/50 do slot
 //    do alvo / inserção global de 50%, conforme a zona resolvida.
 //
-// Tiling PURO no KDE (ADR 0028): SEM abas/stacks. O drop nunca empilha — o centro de uma janela faz
-// SWAP (troca as duas) e as bordas dividem o slot do alvo. A matemática vive 100% no Rust.
+// Abas VISUAIS no KDE (ADR 0039, reverte o "sem abas" do 0028): o centro de uma janela AGRUPA as duas
+// em aba (drag-to-group); as bordas dividem o slot do alvo. A matemática vive 100% no Rust; o DESENHO
+// das barras e a captura de cliques vivem no helper `etherbit-tiling-preview` (wlr-layer-shell), pois um
+// KWin Script não pinta nem captura ponteiro. O script só publica geometria/títulos e aplica as ações.
 
 import { DEFAULT_CONFIG, type TilingConfig } from './config.js';
 import {
@@ -33,10 +35,17 @@ import {
   toggleGroupDisabled,
   mergeFallback,
   removeIdFromStacks,
+  addToStack,
+  setActiveMember,
+  toggleStackGroup,
+  buildTabBarViews,
+  serializeTabBars,
+  parseTabActions,
   type Stack,
   type TreeNode,
   type HotZone,
   type Rect,
+  type TabBarView,
   type WindowSnapshot,
   type MonitorSnapshot,
 } from './bridge.js';
@@ -52,6 +61,13 @@ const IFACE = 'dev.ediano.etherbit.Tiling';
 const PREVIEW_BUS = 'dev.ediano.etherbit.Preview';
 const PREVIEW_PATH = '/dev/ediano/etherbit/Preview';
 const PREVIEW_IFACE = 'dev.ediano.etherbit.Preview';
+
+// Barras de abas VISUAIS no MESMO helper (ADR 0039): outra interface no mesmo processo/objeto. O KWin
+// Script publica a geometria+títulos (`ShowTabs`), esconde (`HideTabs`) e drena os cliques resolvidos
+// pelo helper (`DrainTabActions`). O helper acorda o script via `invokeShortcut` (kglobalaccel) — o
+// nome do atalho oculto abaixo DEVE casar com `kglobalaccel::ACTION` do helper.
+const TABS_IFACE = 'dev.ediano.etherbit.Tabs';
+const TAB_ACTION_SHORTCUT = 'etherbit-tiling-tab-action';
 
 /// Prefixo estável de log. A ÚNICA saída do QJSEngine é `print` (sem `console`/`setTimeout`); o prefixo
 /// permite `journalctl --user -f QT_CATEGORY=kwin_scripting | grep etherbit`. O handshake `Ping` e o
@@ -318,6 +334,8 @@ function releaseToFloating(): void {
   }
   floatingAbove.clear();
   stackHidden.clear();
+  // Tiling desligado: nenhuma barra de abas deve permanecer no overlay.
+  pushTabs([]);
 }
 
 /// Coleta janelas + monitores na ORDEM estável, pede o layout ao daemon (com o estado de árvores +
@@ -610,6 +628,15 @@ function retile(): void {
         stackHidden.add(sid);
       }
 
+      // ADR 0039: publica as barras de abas no helper de overlay (desenho + cliques). O título sai
+      // daqui (`win.caption`) — o contrato do daemon não carrega títulos (ADR 0029).
+      pushTabs(
+        buildTabBarViews(tabBars, transportToStable, (sid) => {
+          const w = stableToWin.get(sid);
+          return w && isLiveWindow(w) ? w.caption : '';
+        }),
+      );
+
       // Janela morreu durante o apply (snapshot velho): re-tila uma vez (o `applying` já é false) para
       // encaixar o quadrante. Converge na próxima passada.
       if (sawDead) {
@@ -619,7 +646,128 @@ function retile(): void {
   );
 }
 
-// ---- Atalhos globais (Meta+Shift+Y geral / Meta+Y por workspace) ----
+// ---- Barras de abas: publicação + drenagem de ações (ADR 0039) ----
+
+/// Assinatura do último `ShowTabs` enviado — evita reemitir D-Bus quando nada mudou.
+let lastTabsKey = '';
+
+/// Publica (ou esconde) as barras de abas no helper de overlay. Dedup por JSON: só chama o D-Bus quando
+/// o conjunto/geometria muda. Best-effort: se o helper não estiver no barramento, é no-op.
+function pushTabs(views: TabBarView[]): void {
+  if (views.length === 0) {
+    if (lastTabsKey !== '') {
+      lastTabsKey = '';
+      callDBus(PREVIEW_BUS, PREVIEW_PATH, TABS_IFACE, 'HideTabs');
+    }
+    return;
+  }
+  const json = serializeTabBars(views);
+  if (json !== lastTabsKey) {
+    lastTabsKey = json;
+    callDBus(PREVIEW_BUS, PREVIEW_PATH, TABS_IFACE, 'ShowTabs', json);
+  }
+}
+
+/// Janela viva cujo `internalId` == `id` (sem mapa persistente — robusto a janelas mortas).
+function winByStableId(id: string): KWinWindow | null {
+  for (const win of workspace.windowList()) {
+    if (isLiveWindow(win) && windowId(win) === id) {
+      return win;
+    }
+  }
+  return null;
+}
+
+/// internalIds (na ordem estável) das janelas NORMAIS do grupo `(monitor, desktop)` == `key`. Base do
+/// Meta+S (agrupar/desagrupar todo o grupo).
+function groupWindowIds(key: string): string[] {
+  const outputs = collectOutputs();
+  const ids: string[] = [];
+  for (const win of workspace.windowList()) {
+    if (!isLiveWindow(win) || !win.normalWindow) {
+      continue;
+    }
+    const monitor = outputs.indexOf(win.output);
+    const k = orderKey(monitor < 0 ? 0 : monitor, desktopIndexOf(win));
+    if (k === key) {
+      ids.push(windowId(win));
+    }
+  }
+  return sortByOrder(order, key, ids);
+}
+
+/// Drena do helper as ações de clique acumuladas (ativar/fechar/desagrupar) e as aplica. Disparado pelo
+/// atalho oculto que o helper invoca via kglobalaccel após cada clique (o KWin Script não assina sinais).
+function drainTabActions(): void {
+  callDBus(PREVIEW_BUS, PREVIEW_PATH, TABS_IFACE, 'DrainTabActions', (json: string) => {
+    applyTabActions(json);
+  });
+}
+
+/// Aplica as ações resolvidas pelo helper. `activate` muda a aba ativa e foca a janela; `close` fecha a
+/// janela (→ `windowRemoved` → retile); `ungroup` tira a janela do stack (o core a reinsere no grid
+/// cíclico via `insert_cyclic` no próximo sync). Re-tila quando o estado leve muda.
+function applyTabActions(json: string): void {
+  const actions = parseTabActions(json);
+  if (actions.length === 0) {
+    return;
+  }
+  let needRetile = false;
+  for (const action of actions) {
+    if (action.kind === 'activate') {
+      if (setActiveMember(stacks, action.member_id)) {
+        needRetile = true;
+      }
+      const win = winByStableId(action.member_id);
+      if (win) {
+        try {
+          workspace.activeWindow = win;
+        } catch (e) {
+          // referência morta — ignora
+        }
+      }
+    } else if (action.kind === 'close') {
+      const win = winByStableId(action.member_id);
+      if (win) {
+        try {
+          win.closeWindow();
+        } catch (e) {
+          // referência morta — ignora (o retile encaixa o quadrante)
+        }
+      }
+    } else {
+      // ungroup → o core reinsere no grid cíclico no próximo sync
+      if (removeIdFromStacks(stacks, action.member_id)) {
+        needRetile = true;
+      }
+    }
+  }
+  if (needRetile) {
+    retile();
+  }
+}
+
+// ---- Atalhos globais (Meta+Shift+Y geral / Meta+Y por workspace / Meta+S abas) ----
+
+// Atalho OCULTO (sem tecla): o helper de abas o invoca via kglobalaccel após um clique para que o script
+// DRENE e aplique a ação (ADR 0039). O nome casa com `kglobalaccel::ACTION` do helper.
+registerShortcut(TAB_ACTION_SHORTCUT, 'Etherbit: aplicar ação de aba (interno)', '', () =>
+  drainTabActions(),
+);
+registerShortcut(
+  'EtherbitToggleTabbing',
+  'Etherbit: agrupa/desagrupa as janelas em abas (workspace atual)',
+  'Meta+S',
+  () => {
+    const key = activeGroupKey();
+    const ids = groupWindowIds(key);
+    const aw = workspace.activeWindow;
+    const activeId = aw && isLiveWindow(aw) ? windowId(aw) : (ids[0] ?? '');
+    if (toggleStackGroup(stacks, key, ids, activeId)) {
+      retile();
+    }
+  },
+);
 
 registerShortcut(
   'EtherbitToggleEnabled',
@@ -822,9 +970,20 @@ function onMoveFinish(win: KWinWindow): void {
     retile();
     return;
   }
-  // Escopo local sobre uma janela-alvo: o core trata QUALQUER zona — `center` = swap (troca as duas);
-  // `left/right/top/bottom` = split 50/50 do slot do alvo. Traduz targetId → transporte e delega.
-  const targetT = lastTransportOf.get(windowId(target));
+  const targetStable = windowId(target);
+  // DRAG-TO-GROUP (ADR 0039): centro de uma janela AGRUPA as duas em aba (não faz swap) — espelha o
+  // GNOME, que intercepta o centro NA PONTE e nunca manda `center` ao core. O retile materializa o stack
+  // (via `serializeState`), o core devolve a `tab_bar`, e o helper desenha a barra.
+  if (hot && hot.scope === 'local' && hot.dropZone === 'center') {
+    const monitor = collectOutputs().indexOf(target.output);
+    const key = orderKey(monitor < 0 ? 0 : monitor, desktopIndexOf(target));
+    addToStack(stacks, key, targetStable, dragged);
+    retile();
+    return;
+  }
+  // Escopo local sobre uma janela-alvo: `left/right/top/bottom` = split 50/50 do slot do alvo. Traduz
+  // targetId → transporte e delega ao core.
+  const targetT = lastTransportOf.get(targetStable);
   if (hot && hot.scope === 'local' && hot.dropZone !== 'none' && targetT !== undefined) {
     moveWindow(targetT, hot.dropZone, 'local');
     return;

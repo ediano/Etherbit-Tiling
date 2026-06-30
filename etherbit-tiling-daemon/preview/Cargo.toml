@@ -6,6 +6,9 @@
 # via wlr-layer-shell (SHM, sem GPU). O KWin Script (ponte burra) o aciona por D-Bus durante o drag.
 # Translucidez de verdade (alpha 0.3–0.4) só é possível por um cliente Wayland próprio: nem o KWin
 # Script nem um KWin Effect scriptado conseguem pintar um retângulo livre (só `showOutline`, opaco).
+#
+# ADR 0039: este mesmo helper ganha um SEGUNDO papel — desenhar as barras de abas clicáveis do KDE e
+# capturar o ponteiro sobre elas — sem trazer framework visual de volta ao daemon de geometria.
 [package]
 name = "etherbit-tiling-preview"
 version = "0.1.0"
@@ -13,9 +16,17 @@ edition = "2021"
 
 [dependencies]
 zbus = { version = "5", features = ["tokio"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
 anyhow = "1"
 # Cliente Wayland (wlr-layer-shell + SHM). `dlopen` evita link com a `libwayland-client` de sistema —
 # o devcontainer/CI compila sem ela; sob o KDE (que sempre a tem) o overlay funciona em runtime.
 smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop"] }
 wayland-client = { version = "0.31", features = ["dlopen"] }
+# ADR 0039 — abas do KDE no helper:
+# Contrato JSON das barras (ShowTabs) e da fila de ações (DrainTabActions). O daemon de geometria não
+# carrega títulos (ADR 0029); eles chegam aqui via o KWin Script, em JSON.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Rasterização de texto por software (Rust puro, sem libs de sistema — compatível com o devcontainer,
+# ADR 0004) para os rótulos das abas. A fonte é carregada em RUNTIME de caminhos padrão do Linux.
+ab_glyph = "0.2"
