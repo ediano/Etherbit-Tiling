@@ -162,6 +162,19 @@ pub struct TabBarRect {
     pub active_id: u64,
 }
 
+/// Um grupo de janelas que COLIDEM na mesma célula geométrica (ADR 0041): a soma dos mínimos rígidos
+/// das tracks de um grid excede o espaço disponível (`Σ mins rígidos > avail`), então o esmagamento
+/// impositivo (ADR 0040) entregaria a cada uma seu mínimo empurrando as vizinhas para fora da borda
+/// (sobreposição visual). A ponte usa este sinal para AGRUPAR os membros em abas (onde cada aba recebe
+/// a célula inteira e cabe), eliminando a sobreposição. Puramente geométrico/agnóstico — IDs e a célula
+/// (`cell_id` = âncora), nada de título/toolkit. Só emitido com ≥2 membros (uma janela sozinha maior que
+/// a célula não tem com quem agrupar → fica no esmagamento).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CollisionGroup {
+    pub cell_id: u64,
+    pub member_ids: Vec<u64>,
+}
+
 /// Resultado completo do layout: os retângulos das janelas VISÍVEIS (a aba ativa de cada stack já
 /// vem aqui com o `content`) + as barras de abas. As janelas inativas de um stack NÃO aparecem em
 /// `rects` — a ponte as oculta (minimiza) a partir de `member_ids`/`active_id` de `tab_bars`.
@@ -169,12 +182,15 @@ pub struct TabBarRect {
 pub struct LayoutResult {
     pub rects: Vec<WindowRect>,
     pub tab_bars: Vec<TabBarRect>,
-    /// Sinal de OVERFLOW ("não cabe", ADR 0030/0033): janelas cujo slot final ficou abaixo do
-    /// mínimo (em algum eixo) mesmo após a cascata elástica comprimir o máximo possível. A ponte usa
-    /// esta lista para disparar o Merge Fallback (colapsar em abas, onde cada aba recebe o slot
-    /// inteiro) em vez de forçar um frame < min — que o cliente Wayland recusa, transbordando. O
-    /// retângulo é o slot computado (informativo). Vazio no caso comum (tudo coube via cascata).
+    /// **Deprecated (ADR 0040):** sinal histórico de overflow ("não cabe", ADR 0030/0033). O
+    /// esmagamento impositivo do `solve_tracks` garante que toda janela rígida receba ≥ seu mínimo
+    /// no grid, então este campo fica **sempre vazio**. Mantido no struct/DTO por retrocompat. O
+    /// sinal de colapso que dispara o agrupamento automático é o `collisions` (ADR 0041).
     pub floating: Vec<WindowRect>,
+    /// Sinal de COLISÃO (ADR 0041): conjuntos de janelas cujo espaço físico colapsou (`Σ mins rígidos
+    /// > avail` numa célula). A ponte agrupa cada conjunto em abas. Vazio no caso comum (tudo coube via
+    /// cascata, ou o esmagamento acomodou sem colapso estrito).
+    pub collisions: Vec<CollisionGroup>,
 }
 
 // ---- Árvore BSP PERSISTENTE (estado da ponte; o core só a transforma) ----
@@ -416,7 +432,7 @@ pub fn compute_layout_with(
         }
     }
 
-    LayoutResult { rects, tab_bars, floating: Vec::new() }
+    LayoutResult { rects, tab_bars, floating: Vec::new(), collisions: Vec::new() }
 }
 
 /// Monta a sequência de slots de um grupo a partir dos `ids` (na ordem do grupo) e dos `stacks`.
@@ -712,6 +728,20 @@ fn track_bounds(start: f64, total: f64, fracs: &[f64], gap: f64) -> Vec<(f64, f6
     out
 }
 
+/// `true` se as tracks NÃO cabem no espaço dado: a soma dos mínimos RÍGIDOS (descontados os gaps)
+/// excede o disponível (`Σ mins > avail`). Fonte ÚNICA do gatilho: tanto o ramo "esmagamento
+/// impositivo" do `solve_tracks` (ADR 0040) quanto a detecção de colisão de `geom_leaves_min`
+/// (ADR 0041) chamam este helper — assim detecção e ramo nunca divergem na fronteira `Σ == avail`.
+fn tracks_overflow(total: f64, mins: &[f64], gap: f64) -> bool {
+    let n = mins.len();
+    if n == 0 {
+        return false;
+    }
+    let avail = (total - gap * (n.saturating_sub(1)) as f64).max(0.0);
+    let needed: f64 = mins.iter().map(|m| m.max(0.0)).sum();
+    needed > avail + 1e-6
+}
+
 /// Resolve os tamanhos das tracks RESPEITANDO os mínimos por track. Quando os mínimos cabem (`Σ mins ≤
 /// avail`), aplica a saturação elástica clássica: parte das frações desejadas e SATURA as tracks que
 /// ficariam abaixo do mínimo, redistribuindo o restante às demais proporcionalmente à fração.
@@ -740,8 +770,7 @@ fn solve_tracks(
         return Vec::new();
     }
     let avail = (total - gap * (n.saturating_sub(1)) as f64).max(0.0);
-    let needed: f64 = mins.iter().map(|m| m.max(0.0)).sum();
-    let size: Vec<f64> = if needed <= avail + 1e-6 {
+    let size: Vec<f64> = if !tracks_overflow(total, mins, gap) {
         // CABE: saturação elástica clássica — satura as tracks abaixo do mínimo e redistribui o resto
         // às demais proporcionalmente à fração. Converge em no máximo `n` passos.
         let sum: f64 = fracs.iter().sum::<f64>().max(1e-9);
@@ -771,8 +800,9 @@ fn solve_tracks(
         }
         size
     } else {
-        // NÃO CABE: esmagamento impositivo (ADR 0040). Como `needed` (o gatilho deste ramo) é a soma dos
-        // mínimos — e as tracks flexíveis contribuem com 0 — aqui SEMPRE `Σ mins rígidos > avail`. Cada
+        // NÃO CABE: esmagamento impositivo (ADR 0040). O gatilho deste ramo (`tracks_overflow`) é
+        // `Σ mins > avail` — e as tracks flexíveis contribuem com 0 — logo aqui SEMPRE `Σ mins rígidos >
+        // avail`. Cada
         // track rígida (`min > eps`) recebe seu mínimo EXATO e as flexíveis (`min ≈ 0`) vão a zero. A
         // soma excede `avail` (as últimas tracks transbordam a borda → deslocamento compensatório), mas
         // toda janela rígida ganha um slot satisfatível: o cliente Wayland aceita, a geometria real
@@ -923,6 +953,11 @@ fn track_mins(
 
 /// Como `geom_leaves`, mas em cada grid CLAMPA as tracks aos mínimos das subárvores (via `min_extent`
 /// → `solve_tracks`). Com `min` vazio (todos os mínimos 0) o resultado é idêntico ao `geom_leaves` puro.
+///
+/// Detecção de colisão (ADR 0041): quando um eixo de um grid COLAPSA (`tracks_overflow`: `Σ mins
+/// rígidos > avail`), as folhas daquele grid são emitidas como um `CollisionGroup` (≥2 membros) para a
+/// ponte agrupar em abas. `in_collapsed` propaga "já estou sob um grid colapsado", evitando grupos
+/// aninhados redundantes (o grid mais alto que colapsa já cobre todas as folhas descendentes).
 fn geom_leaves_min(
     node: &Node,
     rect: Rectf,
@@ -930,6 +965,8 @@ fn geom_leaves_min(
     min: &MinSizes,
     focused: Option<u64>,
     out: &mut Vec<(u64, Rectf)>,
+    collisions: &mut Vec<CollisionGroup>,
+    in_collapsed: bool,
 ) {
     match node {
         Node::Leaf(id) => out.push((*id, rect)),
@@ -949,8 +986,36 @@ fn geom_leaves_min(
                 focused_priority_tracks(cols.len(), rows.len(), cells, focused);
             let xb = solve_tracks(rect.x, rect.w, cols, &col_mins, gap, &col_pri);
             let yb = solve_tracks(rect.y, rect.h, rows, &row_mins, gap, &row_pri);
+            // ADR 0041: colapso físico num eixo (mesmo gatilho `tracks_overflow` do ramo impositivo do
+            // solve_tracks). Só sinaliza no grid MAIS ALTO que colapsa (`in_collapsed` suprime os
+            // aninhados); o esmagamento do solve_tracks segue valendo na geometria — a ponte é quem
+            // decide agrupar a partir deste sinal.
+            let collapsed = !in_collapsed
+                && (tracks_overflow(rect.w, &col_mins, gap)
+                    || tracks_overflow(rect.h, &row_mins, gap));
+            if collapsed {
+                let mut ids = Vec::new();
+                for c in cells {
+                    collect_node_leaf_ids(&c.node, &mut ids);
+                }
+                // Guard: uma janela sozinha maior que a célula não tem com quem agrupar — fica no
+                // esmagamento (sem re-merge em loop). Só emite conflito real (≥2 disputando a célula).
+                if ids.len() >= 2 {
+                    let cell_id = ids[0];
+                    collisions.push(CollisionGroup { cell_id, member_ids: ids });
+                }
+            }
             for c in cells {
-                geom_leaves_min(&c.node, cell_rect(&xb, &yb, c), gap, min, focused, out);
+                geom_leaves_min(
+                    &c.node,
+                    cell_rect(&xb, &yb, c),
+                    gap,
+                    min,
+                    focused,
+                    out,
+                    collisions,
+                    in_collapsed || collapsed,
+                );
             }
         }
     }
@@ -1088,11 +1153,23 @@ fn geometry_from_tree(
     let mut tab_bars = Vec::new();
     let root = match &tree.root {
         Some(r) => r,
-        None => return LayoutResult { rects, tab_bars, floating: Vec::new() },
+        None => {
+            return LayoutResult { rects, tab_bars, floating: Vec::new(), collisions: Vec::new() }
+        }
     };
     let inner = inner_rect(area, opts.outer_gap as f64);
     let mut leaves = Vec::new();
-    geom_leaves_min(root, inner, opts.inner_gap as f64, min, focused, &mut leaves);
+    let mut collisions = Vec::new();
+    geom_leaves_min(
+        root,
+        inner,
+        opts.inner_gap as f64,
+        min,
+        focused,
+        &mut leaves,
+        &mut collisions,
+        false,
+    );
     // `floating` é SEMPRE vazio (ADR 0040): o esmagamento impositivo do `solve_tracks` garante que
     // toda janela rígida receba ≥ seu mínimo dentro do grid, então não há mais "não cabe" a sinalizar.
     // O campo permanece no struct por retrocompat de DTO (as pontes ainda o desserializam).
@@ -1112,7 +1189,7 @@ fn geometry_from_tree(
             });
         }
     }
-    LayoutResult { rects, tab_bars, floating }
+    LayoutResult { rects, tab_bars, floating, collisions }
 }
 
 /// Monta o mapa de tamanhos mínimos por FOLHA do grupo a partir das janelas e dos stacks. Uma folha
@@ -1202,27 +1279,30 @@ pub fn retain_tileable_when_maximized(
         .collect()
 }
 
-/// Todos os ids de folha da árvore (ordem de varredura first→second).
-fn collect_leaf_ids(tree: &LayoutTree) -> Vec<u64> {
-    fn walk(node: &Node, out: &mut Vec<u64>) {
-        match node {
-            Node::Leaf(id) => out.push(*id),
-            // Um stack ocupa um slot identificado pela sua âncora (primeiro membro).
-            Node::Stack { members, .. } => {
-                if let Some(anchor) = members.first() {
-                    out.push(*anchor);
-                }
+/// Ids de folha de um NÓ (ordem de varredura first→second). Um stack ocupa um slot identificado pela
+/// sua âncora (primeiro membro), então contribui só com ela — não recursa nos demais membros.
+/// Reusado por `collect_leaf_ids` (árvore inteira) e pela detecção de colisão de `geom_leaves_min`.
+fn collect_node_leaf_ids(node: &Node, out: &mut Vec<u64>) {
+    match node {
+        Node::Leaf(id) => out.push(*id),
+        Node::Stack { members, .. } => {
+            if let Some(anchor) = members.first() {
+                out.push(*anchor);
             }
-            Node::Grid { cells, .. } => {
-                for c in cells {
-                    walk(&c.node, out);
-                }
+        }
+        Node::Grid { cells, .. } => {
+            for c in cells {
+                collect_node_leaf_ids(&c.node, out);
             }
         }
     }
+}
+
+/// Todos os ids de folha da árvore (ordem de varredura first→second).
+fn collect_leaf_ids(tree: &LayoutTree) -> Vec<u64> {
     let mut out = Vec::new();
     if let Some(r) = &tree.root {
-        walk(r, &mut out);
+        collect_node_leaf_ids(r, &mut out);
     }
     out
 }
@@ -2940,6 +3020,12 @@ mod tests {
             r1.width
         );
         assert_no_overlap(&res.rects);
+        // ADR 0041: o esmagamento entrega o mínimo (acima) E o colapso é sinalizado — os dois
+        // coexistem; a ponte decide agrupar a partir de `collisions`.
+        assert_eq!(res.collisions.len(), 1, "o colapso da célula é sinalizado");
+        let mut members = res.collisions[0].member_ids.clone();
+        members.sort();
+        assert_eq!(members, vec![1, 2], "ambas as janelas da célula");
     }
 
     #[test]
@@ -2967,6 +3053,81 @@ mod tests {
         let w = |id: u64| res.rects.iter().find(|r| r.id == id).unwrap().width;
         assert!(w(1) >= 2000 && w(2) >= 2000, "cada rígida recebe seu mínimo exato");
         assert_no_overlap(&res.rects);
+        assert_eq!(res.collisions.len(), 1, "as duas rígidas colidem na mesma célula");
+        let mut members = res.collisions[0].member_ids.clone();
+        members.sort();
+        assert_eq!(members, vec![1, 2]);
+    }
+
+    #[test]
+    fn colisao_emitida_uma_vez_para_o_grid_colapsado() {
+        // ADR 0041: duas rígidas lado a lado cujos mínimos somam mais que a largura → a célula colapsa
+        // e o core emite UM CollisionGroup com as duas (a ponte agrupa em abas). `cell_id` é a âncora.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let windows = vec![win_min(1, 700, 0), win_min(2, 700, 0)];
+        let res = compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows, None);
+        assert_eq!(res.collisions.len(), 1, "um único grupo para a célula colapsada");
+        let g = &res.collisions[0];
+        let mut members = g.member_ids.clone();
+        members.sort();
+        assert_eq!(members, vec![1, 2]);
+        assert!(g.cell_id == 1 || g.cell_id == 2, "cell_id é a âncora da célula");
+    }
+
+    #[test]
+    fn uma_janela_sozinha_com_min_gigante_nao_colide() {
+        // Guard do caso patológico (ADR 0041): uma única janela cujo min excede a tela não tem com quem
+        // agrupar. Sem grid (raiz é folha), nada colapsa: `collisions` vazio, a janela segue tilada.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1], &[], None, &area, &opts());
+        let windows = vec![win_min(1, 5000, 5000)];
+        let res = compute_constrained(&tree, &area, &opts(), &[], &[1], &windows, None);
+        assert!(res.collisions.is_empty(), "sem com quem agrupar → sem colisão");
+        assert_eq!(res.rects.len(), 1, "a janela segue tilada (esmagamento)");
+    }
+
+    #[test]
+    fn apos_agrupar_em_stack_nao_ha_mais_colisao() {
+        // Idempotência/estabilidade (ADR 0041): as MESMAS duas rígidas que colidiam, uma vez agrupadas
+        // num stack, deixam de colapsar — cada aba recebe a célula inteira. `collisions` esvazia, então
+        // a ponte não re-agrupa (fim do vai-e-vem que motivou o 0040).
+        let area = area_1000x800();
+        let stacks = vec![StackDescriptor { member_ids: vec![1, 2], active_id: 1 }];
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &stacks, None, &area, &opts());
+        let windows = vec![win_min(1, 2000, 0), win_min(2, 2000, 0)];
+        let res = compute_constrained(&tree, &area, &opts(), &stacks, &[1, 2], &windows, None);
+        assert!(res.collisions.is_empty(), "stack não colapsa: cada aba pega a célula inteira");
+        assert!(!res.tab_bars.is_empty(), "o stack rende sua barra de abas");
+    }
+
+    #[test]
+    fn colisao_e_agnostica_ao_app_id() {
+        // Fronteira da Regra I: `collisions` é função só de (mins, área, gaps, topologia) — nunca de
+        // app_id/título. Mesmos mínimos/posições com app_ids diferentes → mesmo sinal de colisão.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let a = {
+            let windows = vec![win_min(1, 700, 0), win_min(2, 700, 0)];
+            compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &windows, None).collisions
+        };
+        let b = {
+            let mut w1 = win_min(1, 700, 0);
+            w1.app_id = "outro-app".to_string();
+            let mut w2 = win_min(2, 700, 0);
+            w2.app_id = "mais-outro".to_string();
+            compute_constrained(&tree, &area, &opts(), &[], &[1, 2], &[w1, w2], None).collisions
+        };
+        assert_eq!(a, b, "o app_id não influencia a colisão");
+    }
+
+    #[test]
+    fn tracks_overflow_coincide_com_o_ramo_do_solve_tracks() {
+        // O helper de detecção é a MESMA fonte do gatilho do ramo impositivo: na fronteira `Σ == avail`
+        // ainda cabe (sem overflow); logo acima dela, há. Evita que detecção e ramo divirjam.
+        assert!(!tracks_overflow(1000.0, &[500.0, 500.0], 0.0), "Σ == avail ainda cabe");
+        assert!(tracks_overflow(1000.0, &[500.0, 501.0], 0.0), "Σ > avail transborda");
+        assert!(tracks_overflow(1000.0, &[500.0, 500.0], 10.0), "o gap reduz o avail → overflow");
     }
 
     #[test]

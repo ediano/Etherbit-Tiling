@@ -150,10 +150,18 @@ export function parseLayout(json: string): LayoutCommand[] {
   return commands;
 }
 
-/// Parse defensivo das janelas FLUTUANTES (auto-floating) do `layout_json`. Lê `floating` — janelas
-/// que o core isolou do grid por não caberem com seu mínimo. Ausente (daemon antigo) ou array legado
-/// → vazio. A ponte aplica estes retângulos E eleva as janelas acima das tiladas.
-export function parseFloating(json: string): LayoutCommand[] {
+/// Um grupo de janelas que COLIDEM na mesma célula (ADR 0041): o core sinaliza que `Σ mins rígidos >
+/// avail` colapsou a célula; a ponte agrupa `members` em abas (cada aba recebe a célula inteira e
+/// cabe). Os IDs são os de transporte (= `LayoutCommand.id`).
+export interface CollisionGroup {
+  cellId: number;
+  members: number[];
+}
+
+/// Parse defensivo das colisões (`collisions`) do `layout_json` (ADR 0041): conjuntos de janelas cujo
+/// espaço físico colapsou, que a ponte agrupa em abas. Ausente (daemon antigo = comportamento 0040) ou
+/// malformado → vazio. Filtra grupos com < 2 membros (nada a agrupar).
+export function parseCollisions(json: string): CollisionGroup[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
@@ -163,23 +171,31 @@ export function parseFloating(json: string): LayoutCommand[] {
   if (Array.isArray(parsed) || typeof parsed !== 'object' || parsed === null) {
     return [];
   }
-  const raw = (parsed as Record<string, unknown>).floating;
+  const raw = (parsed as Record<string, unknown>).collisions;
   if (!Array.isArray(raw)) {
     return [];
   }
-  const commands: LayoutCommand[] = [];
+  const out: CollisionGroup[] = [];
   for (const entry of raw) {
-    if (isLayoutCommand(entry)) {
-      commands.push({
-        id: entry.id,
-        x: entry.x,
-        y: entry.y,
-        width: entry.width,
-        height: entry.height,
-      });
+    if (typeof entry !== 'object' || entry === null) {
+      continue;
+    }
+    const rec = entry as Record<string, unknown>;
+    if (typeof rec.cell_id !== 'number' || !Array.isArray(rec.members)) {
+      continue;
+    }
+    const ids = rec.members.filter((m): m is number => typeof m === 'number' && Number.isFinite(m));
+    if (ids.length >= 2) {
+      out.push({ cellId: rec.cell_id, members: ids });
     }
   }
-  return commands;
+  return out;
+}
+
+/// Chave estável (ordem-insensível) de um conjunto de membros — guard de idempotência do agrupamento
+/// por colisão (ADR 0041): uma vez agrupado um conjunto, não re-agrupa enquanto ele persistir no sinal.
+export function collisionKey(members: number[]): string {
+  return [...members].sort((a, b) => a - b).join(',');
 }
 
 /// Uma janela RECEBIDA que o daemon não posicionou, com o motivo (`non_normal`, `non_resizable`,
