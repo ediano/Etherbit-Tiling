@@ -5,6 +5,8 @@
 
 /// Espelha 1:1 a struct Config do daemon (etherbit-tiling-daemon).
 export interface TilingConfig {
+  /// Chave geral do tiling: `false` libera as janelas (a ponte pausa o laço); `true` re-tila.
+  enabled: boolean;
   gap: number;
   active_border: boolean;
   border_color: string;
@@ -16,6 +18,7 @@ export interface TilingConfig {
 }
 
 export const DEFAULT_CONFIG: TilingConfig = {
+  enabled: true,
   gap: 8,
   active_border: true,
   border_color: '#5e81ac',

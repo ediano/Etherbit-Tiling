@@ -67,31 +67,39 @@ function debug(...args: unknown[]): void {
   }
 }
 
-/// Lê a config do kwinrc (entradas de contents/config/main.xml), com fallback nos padrões.
+/// Lê a config do kwinrc (entradas de contents/config/main.xml), com fallback nos padrões. O
+/// `autostart` deixou de ser controlado pelo KDE (o daemon já sobe via serviço/ativação D-Bus —
+/// ADR 0024); fica no padrão só para o contrato espelhado seguir completo.
 function loadConfig(): TilingConfig {
   return {
+    enabled: readConfig('enabled', DEFAULT_CONFIG.enabled),
     gap: readConfig('gap', DEFAULT_CONFIG.gap),
     active_border: readConfig('activeBorder', DEFAULT_CONFIG.active_border),
     border_color: readConfig('borderColor', DEFAULT_CONFIG.border_color),
     border_width: readConfig('borderWidth', DEFAULT_CONFIG.border_width),
     ignore_list: DEFAULT_CONFIG.ignore_list,
-    autostart: readConfig('autostart', DEFAULT_CONFIG.autostart),
+    autostart: DEFAULT_CONFIG.autostart,
     rounded_corners: readConfig('roundedCorners', DEFAULT_CONFIG.rounded_corners),
     corner_radius: readConfig('cornerRadius', DEFAULT_CONFIG.corner_radius),
   };
 }
 
-/// Empurra a config lida do kwinrc para o daemon: ele persiste no TOML e gerencia o autostart. Os
-/// cantos arredondados são propagados por consistência da config; no KDE o arredondamento em si
-/// depende do efeito NATIVO de cantos do KWin (um Script não instancia shaders — ver ADR 0019).
+/// Empurra a config lida do kwinrc para o daemon: ele persiste no TOML. NÃO mexe em autostart (o KDE
+/// não gerencia mais isso). Os cantos arredondados são propagados por consistência da config; no KDE o
+/// arredondamento em si depende do efeito NATIVO de cantos do KWin (um Script não instancia shaders —
+/// ver ADR 0019).
 function pushConfigToDaemon(cfg: TilingConfig): void {
+  callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetEnabled', cfg.enabled);
   callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetGap', cfg.gap);
-  callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetAutostart', cfg.autostart);
   callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetRoundedCorners', cfg.rounded_corners, cfg.corner_radius);
 }
 
 const config = loadConfig();
 pushConfigToDaemon(config);
+
+/// Chave geral do tiling (runtime). Inicia do default do KCM (`enabled`) e é alternada em tempo real
+/// pelo atalho Meta+Shift+Y. Desligada, o `retile()` libera as janelas e NÃO chama `SyncWindows`.
+let tilingEnabled = config.enabled;
 
 // Handshake na carga: prova que o daemon está alcançável. REGRA DE DIAGNÓSTICO — ver `[etherbit]
 // ponte carregando` SEM o `Ping OK` seguinte no journal significa daemon fora/inacessível (a causa
@@ -242,10 +250,46 @@ function windowUnderPointObj(x: number, y: number, excludeId: string): KWinWindo
   return null;
 }
 
+/// Libera as janelas do grid para o comportamento flutuante do sistema (chave geral desligada):
+/// desminimiza as abas que NÓS ocultamos e baixa (remove keepAbove) as que elevamos por auto-floating.
+/// Envolto em `applying` para não disparar retile reentrante via `minimizedChanged`/`keepAboveChanged`.
+/// O estado leve (ordem/stacks/árvores) é PRESERVADO — religar reorganiza tudo de volta. Idempotente.
+function releaseToFloating(): void {
+  if (stackHidden.size === 0 && floatingAbove.size === 0) {
+    return;
+  }
+  applying = true;
+  try {
+    for (const win of workspace.windowList()) {
+      if (!isLiveWindow(win)) {
+        continue;
+      }
+      const id = windowId(win);
+      if (stackHidden.has(id) && win.minimized) {
+        win.minimized = false;
+      }
+      if (floatingAbove.has(id) && win.keepAbove) {
+        win.keepAbove = false;
+      }
+    }
+  } finally {
+    applying = false;
+  }
+  stackHidden.clear();
+  floatingAbove.clear();
+}
+
 /// Coleta janelas + monitores na ORDEM estável, pede o layout ao daemon (com o estado de stacks/
 /// grupos desligados) e aplica os retângulos (pull). Não faz nada durante um arrasto nem reentrante.
 function retile(): void {
   if (draggedId !== null || applying) {
+    return;
+  }
+
+  // Chave geral DESLIGADA: pausa o laço (não envia `SyncWindows`) e libera as janelas para flutuar.
+  // O daemon segue vivo; o estado leve é preservado para o religar reorganizar tudo no grid.
+  if (!tilingEnabled) {
+    releaseToFloating();
     return;
   }
 
@@ -498,6 +542,18 @@ function retile(): void {
         }
         if (act.action === 'activate') {
           actionMutated = setActiveMember(stacks, sid) || actionMutated;
+          // CORREÇÃO DO FOCO: marcar a aba ativa não bastava — a janela continuava atrás e sem foco
+          // (o usuário tinha de fechar a outra para interagir). Trazemos a janela-alvo à frente E ao
+          // foco do compositor: desminimiza (caso fosse aba inativa) e ATRIBUI `workspace.activeWindow`
+          // (read-write na API do KWin: ativar = levantar ao topo da pilha + focar). A aba antes ativa
+          // vira membro inativo e é minimizada pelo `retile` seguinte (disparado por `actionMutated`).
+          const win = stableToWin.get(sid) ?? byId.get(act.member_id);
+          if (win && isLiveWindow(win)) {
+            if (win.minimized) {
+              win.minimized = false;
+            }
+            workspace.activeWindow = win;
+          }
         } else if (act.action === 'ungroup') {
           actionMutated = removeIdFromStacks(stacks, sid) || actionMutated;
         }
@@ -548,8 +604,22 @@ function collectGroupTiled(
   }
 }
 
-// ---- Atalhos globais (Meta+Y / Meta+S) ----
+// ---- Atalhos globais (Meta+Shift+Y geral / Meta+Y por workspace / Meta+S abas) ----
 
+registerShortcut(
+  'EtherbitToggleEnabled',
+  'Etherbit: ativa/desativa o tiling (chave geral)',
+  'Meta+Shift+Y',
+  () => {
+    tilingEnabled = !tilingEnabled;
+    // Persiste/propaga no daemon (config compartilhada). Não reescreve o kwinrc — o estado de runtime
+    // volta ao default do KCM se o script recarregar (limitação aceita: ver ADR 0027).
+    callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetEnabled', tilingEnabled);
+    log('tiling', tilingEnabled ? 'ATIVADO' : 'DESATIVADO', '(chave geral)');
+    // Desligado: `retile` libera as janelas. Ligado: reorganiza tudo de volta no grid.
+    retile();
+  },
+);
 registerShortcut(
   'EtherbitToggleTiling',
   'Etherbit: liga/desliga o tiling no workspace atual',

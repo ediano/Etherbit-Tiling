@@ -118,6 +118,19 @@ impl Tiling {
         self.config.to_json()
     }
 
+    /// Chave geral do tiling. `false` faz as pontes pararem de enviar snapshots e liberarem as janelas
+    /// para flutuar (o daemon segue vivo); `true` re-tila. O estado só persiste e propaga aqui — quem
+    /// pausa o laço é a ponte, ao ler `enabled` da config (ConfigChanged/GetConfig).
+    async fn set_enabled(
+        &mut self,
+        enabled: bool,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
+        self.config.enabled = enabled;
+        self.persist()?;
+        self.notify(&emitter).await
+    }
+
     /// Ajusta o gap único (espaçamento entre janelas e bordas, ambos os eixos). Travado em 0..=100.
     async fn set_gap(
         &mut self,

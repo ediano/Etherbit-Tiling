@@ -714,8 +714,7 @@ fn solve_tracks(start: f64, total: f64, fracs: &[f64], mins: &[f64], gap: f64) -
     // Itera saturando as tracks abaixo do mínimo; converge em no máximo `n` passos.
     for _ in 0..n {
         let fixed_sum: f64 = (0..n).filter(|&i| fixed[i]).map(|i| size[i]).sum();
-        let free_frac: f64 =
-            (0..n).filter(|&i| !fixed[i]).map(|i| fracs[i]).sum::<f64>().max(1e-9);
+        let free_frac: f64 = (0..n).filter(|&i| !fixed[i]).map(|i| fracs[i]).sum::<f64>().max(1e-9);
         let free_avail = (avail - fixed_sum).max(0.0);
         for i in 0..n {
             if !fixed[i] {
@@ -1326,9 +1325,13 @@ fn split_leaf_into(
         Node::Leaf(id) => Node::Leaf(id),
         // Soltar ao lado de um stack (alvo = qualquer membro): racha o SLOT do stack, mantendo o
         // container intacto de um lado e a nova folha do outro. O stack não é dividido por dentro.
-        Node::Stack { members, active } if members.contains(&target) => {
-            make_split(axis, new_first, new_frac, Node::Leaf(new_id), Node::Stack { members, active })
-        }
+        Node::Stack { members, active } if members.contains(&target) => make_split(
+            axis,
+            new_first,
+            new_frac,
+            Node::Leaf(new_id),
+            Node::Stack { members, active },
+        ),
         Node::Stack { members, active } => Node::Stack { members, active },
         Node::Grid { cols, rows, cells } => Node::Grid {
             cols,

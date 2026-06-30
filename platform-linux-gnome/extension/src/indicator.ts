@@ -2,12 +2,15 @@
 //
 // Segue a regra do macOS: o indicador só existe enquanto o motor está ativo. No Linux o motor
 // liga/desliga junto com a extensão (ver ADR de nomenclatura/decisões), então o indicador é
-// criado em enable() e destruído em disable(). Dá acesso rápido a gap, raio dos cantos e autostart.
+// criado em enable() e destruído em disable(). Dá acesso rápido à chave geral (ativar/desativar o
+// tiling), ao gap e ao raio dos cantos.
 //
-// Controles via INPUT NUMÉRICO inteiro (spinbox: digitar + botões − / +), com travas rígidas (ver
-// ADR rules/0019): Gap 0..100 px, raio dos cantos 0..50 px. A UI completa migrará para a janela
-// própria do daemon (wgpu) no futuro (ver ADR rules/0016). NÃO há controle de "borda ativa" (a borda
-// não é desenhável por um cliente Wayland; só pelo compositor).
+// Controles: uma CHAVE GERAL (switch "Ativar tiling") no topo e dois INPUTS NUMÉRICOS inteiros
+// (spinbox: digitar + botões − / +), com travas rígidas (ver ADR rules/0019): Gap 0..100 px, raio
+// dos cantos 0..50 px (raio `0` = sem arredondamento; `> 0` = arredondado — não há toggle separado).
+// A UI completa migrará para a janela própria do daemon (wgpu) no futuro (ver ADR rules/0016). NÃO há
+// controle de "borda ativa" (a borda não é desenhável por um cliente Wayland; só pelo compositor) nem
+// de autostart (o daemon já sobe via serviço/ativação D-Bus — ADR rules/0024).
 
 import Clutter from 'gi://Clutter';
 import GObject from 'gi://GObject';
@@ -30,18 +33,16 @@ interface SpinRow {
 
 /// Callbacks disparados pelas interações do usuário no menu.
 export interface IndicatorHandlers {
+  onEnabled: (enabled: boolean) => void;
   onGap: (gap: number) => void;
   onCornerRadius: (radius: number) => void;
-  onRoundedCorners: (enabled: boolean) => void;
-  onAutostart: (enabled: boolean) => void;
 }
 
 class EtherbitIndicatorImpl extends PanelMenu.Button {
   private _handlers: IndicatorHandlers;
+  private _enabledSwitch!: PopupMenu.PopupSwitchMenuItem;
   private _gapSpin!: SpinRow;
   private _radiusSpin!: SpinRow;
-  private _roundedSwitch!: PopupMenu.PopupSwitchMenuItem;
-  private _autostartSwitch!: PopupMenu.PopupSwitchMenuItem;
   // Evita reentrância: ao refletir a config do daemon não queremos re-disparar handlers.
   private _syncing = false;
 
@@ -61,28 +62,25 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
       }),
     );
 
-    this._gapSpin = this._addSpinRow('Espaçamento (px)', GAP_MIN, GAP_MAX, (v) =>
-      this._handlers.onGap(v),
-    );
-    this._radiusSpin = this._addSpinRow('Raio dos cantos (px)', RADIUS_MIN, RADIUS_MAX, (v) =>
-      this._handlers.onCornerRadius(v),
-    );
+    // Chave geral: liga/desliga o tiling em tempo real. Desligado, a ponte libera as janelas para
+    // flutuar (o daemon segue vivo); ligado, reorganiza as janelas no grid. Fica no TOPO do menu.
+    this._enabledSwitch = new PopupMenu.PopupSwitchMenuItem('Ativar tiling', true);
+    this._keepOpenOnToggle(this._enabledSwitch);
+    this._enabledSwitch.connect('toggled', (_item, state) => {
+      if (!this._syncing) this._handlers.onEnabled(state);
+    });
+    this._menu.addMenuItem(this._enabledSwitch);
 
     this._menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-    this._roundedSwitch = new PopupMenu.PopupSwitchMenuItem('Cantos arredondados', true);
-    this._keepOpenOnToggle(this._roundedSwitch);
-    this._roundedSwitch.connect('toggled', (_item, state) => {
-      if (!this._syncing) this._handlers.onRoundedCorners(state);
-    });
-    this._menu.addMenuItem(this._roundedSwitch);
-
-    this._autostartSwitch = new PopupMenu.PopupSwitchMenuItem('Iniciar com o sistema', false);
-    this._keepOpenOnToggle(this._autostartSwitch);
-    this._autostartSwitch.connect('toggled', (_item, state) => {
-      if (!this._syncing) this._handlers.onAutostart(state);
-    });
-    this._menu.addMenuItem(this._autostartSwitch);
+    this._gapSpin = this._addSpinRow('Espaçamento (px)', GAP_MIN, GAP_MAX, (v) =>
+      this._handlers.onGap(v),
+    );
+    // Raio dos cantos: `0` desativa o arredondamento; qualquer valor `> 0` o ativa (não há mais um
+    // toggle separado — o valor é a única fonte de verdade do comportamento).
+    this._radiusSpin = this._addSpinRow('Raio dos cantos (px)', RADIUS_MIN, RADIUS_MAX, (v) =>
+      this._handlers.onCornerRadius(v),
+    );
   }
 
   /// Faz um switch ALTERNAR sem fechar o painel. O `activate` padrão de um item de menu emite o sinal
@@ -99,10 +97,9 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
   /// Reflete a configuração vinda do daemon nos controles, sem disparar handlers.
   sync(config: TilingConfig): void {
     this._syncing = true;
+    this._enabledSwitch.setToggleState(config.enabled);
     this._gapSpin.setValue(config.gap);
     this._radiusSpin.setValue(config.corner_radius);
-    this._roundedSwitch.setToggleState(config.rounded_corners);
-    this._autostartSwitch.setToggleState(config.autostart);
     this._syncing = false;
   }
 
@@ -126,21 +123,29 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
     let value = min;
     const clamp = (v: number): number => Math.max(min, Math.min(max, Math.round(v)));
 
-    // Campo COMPACTO: ~metade da largura anterior (56→32 px), só o bastante para 3 dígitos inteiros
-    // (o máximo é 100). Padding mínimo para não inflar a altura da linha.
+    // Campo COMPACTO: largura só o bastante para 3 dígitos inteiros (o máximo é 100). O número fica
+    // CENTRALIZADO nos dois eixos: `text-align: center` (horizontal) + padding vertical simétrico, com
+    // o ator `y_align: CENTER` alinhando o campo na linha. `border-radius` TRAVADO em 8px (evita o
+    // tema dar ao St.Entry o arredondamento de "pílula").
     const entry = new St.Entry({
       style_class: 'etherbit-spin-entry',
       can_focus: true,
       x_align: Clutter.ActorAlign.CENTER,
       y_align: Clutter.ActorAlign.CENTER,
     });
-    entry.set_style('width: 32px; padding: 1px 4px; text-align: center;');
+    entry.set_style('width: 36px; padding: 2px 6px; text-align: center; border-radius: 8px;');
 
     // Botões −/+ MINIMALISTAS: sem o `style_class: 'button'` (que traz borda/padding pesados do tema),
     // pequenos e discretos ao redor do campo; fundo translúcido leve só para sinalizar que são clicáveis.
+    // Quadrado 20×20 com glifo CENTRALIZADO (`text-align: center` + padding zero) e `border-radius`
+    // TRAVADO em 8px (≤ 8px = trava rígida; mantém canto suave sem virar círculo/pílula).
     const SPIN_BTN_STYLE =
-      'min-width: 18px; width: 18px; height: 18px; padding: 0; margin: 0 3px; ' +
-      'border: none; border-radius: 4px; background-color: rgba(255, 255, 255, 0.08); font-weight: bold;';
+      'min-width: 20px; width: 20px; height: 20px; padding: 0; margin: 0 3px; ' +
+      'border: none; border-radius: 8px; background-color: rgba(255, 255, 255, 0.08); ' +
+      'font-weight: bold; text-align: center;';
+    // NÃO passamos x_align/y_align aqui: St.Button herda de St.Bin, cujo `x-align`/`y-align` é o enum
+    // St.Align (MIDDLE = 1) e colidiria com Clutter.ActorAlign.CENTER (= 2 = St.Align.END), DESALINHANDO
+    // o glifo. O St.Bin já centraliza o filho por padrão; `text-align: center` reforça o eixo horizontal.
     const minus = new St.Button({ label: '−', style_class: 'etherbit-spin-btn', can_focus: true });
     const plus = new St.Button({ label: '+', style_class: 'etherbit-spin-btn', can_focus: true });
     minus.set_style(SPIN_BTN_STYLE);

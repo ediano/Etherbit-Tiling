@@ -19,6 +19,7 @@ describe('parseConfig', () => {
 
   it('reproduz todos os campos de um JSON completo', () => {
     const full: TilingConfig = {
+      enabled: false,
       gap: 4,
       active_border: false,
       border_color: '#bf616a',
@@ -44,6 +45,7 @@ describe('DEFAULT_CONFIG', () => {
     // Espelho do `impl Default for Config` em daemon/src/config.rs. Se o daemon
     // mudar um padrão, este teste falha e força atualizar as duas pontas.
     expect(DEFAULT_CONFIG).toEqual({
+      enabled: true,
       gap: 8,
       active_border: true,
       border_color: '#5e81ac',
