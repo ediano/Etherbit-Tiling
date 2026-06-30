@@ -97,6 +97,13 @@ interface KWinWindow {
    * sempre com checagem (`if (win.maximizedChanged) …`). Usado pelo Unmaximize Recovery para re-tilar.
    */
   readonly maximizedChanged?: KWinSignal<[]>;
+  /**
+   * (Des)maximiza a janela nos eixos dados. OPCIONAL (defensivo, como `maximizedChanged`): chame
+   * sempre via checagem (`win.setMaximize?.(false, false)`). Usado pelo spawn-unmaximize: com o Tiling
+   * ativo, uma janela que nasce maximizada é desmaximizada para entrar na Distribuição Cíclica. API
+   * real do KWin (Plasma 6): `Window::setMaximize(bool vertically, bool horizontally)`.
+   */
+  setMaximize?(vertically: boolean, horizontally: boolean): void;
 }
 
 /** Sinal Qt exposto ao script. */

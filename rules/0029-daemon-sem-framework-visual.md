@@ -37,6 +37,12 @@ buscou vazamentos de escopo entre o **core/daemon** e a **interface**. Resultado
   células com `St.Widget` dentro do Mutter. A matemática da zona (`resolveHotZone`) permanece um módulo
   puro espelhado na ponte ([0026](0026-grid-fractal-3x3-elastico-e-hud.md)/[0028](0028-eixos-limpos-cosmic-e-kde-sem-abas.md)).
 
+> **Emenda [0031](0031-cascata-sempre-spawn-unmaximize-e-preview-translucido.md):** o `showOutline` é
+> contorno **opaco**. Para o preview **translúcido** (alpha 0.3–0.4) do KDE, a camada visual volta —
+> mas **NÃO** para o daemon de geometria (que segue sem framework visual, esta decisão intacta): vive
+> num **helper nativo SEPARADO** (`etherbit-tiling-preview`, wlr-layer-shell + SHM), acionado por D-Bus
+> pela ponte. O `showOutline` permanece como fallback.
+
 ### O contrato D-Bus carrega APENAS geometria
 
 - **Removidos** `WindowDto.title`, `TabBarDto.titles` e a plumbing de títulos no daemon e nas pontes

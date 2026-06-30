@@ -103,19 +103,24 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
     this._syncing = false;
   }
 
-  /// Cria uma linha de INPUT NUMÉRICO inteiro: rótulo + [−] [campo] [+]. Digitar ou clicar ajusta o
-  /// valor, SEMPRE inteiro e travado em `[min, max]`. `onChange` recebe o valor já validado.
+  /// Cria uma linha de AJUSTE NUMÉRICO inteiro: rótulo + [−] [valor] [+]. O valor é um DISPLAY (label
+  /// desativada, centralizada — `Npx`), não um campo editável: a interação é ESTRITAMENTE pelos botões
+  /// `−`/`+` (sempre inteiro, travado em `[min, max]`). O hover acontece SÓ nos botões — a linha é
+  /// não-reativa, então o contêiner pai não acende. `onChange` recebe o valor já validado.
   private _addSpinRow(
     label: string,
     min: number,
     max: number,
     onChange: (value: number) => void,
   ): SpinRow {
-    const item = new PopupMenu.PopupBaseMenuItem({ activate: false });
-    // Mantém o painel ABERTO ao mexer no input: anula o `activate` (que o PopupMenu trataria FECHANDO
-    // o menu). O `activate: false` já evita o realce de seleção; isto blinda contra o fechamento em
-    // qualquer versão do Shell. Fechar segue por ação explícita (clicar fora / clicar no ícone).
-    (item as unknown as { activate: () => void }).activate = (): void => {};
+    // Linha NÃO-REATIVA: sem hover/realce do item inteiro (o efeito de foco fica isolado nos botões).
+    // `can_focus: false` casa com o display ser só leitura; os botões filhos seguem reativos por conta
+    // própria (a reatividade é por-ator, um pai não-reativo não bloqueia filhos reativos).
+    const item = new PopupMenu.PopupBaseMenuItem({
+      activate: false,
+      reactive: false,
+      can_focus: false,
+    });
     item.add_child(
       new St.Label({ text: label, x_expand: true, y_align: Clutter.ActorAlign.CENTER }),
     );
@@ -123,43 +128,49 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
     let value = min;
     const clamp = (v: number): number => Math.max(min, Math.min(max, Math.round(v)));
 
-    // Campo COMPACTO: largura só o bastante para 3 dígitos inteiros (o máximo é 100). O número fica
-    // CENTRALIZADO nos dois eixos: `text-align: center` (horizontal) + padding vertical simétrico, com
-    // o ator `y_align: CENTER` alinhando o campo na linha. `border-radius` TRAVADO em 8px (evita o
-    // tema dar ao St.Entry o arredondamento de "pílula").
-    const entry = new St.Entry({
-      style_class: 'etherbit-spin-entry',
-      can_focus: true,
+    // DISPLAY numérico: label CENTRALIZADA e desativada (não editável) — `Npx`. Centraliza de forma
+    // confiável (`text-align: center` + `x_align: CENTER`) sem depender do toolkit alinhar um St.Entry,
+    // e elimina por construção o ruído "St.Entry ... already disposed" (não há mais `clutter_text` nem
+    // handlers de foco). Largura fixa acomoda até "100px" sem deslocar os botões.
+    const valueLabel = new St.Label({
+      style_class: 'etherbit-spin-value',
       x_align: Clutter.ActorAlign.CENTER,
       y_align: Clutter.ActorAlign.CENTER,
     });
-    entry.set_style('width: 36px; padding: 2px 6px; text-align: center; border-radius: 8px;');
+    valueLabel.set_style('min-width: 48px; text-align: center; font-feature-settings: "tnum";');
 
-    // Botões −/+ MINIMALISTAS: sem o `style_class: 'button'` (que traz borda/padding pesados do tema),
-    // pequenos e discretos ao redor do campo; fundo translúcido leve só para sinalizar que são clicáveis.
-    // Quadrado 20×20 com glifo CENTRALIZADO (`text-align: center` + padding zero) e `border-radius`
-    // TRAVADO em 8px (≤ 8px = trava rígida; mantém canto suave sem virar círculo/pílula).
-    const SPIN_BTN_STYLE =
-      'min-width: 20px; width: 20px; height: 20px; padding: 0; margin: 0 3px; ' +
-      'border: none; border-radius: 8px; background-color: rgba(255, 255, 255, 0.08); ' +
-      'font-weight: bold; text-align: center;';
+    // Botões −/+ ROBUSTOS e simétricos, conversando com o toggle mestre (mesma altura visual). Quadrado
+    // 26×26 com glifo CENTRALIZADO, padding equilibrado e `border-radius` TRAVADO em 8px (≤ 8px = trava
+    // rígida do ADR 0027; mantém canto suave sem virar pílula). Sem `style_class: 'button'` (que traria
+    // borda/padding pesados do tema). O hover é PRÓPRIO (notify::hover) — feedback estritamente no botão.
+    const BTN_BASE =
+      'min-width: 26px; width: 26px; height: 26px; padding: 0; margin: 0 4px; border: none; ' +
+      'border-radius: 8px; font-weight: bold; font-size: 15px; text-align: center; ';
+    const BTN_BG = 'background-color: rgba(255, 255, 255, 0.10);';
+    const BTN_BG_HOVER = 'background-color: rgba(255, 255, 255, 0.20);';
     // NÃO passamos x_align/y_align aqui: St.Button herda de St.Bin, cujo `x-align`/`y-align` é o enum
     // St.Align (MIDDLE = 1) e colidiria com Clutter.ActorAlign.CENTER (= 2 = St.Align.END), DESALINHANDO
     // o glifo. O St.Bin já centraliza o filho por padrão; `text-align: center` reforça o eixo horizontal.
     const minus = new St.Button({ label: '−', style_class: 'etherbit-spin-btn', can_focus: true });
     const plus = new St.Button({ label: '+', style_class: 'etherbit-spin-btn', can_focus: true });
-    minus.set_style(SPIN_BTN_STYLE);
-    plus.set_style(SPIN_BTN_STYLE);
+    // Hover ISOLADO: cada botão pinta o próprio realce em `notify::hover`; nada acende a linha inteira.
+    const paint = (btn: St.Button): void => {
+      btn.set_style(BTN_BASE + (btn.hover ? BTN_BG_HOVER : BTN_BG));
+    };
+    minus.connect('notify::hover', () => paint(minus));
+    plus.connect('notify::hover', () => paint(plus));
+    paint(minus);
+    paint(plus);
 
     const render = (): void => {
-      // A entry pode já ter sido descartada (disable durante um ConfigChanged em voo): não lança.
+      // A label pode já ter sido descartada (disable durante um ConfigChanged em voo): não lança.
       try {
-        entry.set_text(String(value));
+        valueLabel.set_text(`${value}px`);
       } catch (error) {
-        // St.Entry descartada — ignora
+        // St.Label descartada — ignora
       }
     };
-    // Aplica um valor do USUÁRIO: trava, atualiza o campo e dispara o handler.
+    // Aplica um valor do USUÁRIO: trava, atualiza o display e dispara o handler.
     const apply = (v: number): void => {
       value = clamp(v);
       render();
@@ -170,35 +181,9 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
 
     minus.connect('clicked', () => apply(value - 1));
     plus.connect('clicked', () => apply(value + 1));
-    // Digitação: ao confirmar (Enter) ou sair do campo, parseia inteiro e trava (valor inválido →
-    // restaura o atual).
-    const commit = (): void => {
-      // `key-focus-out` pode disparar durante o teardown, com a entry já descartada: lê em try/catch.
-      let text: string;
-      try {
-        text = entry.get_text();
-      } catch (error) {
-        return; // St.Entry descartada — nada a confirmar
-      }
-      const parsed = Number.parseInt(text, 10);
-      apply(Number.isFinite(parsed) ? parsed : value);
-    };
-    // Captura o `clutter_text` UMA vez e solta os handlers no `destroy` da PRÓPRIA entry. O Clutter
-    // emite 'destroy' no início da destruição, com o `clutter_text` ainda vivo — então a desconexão
-    // é segura e impede o `commit()` de disparar sobre uma entry já descartada. O código anterior
-    // soltava no destroy do INDICADOR, mas o PopupMenu (dono das entries) é destruído por outro
-    // caminho no shutdown do Shell, deixando o `clutter_text` morto e poluindo o journal com
-    // "Object St.Entry ... has been already disposed".
-    const clutterText = entry.clutter_text;
-    const activateId = clutterText.connect('activate', () => commit());
-    const focusOutId = clutterText.connect('key-focus-out', () => commit());
-    entry.connect('destroy', () => {
-      clutterText.disconnect(activateId);
-      clutterText.disconnect(focusOutId);
-    });
 
     item.add_child(minus);
-    item.add_child(entry);
+    item.add_child(valueLabel);
     item.add_child(plus);
     this._menu.addMenuItem(item);
 

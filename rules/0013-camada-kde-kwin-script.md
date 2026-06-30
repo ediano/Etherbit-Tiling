@@ -109,3 +109,16 @@ Decisões a fixar: **o que** a camada KDE entrega, **como** é compilada e **com
      preserva array spread/rest (ES2015). Validado: bundle gerado sem `{ ...` cru.
 - **Lição:** o alvo do Vite é a fronteira de sintaxe que o QJSEngine tolera; cada feature sintática
   ≥ES2018 adicionada à fonte precisa ser coberta pelo downlevel do esbuild (manter o alvo conservador).
+
+## Emenda (2026-06): KWin Script não pinta superfícies — preview translúcido vive num helper
+
+- **Limite real da API:** o KWin *Script* (QJSEngine, `X-Plasma-API: javascript`) expõe **só**
+  `workspace.showOutline`/`hideOutline` para desenho — um **contorno opaco**. Não há `Qt`/QML/
+  `createQmlObject`/`PlasmaCore` no contexto do script (a API QML do KWin é `undefined` em JS). Um KWin
+  *Effect* scriptado também não pinta retângulos livres (só anima janelas existentes).
+- **Consequência (ADR [0031](0031-cascata-sempre-spawn-unmaximize-e-preview-translucido.md)):** o
+  preview **translúcido** (alpha 0.3–0.4) é impossível dentro do Script. Ele vive num **helper nativo
+  separado** (`etherbit-tiling-preview`): cliente Wayland wlr-layer-shell que desenha o retângulo via
+  SHM, acionado por D-Bus pela ponte. O `showOutline` nativo permanece como **fallback**.
+- **Lição:** translucidez/superfícies próprias no KDE só por C++ ou cliente Wayland dedicado — nunca
+  por um KWin Script/Effect scriptado.

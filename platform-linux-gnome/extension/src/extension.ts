@@ -134,6 +134,11 @@ export default class EtherbitTilingExtension extends Extension {
   // sync↔merge — se a janela AINDA floata após o merge (tela minúscula), deixa de tentar e cai no
   // floating legado como rede de segurança. Limpo quando o id deixa de floatar.
   private _mergeAttempted = new Set<number>();
+  // Spawn-unmaximize (ciclo de vida de maximização): ids que o core JÁ tilou ao menos uma vez. Uma
+  // janela que é maximizada e NUNCA foi tilada "nasceu maximizada" → forçamos `unmaximize` para ela
+  // entrar na Distribuição Cíclica. Já uma janela tilada que o usuário maximiza manualmente é
+  // PRESERVADA (seu slot volta ao desmaximizar — Unmaximize Recovery). Limpo no `unmanaged`.
+  private _everTiled = new Set<number>();
   // Barras de abas desenhadas (recriadas a cada relayout). Settings do gschema (atalhos).
   private _tabBars: St.Widget[] = [];
   private _settings: Gio.Settings | null = null;
@@ -425,31 +430,44 @@ export default class EtherbitTilingExtension extends Extension {
         removeFromOrder(this._order, id);
         removeIdFromStacks(this._stacks, id);
         this._stackHidden.delete(id);
+        this._everTiled.delete(id);
         this._scheduleRelayout();
       });
       // (Des)maximizar muda quais janelas entram no grid (Unmaximize Recovery): re-tila. O sinal só
       // dispara na transição de estado (não em todo resize), então não há loop com a aplicação.
+      // Spawn-unmaximize: se a janela é maximizada e NUNCA foi tilada, ela "nasceu maximizada" (app
+      // pediu tela cheia ao nascer) — com o Tiling ativo, forçamos `unmaximize` para ela entrar na
+      // Distribuição Cíclica. Uma janela JÁ tilada que o usuário maximiza é preservada (só re-tila).
+      const onMaxChange = (): void => {
+        this._spawnUnmaximizeIfBorn(window, id);
+        this._scheduleRelayout();
+      };
       const notifyIds = [
-        window.connect('notify::maximized-horizontally', () => this._scheduleRelayout()),
-        window.connect('notify::maximized-vertically', () => this._scheduleRelayout()),
+        window.connect('notify::maximized-horizontally', onMaxChange),
+        window.connect('notify::maximized-vertically', onMaxChange),
       ];
-      // Re-tila UMA vez quando a janela "assenta" (o `window-created` chega antes de
-      // `resizable`/`maximizable`/min size estarem prontos; o snapshot precoce pode classificá-la como
-      // não-tileável → 0 rects → a 1ª janela fica flutuante e, sozinha, nada mais re-dispara). Guarda
-      // de uma vez só (`settled`): evita relayout a cada resize do usuário; é limpo em massa no
-      // `unmanaged` via `notifyIds`.
+      // Re-tila quando a janela "assenta" (o `window-created` chega antes de
+      // `resizable`/`maximizable`/tipo estarem prontos; o snapshot precoce a classifica como
+      // não-tileável). O one-shot `settled` SÓ trava quando a janela JÁ é tileável — um `size-changed`
+      // que chega antes disso (apps que assentam o TAMANHO antes do tipo/flags, ex.: a Loja) re-tila
+      // mas NÃO queima o gatilho. Sem isso, com apps MISTOS (Nautilus + Loja) a 1ª/2ª janela podia
+      // perder o único disparo e nunca entrar no grid. Limpo em massa no `unmanaged` via `notifyIds`.
       let settled = false;
       notifyIds.push(
         window.connect('size-changed', () => {
           if (settled) {
             return;
           }
-          settled = true;
+          if (this._isTileable(window)) {
+            settled = true;
+          }
           this._scheduleRelayout();
         }),
       );
       this._tracked.set(id, { window, unmanagedId, notifyIds });
     }
+    // Nascimento: com o Tiling ativo, nenhuma janela inicia maximizada (mesmo que o app peça).
+    this._spawnUnmaximizeIfBorn(window, id);
     this._scheduleRelayout();
   }
 
@@ -563,6 +581,10 @@ export default class EtherbitTilingExtension extends Extension {
     const commands = parseLayout(layoutJson);
     const tabBars = parseTabBars(layoutJson);
     // Janelas isoladas por auto-floating (mínimo não cabe): aplicar e ELEVAR acima do grid.
+    // ADR 0031 ("cascata sempre, nunca flutua"): o daemon novo NUNCA emite `floating` — a cascata
+    // elástica comprime os vizinhos em vez de jogar a janela fora. Este caminho (parseFloating +
+    // Merge Fallback abaixo) fica DORMENTE como rede defensiva: só dispara se um daemon ANTIGO ainda
+    // mandar flutuantes (retrocompat). Com o daemon atual, `floating` chega sempre vazio.
     const floating = parseFloating(layoutJson);
     const floatingIds = new Set<number>(floating.map((c) => c.id));
 
@@ -638,6 +660,9 @@ export default class EtherbitTilingExtension extends Extension {
         if (!window) {
           continue;
         }
+        // O core deu um slot a esta janela → ela já foi tilada. A partir daqui, maximizá-la é ação
+        // MANUAL do usuário (preservada); só "nasceu maximizada" quem nunca apareceu aqui (spawn).
+        this._everTiled.add(command.id);
         // Não sobrescrever a geometria de uma janela MAXIMIZADA — isso a desmaximizaria. O compositor
         // a mantém maximizada por cima do seu slot reservado; ao desmaximizar, o evento dispara um
         // novo relayout que aplica a geometria do slot (Unmaximize Recovery).
@@ -1419,6 +1444,37 @@ export default class EtherbitTilingExtension extends Extension {
       return w.maximized_horizontally === true && w.maximized_vertically === true;
     } catch {
       return false;
+    }
+  }
+
+  /// `true` se a janela é tileável (espelha o filtro `is_tileable` do core: tipo NORMAL + redimensionável
+  /// + maximizável). Usado SÓ para travar o one-shot de `size-changed`: não trava enquanto a janela não
+  /// for tileável, evitando que um `size-changed` precoce (antes do tipo/flags assentarem) queime o
+  /// gatilho e deixe a janela fora do grid (bug de init com apps mistos). Defensivo: nunca lança.
+  private _isTileable(window: Meta.Window): boolean {
+    try {
+      return (
+        window.get_window_type() === Meta.WindowType.NORMAL &&
+        window.resizeable === true &&
+        window.can_maximize()
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /// Spawn-unmaximize: com o Tiling ATIVO, uma janela que está maximizada e que o core ainda NÃO tilou
+  /// "nasceu maximizada" (o app pediu tela cheia ao nascer) — desmaximiza para ela entrar na
+  /// Distribuição Cíclica. Uma janela já tilada (em `_everTiled`) que o usuário maximiza é PRESERVADA
+  /// (slot mantido, volta ao desmaximizar — Unmaximize Recovery), então NÃO é tocada aqui. Defensivo.
+  private _spawnUnmaximizeIfBorn(window: Meta.Window, id: number): void {
+    if (!this._config.enabled || this._everTiled.has(id) || !this._isMaximized(window)) {
+      return;
+    }
+    try {
+      window.unmaximize(Meta.MaximizeFlags.BOTH);
+    } catch (error) {
+      console.error(`Etherbit Tiling: spawn-unmaximize falhou na janela ${id}: ${error}`);
     }
   }
 

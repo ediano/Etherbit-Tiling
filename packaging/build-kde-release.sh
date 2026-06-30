@@ -18,15 +18,19 @@ rm -rf "$ROOT/dist-release" "$ROOT/$STAGE_NAME.tar.gz"
 mkdir -p "$STAGE/bin" "$STAGE/kwin-script/contents/code" \
          "$STAGE/kwin-script/contents/config" "$STAGE/kwin-script/contents/ui"
 
-# --- Daemon (reuso do workspace compartilhado) ---------------------------------
-# O daemon é PURO geometria (sem framework visual): o HUD de preview do KDE é o `workspace.showOutline`
-# NATIVO do KWin, desenhado pela ponte — ver ADR 0029. GNOME e KDE compartilham o MESMO binário do
-# daemon (não há mais feature por DE).
-echo ">> Compilando daemon (cargo build --release)"
+# --- Daemon + helper de preview (workspace compartilhado) ----------------------
+# O daemon é PURO geometria (sem framework visual, ADR 0029). A camada visual do preview do KDE vive
+# num HELPER SEPARADO (`etherbit-tiling-preview`): um cliente wlr-layer-shell que desenha o retângulo
+# TRANSLÚCIDO (alpha 0.3–0.4) — o KWin Script só faz `showOutline` (contorno opaco, fallback). GNOME e
+# KDE compartilham o MESMO binário do daemon; o helper de preview é KDE-only (layer-shell).
+echo ">> Compilando daemon + preview (cargo build --release)"
 cargo build --release --manifest-path "$ROOT/etherbit-tiling-daemon/Cargo.toml"
 install -m 755 \
   "$ROOT/etherbit-tiling-daemon/target/release/etherbit-tiling-daemon" \
   "$STAGE/bin/etherbit-tiling-daemon"
+install -m 755 \
+  "$ROOT/etherbit-tiling-daemon/target/release/etherbit-tiling-preview" \
+  "$STAGE/bin/etherbit-tiling-preview"
 
 # --- KWin Script (build do bundle IIFE) ----------------------------------------
 echo ">> Compilando KWin Script (pnpm build)"

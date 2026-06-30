@@ -142,6 +142,25 @@ echo ">> Instalando daemon em $BIN_DIR"
 mkdir -p "$BIN_DIR"
 install -m 755 "$HERE/bin/etherbit-tiling-daemon" "$BIN_DIR/etherbit-tiling-daemon"
 
+# --- Helper de preview translúcido (KDE-only, ativado por D-Bus) ----------------
+# Cliente wlr-layer-shell que desenha o retângulo TRANSLÚCIDO do preview (alpha 0.3–0.4). É opcional:
+# se ausente no payload (build antigo) ou se o overlay não subir, o KWin Script cai no `showOutline`
+# nativo (contorno opaco) — o tiling não depende dele. Lazy-start por ATIVAÇÃO D-Bus: o primeiro
+# `ShowPreview` (no drag) sobe o helper; ele fica vivo e ocioso fora do arrasto.
+if [ -f "$HERE/bin/etherbit-tiling-preview" ]; then
+  echo ">> Instalando helper de preview em $BIN_DIR"
+  install -m 755 "$HERE/bin/etherbit-tiling-preview" "$BIN_DIR/etherbit-tiling-preview"
+  DBUS_SERVICES_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/dbus-1/services"
+  mkdir -p "$DBUS_SERVICES_DIR"
+  cat > "$DBUS_SERVICES_DIR/dev.ediano.etherbit.Preview.service" <<PREVIEW
+[D-BUS Service]
+Name=dev.ediano.etherbit.Preview
+Exec=${BIN_DIR}/etherbit-tiling-preview
+PREVIEW
+else
+  echo "aviso: bin/etherbit-tiling-preview ausente — preview ficará só com o outline nativo (sem alpha)."
+fi
+
 # --- KWin Script ---------------------------------------------------------------
 echo ">> Instalando KWin Script $ID"
 if kpackagetool6 --type=KWin/Script -s "$ID" >/dev/null 2>&1; then
@@ -215,6 +234,9 @@ fi
 echo
 echo "Instalação concluída."
 echo "  • Daemon:      $BIN_DIR/etherbit-tiling-daemon"
+if [ -f "$BIN_DIR/etherbit-tiling-preview" ]; then
+  echo "  • Preview:     $BIN_DIR/etherbit-tiling-preview (translúcido, ativado por D-Bus no drag)"
+fi
 echo "  • KWin Script: $ID (habilitado no kwinrc)"
 echo "  • Serviço:     $SYSTEMD_DIR/$SERVICE"
 echo
