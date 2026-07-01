@@ -36,6 +36,8 @@ import {
   shouldSuppressSpawnMaximize,
   isResizable,
   effectiveMinSize,
+  learnObservedMin,
+  mergeMin,
   clampGeometry,
   geometryConverged,
   parseLayoutTrees,
@@ -175,6 +177,11 @@ export default class EtherbitTilingExtension extends Extension {
   //  - `_lastMinSizes`: último min-size REAL por id — cobre o `get_min_size()` degradado (0,0) de
   //    janelas minimizadas (abas inativas), para o core expandir a célula ao min do membro grande.
   private _lastMinSizes = new Map<number, [number, number]>();
+  //  - `_observedMins`: min-size EFETIVO por id, APRENDIDO pela recusa do cliente Wayland em encolher
+  //    (`learnObservedMin`, ADR 0048). Cobre o caso em que `get_min_size()` degrada para (0,0) no alvo:
+  //    sem ele o `mins` da compensação fica vazio e o toggle `rigid-compensation` vira no-op. Limpo no
+  //    `unmanaged` (por id) e no `disable` (inteiro); mantido através do floating para religar sem relearn.
+  private _observedMins = new Map<number, [number, number]>();
   // Spawn-unmaximize (ciclo de vida de maximização): ids que o core JÁ tilou ao menos uma vez. Uma
   // janela que é maximizada e NUNCA foi tilada "nasceu maximizada" → forçamos `unmaximize` para ela
   // entrar na Distribuição Cíclica. Já uma janela tilada que o usuário maximiza manualmente é
@@ -429,6 +436,7 @@ export default class EtherbitTilingExtension extends Extension {
     this._relayoutPending = false;
     this._lastLayoutSig = '';
     this._lastAppliedRects.clear();
+    this._observedMins.clear();
 
     // Remove os atalhos globais.
     if (this._settings) {
@@ -530,6 +538,7 @@ export default class EtherbitTilingExtension extends Extension {
         removeIdFromStacks(this._stacks, id);
         this._stackHidden.delete(id);
         this._lastMinSizes.delete(id);
+        this._observedMins.delete(id);
         this._everTiled.delete(id);
         this._scheduleRelayout();
       });
@@ -706,6 +715,37 @@ export default class EtherbitTilingExtension extends Extension {
       }
     }
 
+    // Aprendizado do min-size OBSERVADO (GNOME/Wayland, ADR 0048): `Meta.Window.get_min_size()` degrada
+    // para (0,0) em alguns Mutter, deixando o `mins` da compensação vazio (o toggle `rigid-compensation`
+    // vira no-op). O cliente Wayland, porém, RECUSA encolher abaixo do seu mínimo: comparando o rect que
+    // committamos no ciclo anterior (`_lastAppliedRects` — ainda intacto aqui, só é limpo no apply mais
+    // adiante) com o frame assentado deste ciclo (`snap`), `learnObservedMin` deduz o piso real. Roda
+    // SEMPRE, mesmo com o toggle desligado: mantém o cache quente para religar sem atraso e o estado OFF
+    // (que pede o rect cru) serve de sonda para a auto-correção de baixa. Gates: pula maximizada/
+    // fullscreen/minimizada e o alvo de resize/arraste (frame ≠ slot ou gesto do usuário, não recusa).
+    for (const snap of snapshots) {
+      const window = byId.get(snap.id);
+      if (!window) {
+        continue;
+      }
+      const isMinimized =
+        (window as unknown as { is_minimized?: () => boolean }).is_minimized?.() ?? false;
+      const learnable =
+        snap.id !== this._resizeStart?.id &&
+        snap.id !== this._draggedId &&
+        !snap.maximized &&
+        !this._isFullscreen(window) &&
+        !isMinimized;
+      learnObservedMin(
+        this._observedMins,
+        snap.id,
+        this._lastAppliedRects.get(snap.id),
+        { x: snap.x, y: snap.y, width: snap.width, height: snap.height },
+        learnable,
+        RELAYOUT_CONVERGE_EPSILON_PX,
+      );
+    }
+
     const focus = global.display.focus_window;
     const focusedId = focus ? focus.get_stable_sequence() : 0;
 
@@ -738,8 +778,12 @@ export default class EtherbitTilingExtension extends Extension {
       const mins = new Map<number, RigidMin>();
       const monitorOf = new Map<number, number>();
       for (const snap of snapshots) {
-        if (snap.min_width > 0 || snap.min_height > 0) {
-          mins.set(snap.id, { minWidth: snap.min_width, minHeight: snap.min_height });
+        // Min EFETIVO = maior entre o `get_min_size()` real (quando disponível) e o piso APRENDIDO pela
+        // recusa do cliente (`_observedMins`) — aditivo, funciona mesmo se o método real degradar (0,0).
+        const observed = this._observedMins.get(snap.id) ?? [0, 0];
+        const [minWidth, minHeight] = mergeMin([snap.min_width, snap.min_height], observed);
+        if (minWidth > 0 || minHeight > 0) {
+          mins.set(snap.id, { minWidth, minHeight });
         }
         monitorOf.set(snap.id, snap.monitor);
       }
@@ -788,6 +832,30 @@ export default class EtherbitTilingExtension extends Extension {
       return;
     }
     this._lastLayoutSig = layoutSig;
+
+    // Diagnóstico da compensação de min-size (ADR 0048): por janela rígida (min real e/ou observado),
+    // a fonte do mínimo (`raw` do get_min_size, `obs` aprendido, `eff` mesclado) e se a compensação
+    // alterou a geometria. Só imprime em relayout REAL (pós-dedup) e só quando há alguma rígida — baixo
+    // ruído. É a evidência que valida o toggle na sessão viva (ON deve mudar o grid; ver plano/ADR 0048).
+    const rigidLines: string[] = [];
+    for (const snap of snapshots) {
+      const obs = this._observedMins.get(snap.id) ?? [0, 0];
+      if (snap.min_width <= 0 && snap.min_height <= 0 && obs[0] <= 0 && obs[1] <= 0) {
+        continue;
+      }
+      const [effW, effH] = mergeMin([snap.min_width, snap.min_height], obs);
+      rigidLines.push(
+        `${snap.id}:${snap.app_id} raw=${snap.min_width}x${snap.min_height} ` +
+          `obs=${obs[0]}x${obs[1]} eff=${effW}x${effH}`,
+      );
+    }
+    if (rigidLines.length > 0) {
+      const compensou = JSON.stringify(commands) !== JSON.stringify(rawCommands);
+      console.log(
+        `[etherbit] rigid: on=${this._rigidCompensationEnabled()} rigidas=${rigidLines.length} ` +
+          `compensou=${compensou} | ${rigidLines.join(' | ')}`,
+      );
+    }
 
     // Observabilidade FIEL À TELA (regressão do tiling): mostra o round-trip ponte→daemon→ponte no
     // journal do gnome-shell. `total` = janelas recebidas; `aplicadas` = quantas ganharam slot;

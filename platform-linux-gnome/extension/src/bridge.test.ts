@@ -28,6 +28,8 @@ import {
   isResizable,
   isFixedSize,
   effectiveMinSize,
+  learnObservedMin,
+  mergeMin,
   geometryConverged,
   type Stack,
   type TreeNode,
@@ -630,5 +632,101 @@ describe('geometryConverged', () => {
     expect(geometryConverged(last, new Map([[1, r(13, 20, 300, 400)]]), 2)).toBe(false); // x
     expect(geometryConverged(last, new Map([[1, r(10, 20, 300, 405)]]), 2)).toBe(false); // height
     expect(geometryConverged(last, new Map([[1, r(11, 21, 301, 401)]]), 2)).toBe(true); // tudo ≤2px
+  });
+});
+
+describe('learnObservedMin', () => {
+  const rect = (x: number, y: number, width: number, height: number): Rect => ({
+    x,
+    y,
+    width,
+    height,
+  });
+  const EPS = 2;
+
+  it('sem baseline (committed undefined) → não aprende', () => {
+    const cache = new Map<number, [number, number]>();
+    expect(learnObservedMin(cache, 1, undefined, rect(0, 0, 300, 200), true, EPS)).toEqual([0, 0]);
+    expect(cache.has(1)).toBe(false);
+  });
+
+  it('não-learnable (maximizada/resize/arraste) → preserva o cache sem aprender', () => {
+    const cache = new Map<number, [number, number]>([[1, [400, 300]]]);
+    // A geometria pediria RAISE, mas learnable=false ⇒ mantém o valor anterior intacto.
+    expect(
+      learnObservedMin(cache, 1, rect(0, 0, 100, 100), rect(0, 0, 900, 900), false, EPS),
+    ).toEqual([400, 300]);
+    expect(cache.get(1)).toEqual([400, 300]);
+  });
+
+  it('recusa a encolher (posição ancorada, maior) → eleva o piso ao settled', () => {
+    const cache = new Map<number, [number, number]>();
+    // Pedimos 200x150; assentou em 360x260 na MESMA posição ⇒ min efetivo ≥ 360x260.
+    expect(
+      learnObservedMin(cache, 7, rect(10, 20, 200, 150), rect(10, 20, 360, 260), true, EPS),
+    ).toEqual([360, 260]);
+    expect(cache.get(7)).toEqual([360, 260]);
+  });
+
+  it('monotonic-max: recusa menor que o piso já aprendido não abaixa', () => {
+    const cache = new Map<number, [number, number]>([[7, [360, 260]]]);
+    expect(
+      learnObservedMin(cache, 7, rect(10, 20, 200, 150), rect(10, 20, 320, 240), true, EPS),
+    ).toEqual([360, 260]);
+  });
+
+  it('posição NÃO ancorada (move descartado no boot frio) → não aprende', () => {
+    const cache = new Map<number, [number, number]>();
+    // Pedimos (10,20) mas a janela está em (500,400) "nascida flutuante": o move foi ignorado.
+    expect(
+      learnObservedMin(cache, 3, rect(10, 20, 200, 150), rect(500, 400, 960, 540), true, EPS),
+    ).toEqual([0, 0]);
+    expect(cache.has(3)).toBe(false);
+  });
+
+  it('eixos independentes: recusa só em X ancora só a largura', () => {
+    const cache = new Map<number, [number, number]>();
+    expect(
+      learnObservedMin(cache, 9, rect(0, 0, 200, 300), rect(0, 0, 360, 300), true, EPS),
+    ).toEqual([360, 0]);
+  });
+
+  it('down-correct: pedimos abaixo do piso e o cliente aceitou → baixa o piso', () => {
+    const cache = new Map<number, [number, number]>([[5, [360, 260]]]);
+    // Compensação OFF: pedimos o rect cru 220x180 (abaixo do piso) e o cliente OBEDECEU.
+    expect(
+      learnObservedMin(cache, 5, rect(0, 0, 220, 180), rect(0, 0, 221, 181), true, EPS),
+    ).toEqual([221, 181]);
+  });
+
+  it('epsilon: diferença ≤ eps não conta como recusa', () => {
+    const cache = new Map<number, [number, number]>();
+    expect(
+      learnObservedMin(cache, 2, rect(0, 0, 300, 200), rect(0, 0, 302, 202), true, EPS),
+    ).toEqual([0, 0]);
+    expect(cache.has(2)).toBe(false);
+  });
+
+  it('ponto-fixo: committed == piso (compensação ON estável) → sem mudança', () => {
+    const cache = new Map<number, [number, number]>([[8, [360, 260]]]);
+    expect(
+      learnObservedMin(cache, 8, rect(0, 0, 360, 260), rect(0, 0, 360, 260), true, EPS),
+    ).toEqual([360, 260]);
+  });
+
+  it('janela flexível (aceita o slot, sem prior) → não entra no cache', () => {
+    const cache = new Map<number, [number, number]>();
+    expect(
+      learnObservedMin(cache, 6, rect(0, 0, 500, 400), rect(0, 0, 500, 400), true, EPS),
+    ).toEqual([0, 0]);
+    expect(cache.has(6)).toBe(false);
+  });
+});
+
+describe('mergeMin', () => {
+  it('pega o maior por eixo (real ∪ observado)', () => {
+    expect(mergeMin([300, 0], [0, 260])).toEqual([300, 260]);
+    expect(mergeMin([0, 0], [360, 260])).toEqual([360, 260]);
+    expect(mergeMin([400, 500], [360, 260])).toEqual([400, 500]);
   });
 });

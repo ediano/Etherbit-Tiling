@@ -66,6 +66,22 @@ do daemon (compartilhada com o KDE), preservando o isolamento. Exposta como swit
 `gsettings`/dconf; `changed::rigid-compensation` reflete o estado e re-tila. Desligar reproduz o
 comportamento anterior do compositor.
 
+### D) Aquisição robusta do min-size — min OBSERVADO (aprendido pela recusa do cliente)
+
+A compensação só age quando conhece o mínimo da janela. Em alguns Mutter/Wayland,
+`Meta.Window.get_min_size()` degrada para `(0,0)` mesmo com a janela visível e rígida — o `mins` chega
+vazio e a compensação (e o toggle) viram **no-op silencioso** (o comportamento reportado como "toggle
+inoperante"). Como o cliente Wayland **recusa encolher abaixo do seu mínimo**, aprendemos o piso
+empiricamente: a cada relayout comparamos o rect que committamos no ciclo anterior (`_lastAppliedRects`)
+com o frame assentado (`get_frame_rect`); se a janela realizou nosso `move_resize_frame` (posição
+ancorada, `±2px`) mas ficou **maior** num eixo, aquele tamanho é um piso do mínimo (`learnObservedMin`,
+helper PURO em `bridge.ts`). O `mins` da compensação passa a usar `max(get_min_size, min_observado)`
+(`mergeMin`) — **aditivo**: funciona quer o método real degrade, quer devolva o valor verdadeiro. O
+aprendizado roda SEMPRE (mesmo com o toggle desligado, que pede o rect cru e serve de sonda para a
+auto-correção de baixa), é monotonic-max com correção limitada (ponto-fixo → o dedup de `layoutSig` não
+oscila), e pula maximizada/fullscreen/minimizada e o alvo de resize/arraste. Memoizado por id
+(`_observedMins`), ao lado de `_lastMinSizes`.
+
 ## Consequências
 
 - **Comportamento:** apps de min-size rígido no GNOME não flutuam, não oscilam e não quebram o grid;
@@ -78,9 +94,10 @@ comportamento anterior do compositor.
 - **Contrato D-Bus inalterado:** nenhum campo/DTO muda; o core recebe sempre a árvore crua. O toggle vive
   no GSettings da extensão, fora do contrato do daemon.
 - **Limitações conhecidas:** overflow de hardware (mínimos somam mais que a tela) gera truncamento de
-  borda no vizinho; min-size negociado tarde no Wayland pode gerar um frame de atraso até o
-  `size-changed` re-tilar com o mínimo real (a memoização de `_minSize`/`effectiveMinSize` de
-  [0033](0033-min-size-real-e-merge-em-abas-sob-overflow.md) estabiliza).
+  borda no vizinho; min-size negociado tarde no Wayland (ou `get_min_size()` degradado para `(0,0)`, ver
+  **D**) gera **um** frame de atraso na primeira aparição da janela rígida até a recusa ser observada e o
+  `size-changed` re-tilar com o mínimo aprendido (a memoização de `_observedMins`/`effectiveMinSize`
+  estabiliza os ciclos seguintes).
 - **Preserva:** esmagamento cooperativo de min-size ([0040](0040-esmagamento-impositivo-e-menu-de-contexto-kde.md)),
   min-size real nas pontes ([0033](0033-min-size-real-e-merge-em-abas-sob-overflow.md)), dedup gated por
   realização + boot settle ([0038](0038-realizacao-gated-dedup-e-boot-settle.md)).

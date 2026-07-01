@@ -82,6 +82,66 @@ export function effectiveMinSize(
   return cache.get(id) ?? [0, 0];
 }
 
+/// Aprende o min-size EFETIVO de uma janela SEM depender de `Meta.Window.get_min_size()` — que em alguns
+/// Mutter/Wayland degrada para `(0,0)` e deixa a compensação da ADR 0048 sem `mins` (no-op silencioso).
+/// Ideia: no Wayland o cliente RECUSA encolher abaixo do seu mínimo. Pedimos `committed` no ciclo
+/// anterior (o rect que committamos, `_lastAppliedRects`); se a janela assentou (`settled`, o
+/// `get_frame_rect` atual) na MESMA posição do eixo mas MAIOR, ela realizou nosso `move_resize_frame` e
+/// recusou encolher → aquele tamanho é um piso do seu mínimo. Por eixo, com tolerância `eps` (px):
+///  - ÂNCORA de posição: só aprende se `|settled − committed| <= eps` naquele eixo; senão o `move` foi
+///    IGNORADO (boot frio/janela não realizada) e `settled` não diz nada sobre o mínimo. Isso também
+///    implementa "só aprende após convergência prévia" — a posição só bate quando o slot pegou na tela.
+///  - RAISE (recusa a encolher): `settled > committed + eps` → eleva o piso (monotonic-max) até `settled`.
+///  - DOWN-correct (piso stale/alto demais): pedimos `committed` ABAIXO do piso e o cliente OBEDECEU
+///    (`settled <= committed + eps`) → o mínimo real é ≤ `settled`; baixa o piso para `settled`. Só é
+///    alcançável com a compensação DESLIGADA (que pede o rect cru), que assim serve de sonda de baixa.
+/// `committed === undefined` (1º ciclo / nunca aplicada) ou `!learnable` (maximizada/fullscreen/
+/// minimizada/alvo de resize/arraste) → não aprende. Muta e devolve o cache; some do cache quando zera
+/// nos dois eixos. PURA (sem `gi://`), testável em vitest — espelha `effectiveMinSize`/`_lastMinSizes`.
+export function learnObservedMin(
+  cache: Map<number, [number, number]>,
+  id: number,
+  committed: Rect | undefined,
+  settled: Rect,
+  learnable: boolean,
+  eps: number,
+): [number, number] {
+  const prev = cache.get(id) ?? [0, 0];
+  if (!learnable || committed === undefined) {
+    return prev;
+  }
+  const next: [number, number] = [prev[0], prev[1]];
+  // Eixo X (largura), ancorado na posição x.
+  if (Math.abs(settled.x - committed.x) <= eps) {
+    if (settled.width > committed.width + eps) {
+      next[0] = Math.max(next[0], settled.width); // recusou encolher → piso ≥ settled.
+    } else if (committed.width + eps < next[0]) {
+      next[0] = Math.max(0, settled.width); // aceitou abaixo do piso aprendido → baixa o piso.
+    }
+  }
+  // Eixo Y (altura), ancorado na posição y.
+  if (Math.abs(settled.y - committed.y) <= eps) {
+    if (settled.height > committed.height + eps) {
+      next[1] = Math.max(next[1], settled.height);
+    } else if (committed.height + eps < next[1]) {
+      next[1] = Math.max(0, settled.height);
+    }
+  }
+  if (next[0] <= 0 && next[1] <= 0) {
+    cache.delete(id);
+    return [0, 0];
+  }
+  cache.set(id, next);
+  return next;
+}
+
+/// Combina o min de `get_min_size()` (real, quando disponível) com o min OBSERVADO (aprendido pela
+/// recusa do cliente em `learnObservedMin`), pegando o MAIOR por eixo. Aditivo: funciona quer o método
+/// real do Mutter degrade para `(0,0)`, quer devolva o valor verdadeiro (ADR 0048).
+export function mergeMin(raw: [number, number], observed: [number, number]): [number, number] {
+  return [Math.max(raw[0], observed[0]), Math.max(raw[1], observed[1])];
+}
+
 /// Espelha o `MonitorDto` do daemon (área útil de um monitor).
 export interface MonitorSnapshot {
   index: number;
