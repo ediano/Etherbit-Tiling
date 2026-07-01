@@ -204,6 +204,70 @@ function compensateAxis(
   }
 }
 
+/// Descrição de UM grupo de abas (stack) para a compensação por SLOT (ADR 0050). O `slot` geométrico é
+/// `bar ∪ content` — que no core equivale EXATAMENTE ao retângulo do stack (`srect`): a barra é a faixa
+/// `barHeight` no topo, o content é o resto (mesmos `x`/`width`). `activeId` é o id da aba ativa (a única
+/// que o core emite como `WindowRect`), usado como chave do slot; `memberIds` é a ordem das abas.
+export interface StackSlot {
+  activeId: number;
+  memberIds: number[];
+  bar: CompRect; // faixa da barra CRUA (id = activeId).
+  content: CompRect; // content da aba ativa CRU (id = activeId).
+  barHeight: number; // = bar.height (group_header_px efetivo, já clampado pelo core).
+}
+
+/// Entrada da compensação por slot: a de janelas soltas + a descrição dos stacks. `mins[activeId]` já
+/// deve trazer a SOBERANIA do grupo (MAX do min efetivo de todos os membros; a altura já com `barHeight`).
+export interface CompensationInputWithStacks extends CompensationInput {
+  stacks: StackSlot[];
+}
+
+/// Saída da compensação por slot: os `commands` (a aba ativa refatiada = content compensado) e o mapa
+/// `bars` (activeId → faixa da barra compensada). Barra e janela vêm da MESMA fonte → sincronizadas.
+export interface CompensationResult {
+  commands: CompRect[];
+  bars: Map<number, CompRect>;
+}
+
+/// Núcleo da compensação física (ADR 0048): agrupa `rects` por monitor e roda `compensateAxis` (X depois
+/// Y) em cada monitor que tenha ≥ 1 rect rígido. MUTA `rects` in-place. Extraído para ser reusado tanto
+/// por `compensateRigidWindows` (janelas soltas) quanto por `compensateWithStacks` (slots + soltas).
+function compensateRects(
+  rects: CompRect[],
+  mins: Map<number, RigidMin>,
+  workAreas: Map<number, CompWorkArea>,
+  monitorOf: Map<number, number>,
+  gap: number,
+): void {
+  // Agrupa por monitor; só processa monitores que tenham ≥ 1 janela rígida.
+  const byMonitor = new Map<number, CompRect[]>();
+  for (const r of rects) {
+    const mon = monitorOf.get(r.id);
+    if (mon === undefined || !workAreas.has(mon)) continue; // sem monitor/work area conhecida → intacto.
+    const arr = byMonitor.get(mon);
+    if (arr) arr.push(r);
+    else byMonitor.set(mon, [r]);
+  }
+  for (const [mon, group] of byMonitor) {
+    const wa = workAreas.get(mon);
+    if (!wa) continue;
+    const hasRigid = group.some((r) => mins.has(r.id));
+    if (!hasRigid) continue;
+    // Eixos independentes. X primeiro, depois Y (as operações de X só tocam x/width; as de Y, y/height).
+    compensateAxis(group, mins, wa, 'x', gap);
+    compensateAxis(group, mins, wa, 'y', gap);
+  }
+}
+
+/// Arredonda um rect para inteiro IN-PLACE (o core entrega i32; o /2 dos centros pode gerar subpixel) —
+/// evita que a assinatura de dedup da ponte oscile entre `100.0000001` e `100`.
+function roundRect(r: CompRect): void {
+  r.x = Math.round(r.x);
+  r.y = Math.round(r.y);
+  r.width = Math.round(r.width);
+  r.height = Math.round(r.height);
+}
+
 /// Compensação física de min-size (GNOME-only, ADR 0048). Recebe os rects CRUS do core + os mínimos das
 /// janelas + as work areas por monitor, e devolve uma NOVA lista de rects onde toda janela rígida ≥ seu
 /// mínimo, nada transborda a work area e a sobreposição foi eliminada (ou reduzida a truncamento de
@@ -224,33 +288,77 @@ export function compensateRigidWindows(input: CompensationInput): CompRect[] {
     height: c.height,
   }));
 
-  // Agrupa por monitor; só processa monitores que tenham ≥ 1 janela rígida.
-  const byMonitor = new Map<number, CompRect[]>();
-  for (const r of out) {
-    const mon = monitorOf.get(r.id);
-    if (mon === undefined || !workAreas.has(mon)) continue; // sem monitor/work area conhecida → intacto.
-    const arr = byMonitor.get(mon);
-    if (arr) arr.push(r);
-    else byMonitor.set(mon, [r]);
-  }
-
-  for (const [mon, rects] of byMonitor) {
-    const wa = workAreas.get(mon);
-    if (!wa) continue;
-    const hasRigid = rects.some((r) => mins.has(r.id));
-    if (!hasRigid) continue;
-    // Eixos independentes. X primeiro, depois Y (as operações de X só tocam x/width; as de Y, y/height).
-    compensateAxis(rects, mins, wa, 'x', gap);
-    compensateAxis(rects, mins, wa, 'y', gap);
-  }
-
-  // Arredonda para inteiro (o core entrega i32; o /2 dos centros pode gerar subpixel) — evita que a
-  // assinatura de dedup da ponte oscile entre `100.0000001` e `100`.
-  for (const r of out) {
-    r.x = Math.round(r.x);
-    r.y = Math.round(r.y);
-    r.width = Math.round(r.width);
-    r.height = Math.round(r.height);
-  }
+  compensateRects(out, mins, workAreas, monitorOf, gap);
+  for (const r of out) roundRect(r);
   return out;
+}
+
+/// Compensação física POR SLOT para grupos de abas (GNOME-only, ADR 0050). Trata cada stack como UM slot
+/// único (`bar ∪ content`), de modo que a barra e a janela ativa passem a vir da MESMA geometria
+/// compensada — eliminando a dessincronização em que a barra (crua do core) e a janela (compensada)
+/// divergiam. O `mins[activeId]` deve trazer a SOBERANIA do grupo (o maior mínimo entre TODOS os membros,
+/// com `barHeight` embutido na altura): a Fase I trava o slot nesse mínimo e a Fase II empurra os
+/// quadrantes vizinhos — sem clipping de janela rígida em célula apertada. PURA e DETERMINÍSTICA.
+/// Não muta a entrada. Devolve os `commands` (ativa refatiada = content) e o mapa `bars` (por activeId).
+export function compensateWithStacks(input: CompensationInputWithStacks): CompensationResult {
+  const { commands, mins, workAreas, monitorOf, gap, stacks } = input;
+
+  // Clona (não muta a entrada); preserva a ordem original na saída.
+  const out: CompRect[] = commands.map((c) => ({
+    id: c.id,
+    x: c.x,
+    y: c.y,
+    width: c.width,
+    height: c.height,
+  }));
+  const byId = new Map<number, CompRect>();
+  for (const r of out) byId.set(r.id, r);
+
+  // EXPANDE cada aba ativa ao seu slot (= `srect` = bar ∪ content), in-place. Stacks cuja ativa não veio
+  // em `commands` (ex.: dropada numa corrida) são puladas — a barra crua será devolvida no fatiamento.
+  const expanded = new Set<number>();
+  for (const s of stacks) {
+    const cmd = byId.get(s.activeId);
+    if (!cmd) continue;
+    cmd.x = s.bar.x;
+    cmd.y = s.bar.y;
+    cmd.width = s.bar.width;
+    cmd.height = s.barHeight + s.content.height; // reconstrói o srect original exato.
+    expanded.add(s.activeId);
+  }
+
+  // Compensa (slots rígidos + janelas soltas) se houver algo rígido; depois arredonda tudo.
+  if (mins.size > 0) {
+    compensateRects(out, mins, workAreas, monitorOf, gap);
+  }
+  for (const r of out) roundRect(r);
+
+  // FATIA cada slot compensado de volta: a barra é a faixa `barHeight` no topo; o content é o resto,
+  // abaixo dela. Escreve o content no command (mantendo o id) e registra a barra no mapa.
+  const bars = new Map<number, CompRect>();
+  for (const s of stacks) {
+    const cmd = byId.get(s.activeId);
+    if (!cmd || !expanded.has(s.activeId)) {
+      // Ativa ausente: devolve a barra CRUA arredondada para a ponte ainda ter onde desenhar.
+      const raw: CompRect = {
+        id: s.activeId,
+        x: s.bar.x,
+        y: s.bar.y,
+        width: s.bar.width,
+        height: s.bar.height,
+      };
+      roundRect(raw);
+      bars.set(s.activeId, raw);
+      continue;
+    }
+    const slotH = cmd.height;
+    // Clamp de hardware: slot menor que a faixa → a barra encolhe para caber (espelha o `bar_h.min(srect.h)`
+    // do core); o content nunca fica < 1px.
+    const barH = Math.min(s.barHeight, slotH);
+    bars.set(s.activeId, { id: s.activeId, x: cmd.x, y: cmd.y, width: cmd.width, height: barH });
+    cmd.y = cmd.y + barH;
+    cmd.height = Math.max(1, slotH - barH);
+  }
+
+  return { commands: out, bars };
 }

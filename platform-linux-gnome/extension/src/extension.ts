@@ -64,7 +64,12 @@ import {
   type WindowSnapshot,
   type MonitorSnapshot,
 } from './bridge.js';
-import { compensateRigidWindows, type RigidMin, type CompWorkArea } from './rigid-compensation.js';
+import {
+  compensateWithStacks,
+  type RigidMin,
+  type CompWorkArea,
+  type StackSlot,
+} from './rigid-compensation.js';
 import { EtherbitIndicator } from './indicator.js';
 import { applyRoundedCorners, clearRoundedCorners } from './effects.js';
 import { initI18n } from './i18n.js';
@@ -876,7 +881,11 @@ export default class EtherbitTilingExtension extends Extension {
     // lógica `_trees`, montada acima, permanece CRUA). Atrás do toggle GSettings `rigid-compensation`
     // (válvula de segurança). A compensação é determinística, então o dedup (`layoutSig`) e a
     // convergência abaixo seguem operando corretamente sobre a geometria já compensada.
+    // Geometria de EXIBIÇÃO. Com o toggle OFF, barra e janela vêm ambas do core CRU (que já concordam,
+    // pois saem do mesmo `srect`) — sem divergência. Com o toggle ON, ambas passam a vir do MESMO slot
+    // compensado (ADR 0050), permanecendo sincronizadas por construção.
     let commands = rawCommands;
+    let compensatedTabBars = tabBars;
     if (this._rigidCompensationEnabled()) {
       const mins = new Map<number, RigidMin>();
       const monitorOf = new Map<number, number>();
@@ -887,16 +896,66 @@ export default class EtherbitTilingExtension extends Extension {
         }
         monitorOf.set(snap.id, snap.monitor);
       }
+      // Soberania do grupo (ADR 0050): a célula do stack trava no MAIOR min-size entre TODOS os membros
+      // (não só o da aba ativa), com a faixa da barra (`bar.height`) embutida na altura. Sobrescreve o min
+      // da ativa com o agregado, de modo que a Fase I expanda o slot e a Fase II empurre os vizinhos.
+      const snapById = new Map(snapshots.map((s) => [s.id, s] as const));
+      for (const bar of tabBars) {
+        let aggW = 0;
+        let aggH = 0;
+        for (const memberId of bar.members) {
+          const snap = snapById.get(memberId);
+          const [mw, mh] = snap
+            ? this._effectiveMin(snap)
+            : (this._observedMins.get(memberId) ?? [0, 0]);
+          aggW = Math.max(aggW, mw);
+          aggH = Math.max(aggH, mh);
+        }
+        mins.set(bar.active, { minWidth: aggW, minHeight: aggH + bar.height });
+      }
       const workAreas = new Map<number, CompWorkArea>();
       for (const m of this._collectMonitors()) {
         workAreas.set(m.index, { x: m.x, y: m.y, width: m.width, height: m.height });
       }
-      commands = compensateRigidWindows({
+      const stacks: StackSlot[] = tabBars.map((bar) => ({
+        activeId: bar.active,
+        memberIds: bar.members,
+        bar: { id: bar.active, x: bar.x, y: bar.y, width: bar.width, height: bar.height },
+        content: {
+          id: bar.active,
+          x: bar.content.x,
+          y: bar.content.y,
+          width: bar.content.width,
+          height: bar.content.height,
+        },
+        barHeight: bar.height,
+      }));
+      const result = compensateWithStacks({
         commands: rawCommands,
         mins,
         monitorOf,
         workAreas,
         gap: this._config.gap,
+        stacks,
+      });
+      commands = result.commands;
+      // Reconstrói as barras a partir da MESMA geometria compensada: faixa da barra do mapa `bars` e o
+      // content = o command compensado da aba ativa. Fallback para a barra crua se algo faltar (corrida).
+      const compById = new Map(result.commands.map((c) => [c.id, c] as const));
+      compensatedTabBars = tabBars.map((bar) => {
+        const b = result.bars.get(bar.active);
+        const content = compById.get(bar.active);
+        if (!b || !content) {
+          return bar;
+        }
+        return {
+          ...bar,
+          x: b.x,
+          y: b.y,
+          width: b.width,
+          height: b.height,
+          content: { x: content.x, y: content.y, width: content.width, height: content.height },
+        };
       });
     }
     // Diagnóstico (ADR): janelas recebidas que o daemon NÃO tilou, com o motivo. Faz o log refletir
@@ -920,7 +979,7 @@ export default class EtherbitTilingExtension extends Extension {
     // geometria. Resetada em `_releaseToFloating` p/ a chave geral religar mesmo com layout igual.
     const layoutSig = JSON.stringify([
       commands,
-      tabBars,
+      compensatedTabBars,
       [...shouldHide].sort((a, b) => a - b),
       this._config.corner_radius,
     ]);
@@ -1077,10 +1136,12 @@ export default class EtherbitTilingExtension extends Extension {
     this._stackHidden = shouldHide;
 
     // Ids tiláveis por grupo (singles + membros de stacks) — base do toggle de abas (Super+S).
-    this._groupTiled = this._collectGroupTiled(commands, tabBars, byId);
+    this._groupTiled = this._collectGroupTiled(commands, compensatedTabBars, byId);
 
-    // Desenha as barras de abas a partir da geometria devolvida pelo core.
-    this._rebuildTabBars(tabBars, byId);
+    // Desenha as barras de abas a partir da MESMA geometria compensada aplicada às janelas (ADR 0050) —
+    // barra e janela ativa ficam sincronizadas. `_tabBarRects` (drag-to-ungroup) passa a refletir a barra
+    // real na tela.
+    this._rebuildTabBars(compensatedTabBars, byId);
   }
 
   /// Confronta a geometria que committamos no último ciclo (`_lastAppliedRects`) com o

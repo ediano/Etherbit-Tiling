@@ -2,10 +2,13 @@ import { describe, it, expect } from 'vitest';
 
 import {
   compensateRigidWindows,
+  compensateWithStacks,
   type CompRect,
   type CompensationInput,
+  type CompensationInputWithStacks,
   type RigidMin,
   type CompWorkArea,
+  type StackSlot,
 } from './rigid-compensation.js';
 
 // ---- Helpers de teste ----
@@ -181,5 +184,183 @@ describe('compensateRigidWindows', () => {
     // Alimentar a própria saída de volta é ponto-fixo (gap já preservado → nada muda).
     const again = compensateRigidWindows(input({ commands: first, mins: [[1, 500, 0]], gap: 8 }));
     expect(again).toEqual(first);
+  });
+});
+
+// ---- compensateWithStacks (ADR 0050): unificação barra/janela por slot ----
+
+/// Monta um `StackSlot` a partir do retângulo do stack (`srect` = slot): a barra é a faixa `barHeight` no
+/// topo; o content é o resto (o rect que o core emite para a aba ativa). Os ids (bar/content) são o `active`.
+function slot(
+  active: number,
+  members: number[],
+  sx: number,
+  sy: number,
+  sw: number,
+  sh: number,
+  barHeight: number,
+): StackSlot {
+  return {
+    activeId: active,
+    memberIds: members,
+    bar: { id: active, x: sx, y: sy, width: sw, height: barHeight },
+    content: { id: active, x: sx, y: sy + barHeight, width: sw, height: sh - barHeight },
+    barHeight,
+  };
+}
+
+/// O command CRU da aba ativa que o core emite = o `content` do slot (o mesmo que `slot(...).content`).
+function activeContent(s: StackSlot): CompRect {
+  return { ...s.content };
+}
+
+function stackInput(opts: {
+  commands: CompRect[];
+  stacks: StackSlot[];
+  mins?: Array<[number, number, number]>; // [id, minW, minH]
+  workAreas?: Array<[number, CompWorkArea]>;
+  monitorOf?: Array<[number, number]>;
+  gap?: number;
+}): CompensationInputWithStacks {
+  const mins = new Map<number, RigidMin>();
+  for (const [id, minWidth, minHeight] of opts.mins ?? []) {
+    mins.set(id, { minWidth, minHeight });
+  }
+  const workAreas = new Map<number, CompWorkArea>(
+    opts.workAreas ?? [[0, { x: 0, y: 0, width: 1000, height: 800 }]],
+  );
+  const monitorOf = new Map<number, number>(opts.monitorOf ?? opts.commands.map((c) => [c.id, 0]));
+  return {
+    commands: opts.commands,
+    mins,
+    workAreas,
+    monitorOf,
+    gap: opts.gap ?? 0,
+    stacks: opts.stacks,
+  };
+}
+
+describe('compensateWithStacks', () => {
+  it('14) SOBERANIA: a célula trava no MAIOR min do grupo (membro inativo) e empurra o vizinho', () => {
+    // Stack (ativa=1, membro inativo=3 com min 500) num slot de 400 + vizinho flexível (2). O agregado do
+    // grupo é 500 → o slot cresce a 500 e o vizinho flexível cede.
+    const s = slot(1, [1, 3], 0, 0, 400, 800, 28);
+    const commands = [activeContent(s), cmd(2, 400, 0, 600, 800)];
+    const result = compensateWithStacks(
+      stackInput({ commands, stacks: [s], mins: [[1, 500, 28]] }), // 1 já traz o agregado (MAX + barHeight)
+    );
+    expect(result.commands).toEqual([cmd(1, 0, 28, 500, 772), cmd(2, 500, 0, 500, 800)]);
+    expect(result.bars.get(1)).toEqual({ id: 1, x: 0, y: 0, width: 500, height: 28 });
+  });
+
+  it('15) ALTURA inclui a faixa da barra: min do content + barHeight expande o slot e empurra abaixo', () => {
+    // Membro exige minH 400; o slot precisa de 400 + 28 (barra) = 428. Slot cru só 300 de altura → cresce
+    // a 428 e o vizinho de baixo cede. content fica ABAIXO da faixa; content.height + bar.height == slotH.
+    const s = slot(1, [1, 3], 0, 0, 500, 300, 28);
+    const commands = [activeContent(s), cmd(2, 0, 300, 500, 500)];
+    const result = compensateWithStacks(stackInput({ commands, stacks: [s], mins: [[1, 0, 428]] }));
+    expect(result.commands).toEqual([cmd(1, 0, 28, 500, 400), cmd(2, 0, 428, 500, 372)]);
+    const bar = result.bars.get(1);
+    expect(bar).toEqual({ id: 1, x: 0, y: 0, width: 500, height: 28 });
+    // content diretamente abaixo da faixa; a soma reconstrói o slot expandido (428).
+    expect(bar!.height + 400).toBe(428);
+  });
+
+  it('16) FATIAMENTO reversível: slot já suficiente → content e barra idênticos ao cru', () => {
+    // Stack só-flexível isolado: o único min é a própria faixa (barHeight). Nada a compensar → o
+    // fatiamento devolve exatamente o content e a barra crus (prova a reversibilidade bar ∪ content).
+    const s = slot(1, [1, 3], 0, 0, 400, 300, 28);
+    const commands = [activeContent(s)];
+    const result = compensateWithStacks(stackInput({ commands, stacks: [s], mins: [[1, 0, 28]] }));
+    expect(result.commands).toEqual([cmd(1, 0, 28, 400, 272)]);
+    expect(result.bars.get(1)).toEqual({ id: 1, x: 0, y: 0, width: 400, height: 28 });
+  });
+
+  it('17) EMPUXO com gap: a expansão do slot recua o vizinho flexível preservando o gap', () => {
+    const s = slot(1, [1, 3], 8, 0, 488, 800, 28);
+    const commands = [activeContent(s), cmd(2, 504, 0, 488, 800)];
+    const result = compensateWithStacks(
+      stackInput({ commands, stacks: [s], mins: [[1, 500, 28]], gap: 8 }),
+    );
+    // Espelha o teste 2 (janela solta), agora com a barra acompanhando o slot compensado.
+    expect(result.commands).toEqual([cmd(1, 8, 28, 500, 772), cmd(2, 516, 0, 476, 800)]);
+    expect(result.bars.get(1)).toEqual({ id: 1, x: 8, y: 0, width: 500, height: 28 });
+  });
+
+  it('18) DETERMINÍSTICO e ponto-fixo (o dedup do layoutSig não oscila)', () => {
+    const build = (): CompensationInputWithStacks => {
+      const s = slot(1, [1, 3], 8, 0, 488, 800, 28);
+      return stackInput({
+        commands: [activeContent(s), cmd(2, 504, 0, 488, 800)],
+        stacks: [s],
+        mins: [[1, 500, 28]],
+        gap: 8,
+      });
+    };
+    const first = compensateWithStacks(build());
+    const second = compensateWithStacks(build());
+    expect(second.commands).toEqual(first.commands);
+    expect([...second.bars]).toEqual([...first.bars]);
+    // Realimenta a saída (content compensado + barra compensada como novo slot) → ponto-fixo estável.
+    const fedBar = first.bars.get(1)!;
+    const fedContent = first.commands.find((c) => c.id === 1)!;
+    const s2: StackSlot = {
+      activeId: 1,
+      memberIds: [1, 3],
+      bar: { ...fedBar },
+      content: { ...fedContent },
+      barHeight: 28,
+    };
+    const again = compensateWithStacks(
+      stackInput({
+        commands: [{ ...fedContent }, first.commands.find((c) => c.id === 2)!],
+        stacks: [s2],
+        mins: [[1, 500, 28]],
+        gap: 8,
+      }),
+    );
+    expect(again.commands).toEqual(first.commands);
+    expect([...again.bars]).toEqual([...first.bars]);
+  });
+
+  it('19) MULTI-MONITOR: um stack por monitor, compensações isoladas', () => {
+    const s0 = slot(1, [1, 3], 0, 0, 400, 600, 28); // monitor 0, rígido (min 500)
+    const s1 = slot(2, [2, 4], 1000, 0, 500, 600, 28); // monitor 1, flexível
+    const commands = [activeContent(s0), activeContent(s1)];
+    const result = compensateWithStacks(
+      stackInput({
+        commands,
+        stacks: [s0, s1],
+        mins: [
+          [1, 500, 28],
+          [2, 0, 28],
+        ],
+        workAreas: [
+          [0, { x: 0, y: 0, width: 1000, height: 800 }],
+          [1, { x: 1000, y: 0, width: 1000, height: 800 }],
+        ],
+        monitorOf: [
+          [1, 0],
+          [2, 1],
+        ],
+      }),
+    );
+    // Stack do monitor 0 expandiu a 500; o do monitor 1 permanece intacto.
+    expect(result.commands).toEqual([cmd(1, 0, 28, 500, 572), cmd(2, 1000, 28, 500, 572)]);
+    expect(result.bars.get(1)).toEqual({ id: 1, x: 0, y: 0, width: 500, height: 28 });
+    expect(result.bars.get(2)).toEqual({ id: 2, x: 1000, y: 0, width: 500, height: 28 });
+  });
+
+  it('20) CLAMP de hardware com barra: MAX(minH)+barHeight > tela → content ≥ 1px, sem overflow', () => {
+    // Agregado de altura 928 (900 + 28) numa tela de 800 → clampa a 800; a barra fica com 28 e o content
+    // com 772 (≥ 1), nada transborda a work area.
+    const s = slot(1, [1, 3], 0, 0, 500, 300, 28);
+    const commands = [activeContent(s)];
+    const result = compensateWithStacks(stackInput({ commands, stacks: [s], mins: [[1, 0, 928]] }));
+    expect(result.commands).toEqual([cmd(1, 0, 28, 500, 772)]);
+    expect(result.bars.get(1)).toEqual({ id: 1, x: 0, y: 0, width: 500, height: 28 });
+    const content = result.commands.find((c) => c.id === 1)!;
+    expect(content.height).toBeGreaterThanOrEqual(1);
+    expect(content.y + content.height).toBeLessThanOrEqual(800);
   });
 });
