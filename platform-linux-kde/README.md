@@ -77,3 +77,5 @@ Via pacote de release `etherbit-tiling-kde.tar.gz` (daemon + KWin Script + insta
 ```bash
 curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/install-kde.sh | bash
 ```
+
+<!-- release-trigger: reprocessa o release pendente do revert ADR 0052 -->
