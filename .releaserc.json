@@ -8,7 +8,8 @@
         "preset": "conventionalcommits",
         "releaseRules": [
           { "scope": "web", "release": false },
-          { "scope": "docs", "release": false }
+          { "scope": "docs", "release": false },
+          { "type": "revert", "release": "patch" }
         ]
       }
     ],
