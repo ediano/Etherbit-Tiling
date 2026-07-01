@@ -35,6 +35,7 @@ import {
   parseDropped,
   parseCollisions,
   collisionKey,
+  filterRegroupable,
   shouldSuppressSpawnMaximize,
   isResizable,
   effectiveMinSize,
@@ -184,6 +185,11 @@ export default class EtherbitTilingExtension extends Extension {
   // `collisionKey`), para não re-agrupar o mesmo conjunto a cada sync (idempotência/anti-oscilação).
   // Uma entrada é descartada quando seu conjunto deixa de aparecer no sinal `collisions` do core.
   private _mergedCollisions = new Set<string>();
+  // Guard anti-re-agrupamento (ADR 0044): ids que o usuário desagrupou EXPLICITAMENTE (menu ou
+  // drag-eject). Enquanto presente, o auto-agrupamento por colisão (ADR 0041) NÃO re-agrupa a janela —
+  // simétrico ao "uma vez agrupado, fica agrupado". Limpo ao fechar a janela ou ao reagrupar manual;
+  // não expira por tempo/sync. Ortogonal a `_mergedCollisions` (intenção por id vs idempotência por conjunto).
+  private _userUngrouped = new Set<number>();
   // Spawn-unmaximize (ciclo de vida de maximização): ids que o core JÁ tilou ao menos uma vez. Uma
   // janela que é maximizada e NUNCA foi tilada "nasceu maximizada" → forçamos `unmaximize` para ela
   // entrar na Distribuição Cíclica. Já uma janela tilada que o usuário maximiza manualmente é
@@ -445,6 +451,7 @@ export default class EtherbitTilingExtension extends Extension {
     this._disabledGroups.clear();
     this._groupTiled.clear();
     this._mergedCollisions.clear();
+    this._userUngrouped.clear();
 
     for (const id of this._displayIds) {
       global.display.disconnect(id);
@@ -526,6 +533,7 @@ export default class EtherbitTilingExtension extends Extension {
         removeFromOrder(this._order, id);
         removeIdFromStacks(this._stacks, id);
         this._stackHidden.delete(id);
+        this._userUngrouped.delete(id);
         this._lastMinSizes.delete(id);
         this._everTiled.delete(id);
         this._scheduleRelayout();
@@ -788,11 +796,16 @@ export default class EtherbitTilingExtension extends Extension {
     }
     let didMerge = false;
     for (const collision of collisions) {
+      // Chave de idempotência SEMPRE no conjunto ORIGINAL do sinal (casa com a limpeza de
+      // `liveCollisions` acima); o guard do usuário (ADR 0044) só decide O QUE agrupar, não a chave.
       const key = collisionKey(collision.members);
       if (this._mergedCollisions.has(key)) {
         continue;
       }
-      const [target, ...rest] = collision.members;
+      // Remove os membros que o usuário desagrupou de propósito: eles não voltam às abas sozinhos
+      // (ficam no esmagamento). Se sobrarem < 2, nada a agrupar nesta célula.
+      const regroupable = filterRegroupable(collision.members, this._userUngrouped);
+      const [target, ...rest] = regroupable;
       if (target === undefined) {
         continue;
       }
@@ -1249,6 +1262,9 @@ export default class EtherbitTilingExtension extends Extension {
         // Centro de uma janela-alvo → empilha em abas (merge): estado de stacks local, o GNOME conserva
         // abas e NÃO manda `center` como MoveWindow. O core não muta a árvore neste caso.
         addToStack(this._stacks, key, targetId, this._draggedId);
+        // Reagrupou manualmente → revoga o guard anti-re-agrupamento (ADR 0044): a janela volta a ser
+        // elegível ao auto-agrupamento por colisão.
+        this._userUngrouped.delete(this._draggedId);
       } else if (hot && hot.scope === 'global' && hot.dropZone !== 'none') {
         // Gap vazio: 50% pela borda (ou maximizar no centro) como nó principal — não exige janela-alvo.
         moveWindow(hot.dropZone, 'global');
@@ -1488,6 +1504,9 @@ export default class EtherbitTilingExtension extends Extension {
     const menu = new PopupMenu.PopupMenu(source, 0.5, St.Side.TOP);
     menu.addAction('Desagrupar Janela', () => {
       if (removeIdFromStacks(this._stacks, memberId)) {
+        // Guard anti-re-agrupamento (ADR 0044): o usuário desagrupou de propósito → não deixe a
+        // colisão sugá-la de volta às abas.
+        this._userUngrouped.add(memberId);
         this._scheduleRelayout();
       }
     });
@@ -1582,6 +1601,9 @@ export default class EtherbitTilingExtension extends Extension {
     if (!removeIdFromStacks(this._stacks, memberId)) {
       return; // não estava agrupada (nada a ejetar)
     }
+    // Guard anti-re-agrupamento (ADR 0044): arrastou a aba para fora → a janela não volta às abas
+    // sozinha por colisão (até o usuário reagrupar ou fechar).
+    this._userUngrouped.add(memberId);
     if (hot.dropZone === 'none') {
       this._scheduleRelayout();
       return;

@@ -218,6 +218,18 @@ export function collisionKey(members: number[]): string {
   return [...members].sort((a, b) => a - b).join(',');
 }
 
+/// Filtra de uma colisão (ADR 0041) os membros que o usuário desagrupou EXPLICITAMENTE — guard
+/// persistente do ADR 0044 (simétrico ao "uma vez agrupado, fica agrupado": uma vez desagrupado pelo
+/// usuário, fica desagrupado até ele reagrupar ou a janela fechar). Preserva a ORDEM (o 1º remanescente
+/// é a âncora do `addToStack`). Se sobrarem < 2, devolve `[]` — o guard `≥ 2` do 0041 vale para o resto:
+/// a janela desagrupada fica de fora (cai no esmagamento impositivo, ADR 0040), enquanto vizinhos
+/// não-desagrupados ainda se agrupam entre si. Pura e determinística. Genérica (ids `number` no GNOME,
+/// `string` no KDE).
+export function filterRegroupable<T>(members: T[], userUngrouped: Set<T>): T[] {
+  const kept = members.filter((m) => !userUngrouped.has(m));
+  return kept.length >= 2 ? kept : [];
+}
+
 /// Decide se a maximização (ou fullscreen) de uma janela deve ser SUPRIMIDA por ser "nascida
 /// maximizada" no spawn (ADR 0043). Regra:
 ///   - `!enabled` ou `!isMaximized` → nunca suprime (nada a fazer / Tiling desligado);

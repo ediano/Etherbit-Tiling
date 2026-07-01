@@ -6,6 +6,7 @@ import {
   parseLayout,
   parseCollisions,
   collisionKey,
+  filterRegroupable,
   shouldSuppressSpawnMaximize,
   parseLayoutTrees,
   parsePreview,
@@ -127,6 +128,33 @@ describe('collisionKey', () => {
 
   it('distingue conjuntos diferentes', () => {
     expect(collisionKey(['w1', 'w2'])).not.toBe(collisionKey(['w1', 'w3']));
+  });
+});
+
+describe('filterRegroupable (guard anti-re-agrupamento, ADR 0044)', () => {
+  it('remove o membro desagrupado, mantendo os >= 2 restantes', () => {
+    expect(filterRegroupable(['a', 'b', 'c'], new Set(['b']))).toEqual(['a', 'c']);
+  });
+
+  it('colapsa para [] quando sobra < 2 (janela fica no esmagamento, não agrupa)', () => {
+    expect(filterRegroupable(['a', 'b'], new Set(['b']))).toEqual([]);
+  });
+
+  it('passthrough quando ninguém foi desagrupado (ou id irrelevante)', () => {
+    expect(filterRegroupable(['a', 'b'], new Set<string>())).toEqual(['a', 'b']);
+    expect(filterRegroupable(['a', 'b'], new Set(['z']))).toEqual(['a', 'b']);
+  });
+
+  it('preserva a ordem (o 1º remanescente é a âncora do addToStack)', () => {
+    expect(filterRegroupable(['c', 'a', 'b'], new Set(['a']))).toEqual(['c', 'b']);
+  });
+
+  it('devolve [] quando o guard cobre todos os membros', () => {
+    expect(filterRegroupable(['a', 'b'], new Set(['a', 'b']))).toEqual([]);
+  });
+
+  it('com >= 3 membros, remove 1 e ainda agrupa os 2 restantes', () => {
+    expect(filterRegroupable(['a', 'b', 'c'], new Set(['a']))).toEqual(['b', 'c']);
   });
 });
 
