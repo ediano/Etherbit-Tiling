@@ -733,7 +733,8 @@ function applyTabActions(json: string): void {
       // Ejeta por arraste E reposiciona no ponto de soltura ("cai onde foi solta", ADR 0042). Traduz o
       // id ANTES de mexer no stack (o mapa de transporte é do último retile). Se conseguir resolver uma
       // zona de drop, delega ao core via MoveWindow (que destaca a aba do stack na árvore e a reinsere no
-      // alvo); senão, cai no ungroup simples (reinsere no grid cíclico).
+      // alvo); sem zona útil, ejeta reancorando o grupo NO LUGAR (zona `eject`, ADR 0045) em vez de cair
+      // no reconcile que teleportava; sem transporte conhecido, reinsere no grid cíclico no sync.
       const draggedT = lastTransportOf.get(action.member_id);
       const ejected = removeIdFromStacks(stacks, action.member_id);
       if (ejected) {
@@ -743,14 +744,25 @@ function applyTabActions(json: string): void {
       const placed =
         draggedT !== undefined && dropEjectedAt(action.member_id, draggedT, action.x, action.y);
       if (!placed && ejected) {
-        needRetile = true;
+        if (draggedT !== undefined) {
+          ejectFromStack(action.member_id, draggedT);
+        } else {
+          needRetile = true;
+        }
       }
     } else {
-      // ungroup → o core reinsere no grid cíclico no próximo sync
+      // ungroup (menu "Desagrupar") → ejeta reancorando o grupo NO LUGAR via core (zona `eject`, ADR
+      // 0045); o reconcile reinsere a ejetada ciclicamente. Sem o teleporte que reabsorvia a 1ª ejetada
+      // e capturava uma janela externa. Traduz o id ANTES de mexer no stack (o transporte é do último
+      // retile). Sem transporte conhecido, cai no reencaixe cíclico do sync (fallback antigo).
+      const draggedT = lastTransportOf.get(action.member_id);
       if (removeIdFromStacks(stacks, action.member_id)) {
-        // Guard anti-re-agrupamento (ADR 0044): desagrupou pelo menu de propósito.
         userUngrouped.add(action.member_id);
-        needRetile = true;
+        if (draggedT !== undefined) {
+          ejectFromStack(action.member_id, draggedT);
+        } else {
+          needRetile = true;
+        }
       }
     }
   }
@@ -759,11 +771,35 @@ function applyTabActions(json: string): void {
   }
 }
 
+/// Ejeta `draggedStable` (transporte `draggedT`) do stack SEM alvo — menu "Desagrupar" e fallback do
+/// drag-to-ungroup solto no vazio (ADR 0045). O core (zona `eject`) faz `detach_window`: o grupo
+/// remanescente REancora NO LUGAR (slot preservado) e o `reconcile` seguinte reinsere a ejetada pela
+/// distribuição cíclica — sem o teleporte que capturava janelas externas (o "efeito ímã"). O chamador já
+/// fez `removeIdFromStacks` + `userUngrouped.add`; aqui só materializa no core e re-tila na resposta.
+function ejectFromStack(draggedStable: string, draggedT: number): void {
+  callDBus(
+    BUS_NAME,
+    OBJECT_PATH,
+    IFACE,
+    'MoveWindow',
+    serializeState(stacks, disabled, lastTransportOf, trees, draggedStable),
+    String(draggedT),
+    '0',
+    'eject',
+    serializeScope('local'),
+    (treesJson: string) => {
+      trees = parseLayoutTrees(treesJson, lastTransportToStable);
+      retile();
+    },
+  );
+}
+
 /// Reposiciona a janela recém-ejetada `draggedStable` (transporte `draggedT`) na zona de drop resolvida
 /// em `(x, y)` — coordenadas GLOBAIS de tela (ADR 0042, "cai onde foi solta"). Espelha `onMoveFinish`:
 /// escopo global (gap vazio) = bloco de 50% / maximizar; escopo local (sobre uma janela) = split do slot
 /// do alvo. Emite `MoveWindow` (o core usa `detach_window` para tirar a aba do stack e reinseri-la) e
-/// re-tila na resposta. Devolve `true` se disparou o MoveWindow; `false` se não havia zona útil.
+/// re-tila na resposta. Devolve `true` se disparou o MoveWindow; `false` se não havia zona útil (o
+/// chamador cai no `ejectFromStack`, ADR 0045).
 function dropEjectedAt(draggedStable: string, draggedT: number, x: number, y: number): boolean {
   const target = windowUnderPointObj(x, y, draggedStable);
   const targetRect = target

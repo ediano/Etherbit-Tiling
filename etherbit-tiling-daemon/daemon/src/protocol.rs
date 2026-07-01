@@ -265,6 +265,7 @@ fn parse_zone(s: &str) -> DropZone {
         "bottom_right" => DropZone::BottomRight,
         "center" => DropZone::Center,
         "stack" => DropZone::Stack,
+        "eject" => DropZone::Eject,
         _ => DropZone::None,
     }
 }
@@ -310,6 +311,7 @@ fn zone_label(zone: DropZone) -> &'static str {
         DropZone::BottomRight => "bottom_right",
         DropZone::Center => "center",
         DropZone::Stack => "stack",
+        DropZone::Eject => "eject",
         DropZone::None => "none",
     }
 }

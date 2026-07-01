@@ -104,6 +104,10 @@ pub enum DropZone {
     Center,
     /// Faixa superior de uma janela existente → empilhar nela (vira aba de um `StackNode`).
     Stack,
+    /// Desagrupar SEM alvo (menu "Desagrupar" e drag-to-ungroup solto no vazio, ADR 0045): destaca a
+    /// janela do stack (o grupo reancora no lugar, `detach_window`) e a remove da árvore; o `reconcile`
+    /// seguinte a reinsere pela distribuição cíclica. Sem preview (não é gesto de posicionamento).
+    Eject,
     /// Cursor fora da área útil → sem preview.
     None,
 }
@@ -585,8 +589,8 @@ fn zone_rect(area: &WorkArea, zone: DropZone, opts: &LayoutOptions) -> PreviewRe
         // Centro → maximizar (área útil inteira).
         DropZone::Center => (ix, iy, iw, ih),
         // `Stack` é resolvida por `detect_drop_target` (preview = a própria janela-alvo), nunca por
-        // `zone_rect`; `None` = sem preview. Braços só para a exaustividade do match.
-        DropZone::Stack | DropZone::None => (0.0, 0.0, 0.0, 0.0),
+        // `zone_rect`; `None`/`Eject` = sem preview. Braços só para a exaustividade do match.
+        DropZone::Stack | DropZone::None | DropZone::Eject => (0.0, 0.0, 0.0, 0.0),
     };
 
     PreviewRect { x: round(x), y: round(y), width: round(w), height: round(h) }
@@ -1650,6 +1654,17 @@ pub fn move_window(
             DropScope::Local => swap_leaves(tree, dragged, target),
             DropScope::Global => tree.clone(),
         };
+    }
+    // Ejetar sem alvo (ADR 0045): destaca a janela do stack — o grupo REancora no lugar (via
+    // `detach_window`, slot preservado) — e a remove da árvore. A reinserção da ejetada num quadrante
+    // novo fica a cargo do `reconcile` seguinte (que tem a `area`); como a ponte a marca em
+    // `_userUngrouped`, se recolidir ao reassentar o `filterRegroupable` a exclui → nenhuma janela
+    // externa é capturada. No-op se a árvore não contém a arrastada (o daemon aplica a todos os grupos).
+    if zone == DropZone::Eject {
+        if !tree.root.as_ref().map(|r| node_contains(r, dragged)).unwrap_or(false) {
+            return tree.clone();
+        }
+        return detach_window(tree.clone(), dragged);
     }
     let (axis, dragged_first) = match zone {
         DropZone::Left | DropZone::TopLeft | DropZone::BottomLeft => (Axis::Horizontal, true),
@@ -2949,6 +2964,139 @@ mod tests {
         for id in [1, 2, 3] {
             assert!(node_contains(root, id), "janela {id} preservada");
         }
+    }
+
+    #[test]
+    fn move_window_eject_reancora_stack_no_lugar() {
+        // ADR 0045: desagrupar SEM alvo (menu "Desagrupar" / drag-to-ungroup solto no vazio) destaca só
+        // a janela — o grupo remanescente REancora NO LUGAR e a ejetada sai da árvore (o `reconcile`
+        // seguinte a reinsere ciclicamente). Árvore [ Stack{1,2,3} | Leaf(4) ]; eject da âncora 1.
+        let area = area_1000x800();
+        let tree = LayoutTree {
+            root: Some(Node::split_on(
+                Axis::Horizontal,
+                0.5,
+                Node::Stack { members: vec![1, 2, 3], active: 1 },
+                Node::Leaf(4),
+            )),
+        };
+        // Slot do stack ANTES (metade esquerda): geometria da aba ativa.
+        let slot_before = {
+            let stacks = vec![StackDescriptor { member_ids: vec![1, 2, 3], active_id: 1 }];
+            let g = compute_geometry(&tree, &area, &opts(), &stacks, &[1, 2, 3, 4]);
+            let r = g.rects.iter().find(|r| r.id == 1).unwrap();
+            (r.x, r.width)
+        };
+        let moved = move_window(&tree, 1, 0, DropZone::Eject, DropScope::Local);
+        let root = moved.root.as_ref().unwrap();
+        // A ejetada 1 deixa a árvore; 2, 3, 4 permanecem (nenhuma perdida).
+        assert!(
+            !node_contains(root, 1),
+            "a janela ejetada sai da árvore (reconcile reinsere depois)"
+        );
+        for id in [2, 3, 4] {
+            assert!(node_contains(root, id), "janela {id} preservada");
+        }
+        // O grupo reancora em [2,3] e NÃO teleporta: continua na metade esquerda.
+        let mut snodes = HashMap::new();
+        collect_stack_nodes(root, &mut snodes);
+        assert_eq!(snodes.len(), 1, "resta um único stack");
+        let (members, _active) = snodes.get(&2).expect("stack reancorado em 2");
+        assert_eq!(members, &vec![2, 3], "grupo mantém 2 e 3 após ejetar a âncora");
+        let stacks = vec![StackDescriptor { member_ids: vec![2, 3], active_id: 2 }];
+        let g = compute_geometry(&moved, &area, &opts(), &stacks, &[2, 3, 4]);
+        let r2 = g.rects.iter().find(|r| r.id == 2).unwrap();
+        assert_eq!(
+            (r2.x, r2.width),
+            slot_before,
+            "o grupo permanece no slot esquerdo (sem teleporte)"
+        );
+    }
+
+    #[test]
+    fn move_window_eject_dissolve_stack_de_dois() {
+        // ADR 0045: eject sem alvo num stack de 2 dissolve o grupo — o remanescente vira folha no slot;
+        // a ejetada sai da árvore.
+        let tree = LayoutTree {
+            root: Some(Node::split_on(
+                Axis::Horizontal,
+                0.5,
+                Node::Stack { members: vec![1, 2], active: 1 },
+                Node::Leaf(3),
+            )),
+        };
+        let moved = move_window(&tree, 1, 0, DropZone::Eject, DropScope::Local);
+        let root = moved.root.as_ref().unwrap();
+        let mut snodes = HashMap::new();
+        collect_stack_nodes(root, &mut snodes);
+        assert!(snodes.is_empty(), "stack de 2 dissolve ao ejetar um membro");
+        assert!(!node_contains(root, 1), "a ejetada sai da árvore");
+        for id in [2, 3] {
+            assert!(node_contains(root, id), "janela {id} preservada");
+        }
+    }
+
+    #[test]
+    fn move_window_eject_grupo_alheio_e_noop() {
+        // ADR 0045: o daemon aplica `move_window` a TODAS as árvores; para o grupo que NÃO contém a
+        // ejetada, `Eject` é no-op (não remove nem mexe em nada).
+        let tree = LayoutTree {
+            root: Some(Node::split_on(
+                Axis::Horizontal,
+                0.5,
+                Node::Stack { members: vec![1, 2, 3], active: 1 },
+                Node::Leaf(4),
+            )),
+        };
+        assert_eq!(move_window(&tree, 99, 0, DropZone::Eject, DropScope::Local), tree);
+    }
+
+    #[test]
+    fn reconcile_apos_eject_reancora_no_lugar_e_reinsere_ejetada() {
+        // Fluxo do daemon (ADR 0045): a ponte ejeta (core `detach_window` via zona `eject`) e persiste a
+        // árvore; o `reconcile` seguinte vê o stack reancorado NO LUGAR e reinsere a ejetada como folha
+        // nova (cíclica) — sem teleportar o grupo nem capturar externas. Fecha a lacuna: o teste
+        // existente só remove o membro NÃO-âncora (âncora preservada, sem teleporte).
+        let area = area_1000x800();
+        let tree = LayoutTree {
+            root: Some(Node::split_on(
+                Axis::Horizontal,
+                0.5,
+                Node::Stack { members: vec![1, 2, 3], active: 1 },
+                Node::Leaf(4),
+            )),
+        };
+        let slot_before = {
+            let stacks = vec![StackDescriptor { member_ids: vec![1, 2, 3], active_id: 1 }];
+            let g = compute_geometry(&tree, &area, &opts(), &stacks, &[1, 2, 3, 4]);
+            let r = g.rects.iter().find(|r| r.id == 1).unwrap();
+            (r.x, r.width)
+        };
+        // Passo 1 — eject da âncora 1 (o que a ponte manda ao core no menu-ungroup).
+        let detached = move_window(&tree, 1, 0, DropZone::Eject, DropScope::Local);
+        // Passo 2 — reconcile com o descriptor novo (stack [2,3]); 1 segue no grupo (vira folha nova).
+        let stacks = vec![StackDescriptor { member_ids: vec![2, 3], active_id: 2 }];
+        let reconciled = reconcile(&detached, &[1, 2, 3, 4], &stacks, None, &area, &opts());
+        let root = reconciled.root.as_ref().unwrap();
+        for id in [1, 2, 3, 4] {
+            assert!(node_contains(root, id), "janela {id} presente após eject+reconcile");
+        }
+        let mut snodes = HashMap::new();
+        collect_stack_nodes(root, &mut snodes);
+        assert_eq!(snodes.len(), 1, "um único stack");
+        let (members, _a) = snodes.get(&2).expect("stack ancorado em 2");
+        assert_eq!(
+            members,
+            &vec![2, 3],
+            "grupo intacto (não reabsorve a ejetada nem captura externa)"
+        );
+        let g = compute_geometry(&reconciled, &area, &opts(), &stacks, &[1, 2, 3, 4]);
+        let r2 = g.rects.iter().find(|r| r.id == 2).unwrap();
+        assert_eq!(
+            (r2.x, r2.width),
+            slot_before,
+            "o grupo permanece no slot esquerdo (sem teleporte)"
+        );
     }
 
     #[test]
