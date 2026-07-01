@@ -1050,6 +1050,14 @@ export default class EtherbitTilingExtension extends Extension {
     if (!window || !this._ensureProxy()) {
       return;
     }
+    // Guard do gesto de aba (ADR 0045): se um arraste de aba está ativo (press sobre uma tag), o press
+    // NÃO pode virar um move-grab do Mutter da janela inteira — senão o ponteiro arrasta o "bloco
+    // inteiro" em vez de ejetar só a aba, e a corrida `_tabDrag` × `_draggedId` rouba o release do
+    // `captured-event`, deixando a supressão presa (o gesto seguinte "não pega"). O arraste de aba tem
+    // prioridade; ignora este grab (a supressão já foi ligada em `_beginTabDrag`).
+    if (this._tabDrag) {
+      return;
+    }
     // Suprime o relayout enquanto o grab (mover OU redimensionar) está ativo: durante o arraste da
     // borda o `size-changed` (ADR 0038, sem latch one-shot) reagendaria um relayout que reaplica a
     // geometria ANTIGA e puxa a janela de volta ao slot — o gesto do usuário é anulado e, no fim, o
@@ -1507,7 +1515,9 @@ export default class EtherbitTilingExtension extends Extension {
         // Guard anti-re-agrupamento (ADR 0044): o usuário desagrupou de propósito → não deixe a
         // colisão sugá-la de volta às abas.
         this._userUngrouped.add(memberId);
-        this._scheduleRelayout();
+        // Ejeta pelo core reancorando o grupo NO LUGAR (ADR 0045) — sem o teleporte que capturava
+        // janelas externas quando o `reconcile` reinseria o novo âncora ciclicamente.
+        this._ejectFromStack(memberId);
       }
     });
     Main.layoutManager.uiGroup.add_child(menu.actor);
@@ -1528,6 +1538,12 @@ export default class EtherbitTilingExtension extends Extension {
   /// onde foi solta"); dentro, é um clique comum (o `activateBtn` já trata). Substitui qualquer arraste
   /// pendente. Não interfere no clique normal — só observa, propagando todos os eventos.
   private _beginTabDrag(memberId: number, tab: St.Widget): void {
+    // Rede de segurança (ADR 0045): se um arraste de aba anterior nunca recebeu o release (um grab
+    // roubou o evento antes do guard de `_onGrabBegin`), a supressão ficaria presa e engoliria o
+    // relayout deste gesto ("funciona uma vez e falha"). Detecta o resíduo ao REARMAR e preserva o
+    // relayout pendente — o `_finishTabDrag` deste gesto o dispara ao liberar. Só age ao iniciar um
+    // gesto novo; nunca interrompe um em curso (ao contrário de um timeout, que ejetaria no meio).
+    const hadStaleDrag = this._tabDrag !== null;
     this._endTabDrag();
     this._tabDrag = { memberId, tab };
     // Suprime o relayout enquanto o gesto de aba está ativo (espelha `_onGrabBegin`): sem isso, um
@@ -1540,6 +1556,9 @@ export default class EtherbitTilingExtension extends Extension {
       this._settleSource = 0;
     }
     this._suppressRelayout = true;
+    if (hadStaleDrag) {
+      this._relayoutPending = true;
+    }
     this._tabDragCapturedId = global.stage.connect(
       'captured-event',
       (_actor: Clutter.Actor, event: Clutter.Event) => {
@@ -1587,6 +1606,28 @@ export default class EtherbitTilingExtension extends Extension {
     this._releaseSuppression();
   }
 
+  /// Ejeta `memberId` do stack SEM alvo — menu "Desagrupar" e fallback do drag-to-ungroup solto no vazio
+  /// (ADR 0045). O core (zona `eject`) faz `detach_window`: o grupo remanescente REancora NO LUGAR (slot
+  /// preservado) e o `reconcile` seguinte reinsere a janela ejetada pela distribuição cíclica. Assim o
+  /// grupo não teleporta nem captura janela externa (o bug do "efeito ímã"). O chamador já fez
+  /// `removeIdFromStacks` + `_userUngrouped.add`; aqui só materializa no core e persiste a árvore. Sem
+  /// daemon (`_call` devolve null), cai no `_scheduleRelayout` — degradação suave.
+  private _ejectFromStack(memberId: number): void {
+    const res = this._call((p) =>
+      p.MoveWindowSync(
+        serializeState(this._stacks, this._disabledGroups, this._trees, memberId),
+        String(memberId),
+        '0',
+        'eject',
+        serializeScope('local'),
+      ),
+    );
+    if (res) {
+      this._trees = parseLayoutTrees(res[0]);
+    }
+    this._scheduleRelayout();
+  }
+
   /// Ejeta a janela `memberId` do stack e a reposiciona na zona de drop resolvida em `(x, y)` — o gesto
   /// drag-to-ungroup "cai onde foi solta" (ADR 0042). Espelha `_onGrabEnd`: escopo global (gap vazio) =
   /// bloco de 50% / maximizar; local (sobre uma janela) = split do slot do alvo. `removeIdFromStacks`
@@ -1605,14 +1646,14 @@ export default class EtherbitTilingExtension extends Extension {
     // sozinha por colisão (até o usuário reagrupar ou fechar).
     this._userUngrouped.add(memberId);
     if (hot.dropZone === 'none') {
-      this._scheduleRelayout();
+      this._ejectFromStack(memberId); // solto no vazio: reancora no lugar + reinsere ciclicamente (ADR 0045)
       return;
     }
     const targetId = target ? target.get_stable_sequence() : 0;
     const scope: 'local' | 'global' = hot.scope === 'global' ? 'global' : 'local';
     // Escopo local exige um alvo real; sem alvo, cai para o reencaixe cíclico (só ejeta).
     if (scope === 'local' && !target) {
-      this._scheduleRelayout();
+      this._ejectFromStack(memberId); // reancora no lugar + reinsere ciclicamente (ADR 0045)
       return;
     }
     const res = this._call((p) =>
