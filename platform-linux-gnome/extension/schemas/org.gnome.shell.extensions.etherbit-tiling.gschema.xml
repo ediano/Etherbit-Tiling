@@ -22,5 +22,19 @@
         desfaz o agrupamento, voltando à grade.
       </description>
     </key>
+    <!--
+      Compensação física de janelas de tamanho mínimo rígido (ADR 0048). Chave GNOME-only: vive AQUI,
+      não na config do daemon (compartilhada com o KDE), preservando o isolamento arquitetural.
+    -->
+    <key name="rigid-compensation" type="b">
+      <default>true</default>
+      <summary>Compensação física de janelas de tamanho mínimo rígido</summary>
+      <description>
+        Ajusta a exibição no GNOME para que apps com min-width/min-height rígidos (Calculadora,
+        Ajustes, lojas de apps) não flutuem, não oscilem nem quebrem o grid: trava a janela no seu
+        mínimo e reabsorve o espaço comprimindo gaps e vizinhos. Desligar reproduz o comportamento
+        anterior do compositor. Sem efeito no KDE.
+      </description>
+    </key>
   </schema>
 </schemalist>

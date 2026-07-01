@@ -15,11 +15,13 @@ const MESSAGES: Record<Lang, Record<string, string>> = {
     'toggle.enable': 'Enable tiling',
     'gap.label': 'Spacing (px)',
     'radius.label': 'Corner radius (px)',
+    'rigid.label': 'Fit rigid windows',
   },
   'pt-BR': {
     'toggle.enable': 'Ativar tiling',
     'gap.label': 'Espaçamento (px)',
     'radius.label': 'Raio dos cantos (px)',
+    'rigid.label': 'Ajustar janelas rígidas',
   },
 };
 

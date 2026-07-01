@@ -37,6 +37,9 @@ export interface IndicatorHandlers {
   onEnabled: (enabled: boolean) => void;
   onGap: (gap: number) => void;
   onCornerRadius: (radius: number) => void;
+  /// Compensação física de min-size (ADR 0048) — persiste no GSettings da extensão (GNOME-only), NÃO
+  /// no daemon (compartilhado com o KDE). Por isso não passa por `_call`/D-Bus como os demais.
+  onRigidCompensation: (enabled: boolean) => void;
 }
 
 class EtherbitIndicatorImpl extends PanelMenu.Button {
@@ -44,6 +47,7 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
   private _enabledSwitch!: PopupMenu.PopupSwitchMenuItem;
   private _gapSpin!: SpinRow;
   private _radiusSpin!: SpinRow;
+  private _rigidSwitch!: PopupMenu.PopupSwitchMenuItem;
   // Evita reentrância: ao refletir a config do daemon não queremos re-disparar handlers.
   private _syncing = false;
 
@@ -82,6 +86,16 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
     this._radiusSpin = this._addSpinRow(_('radius.label'), RADIUS_MIN, RADIUS_MAX, (v) =>
       this._handlers.onCornerRadius(v),
     );
+
+    // Compensação física de min-size (ADR 0048): switch GNOME-only. O estado inicial e as mudanças
+    // externas (gsettings/dconf) chegam por `setRigidCompensation`, sem disparar o handler.
+    this._menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+    this._rigidSwitch = new PopupMenu.PopupSwitchMenuItem(_('rigid.label'), true);
+    this._keepOpenOnToggle(this._rigidSwitch);
+    this._rigidSwitch.connect('toggled', (_item, state) => {
+      if (!this._syncing) this._handlers.onRigidCompensation(state);
+    });
+    this._menu.addMenuItem(this._rigidSwitch);
   }
 
   /// Faz um switch ALTERNAR sem fechar o painel. O `activate` padrão de um item de menu emite o sinal
@@ -101,6 +115,14 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
     this._enabledSwitch.setToggleState(config.enabled);
     this._gapSpin.setValue(config.gap);
     this._radiusSpin.setValue(config.corner_radius);
+    this._syncing = false;
+  }
+
+  /// Reflete o estado do toggle de compensação de min-size (ADR 0048) sem disparar o handler. Fonte:
+  /// GSettings da extensão (não o daemon), então é sincronizado à parte de `sync(config)`.
+  setRigidCompensation(enabled: boolean): void {
+    this._syncing = true;
+    this._rigidSwitch.setToggleState(enabled);
     this._syncing = false;
   }
 
