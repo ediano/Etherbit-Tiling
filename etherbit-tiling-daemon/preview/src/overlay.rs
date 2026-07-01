@@ -235,6 +235,13 @@ impl App {
     /// Reconcilia as superfícies das barras com o estado novo: cria as que faltam, atualiza as
     /// existentes (reposiciona + redesenha) e DESTRÓI (drop) as de stacks que sumiram — sem vazamento.
     fn apply_bars(&mut self, bars: &[TabBarView]) {
+        // Não reconcilia/dropa as superfícies das barras durante um arraste de guia (ADR 0042):
+        // destruir a `LayerSurface` sob o grab implícito do ponteiro quebraria o grab (release
+        // ignorado / ponteiro preso). O `on_pointer_release` sempre faz `self.drag.take()`, então o
+        // próximo `ShowTabs` após o release reconcilia normalmente — o guard nunca prende as barras.
+        if self.drag.is_some() {
+            return;
+        }
         // Remove superfícies de stacks ausentes/degenerados (o drop desmonta a surface no compositor).
         self.tab_surfaces.retain(|ts| {
             bars.iter()

@@ -615,7 +615,13 @@ pub fn sync_windows_dto(
                         focused_opt,
                     );
                     rects.extend(res.rects.iter().map(RectDto::from));
-                    tab_bars.extend(res.tab_bars.iter().map(TabBarDto::from));
+                    // Soberania do modo maximizado: uma janela maximizada ocupa o monitor inteiro e
+                    // ocultaria qualquer barra de abas por baixo (Z-index do overlay). Enquanto houver
+                    // janela maximizada no grupo, nenhuma barra é emitida; ela reaparece ao desmaximizar,
+                    // no relayout seguinte. Agnóstico (vale p/ GNOME e KDE, ADR 0002/0016).
+                    if maximized_ids.is_empty() {
+                        tab_bars.extend(res.tab_bars.iter().map(TabBarDto::from));
+                    }
                     floating.extend(res.floating.iter().map(RectDto::from));
                     // ADR 0041: sinal de colapso → a ponte agrupa em abas (cada aba pega a célula
                     // inteira). Coexiste com o esmagamento (o slot já é satisfatível enquanto não agrupa).
@@ -826,6 +832,21 @@ mod tests {
         assert_eq!(bar.stack_id, 1);
         assert_eq!((bar.x, bar.y, bar.width, bar.height), (12, 12, 976, 28));
         assert_eq!(bar.content, GeomDto { x: 12, y: 40, width: 976, height: 748 });
+    }
+
+    #[test]
+    fn sync_suppresses_tab_bars_when_a_window_is_maximized() {
+        // Bug B: uma janela maximizada no grupo ocuparia o monitor inteiro; nenhuma barra de abas
+        // deve ser emitida enquanto ela existir (senão a barra flutua por cima). O par com o teste
+        // `sync_parses_stack_and_emits_tab_bar` (mesmo stack, SEM maximizada → 1 barra) isola a guarda.
+        let maximized = r#"{"id":3,"app_id":"c","x":0,"y":0,"width":100,"height":100,"normal":true,"resizable":true,"maximizable":true,"monitor":0,"workspace":0,"maximized":true}"#;
+        let windows = format!("[{},{},{}]", win_json(1, "a"), win_json(2, "b"), maximized);
+        let state = r#"{"stacks":[{"monitor":0,"workspace":0,"members":[1,2],"active":2}]}"#;
+        let out = sync_windows(&windows, AREAS, state, &[], OPTS).expect("ok");
+        let res = layout_of(&out);
+        // O stack [1,2] continua tilado (sua ativa 2 tem rect), mas a barra é suprimida pela maximizada.
+        assert!(res.tab_bars.is_empty(), "barra de abas suprimida com janela maximizada no grupo");
+        assert!(res.rects.iter().any(|r| r.id == 2), "o stack segue renderizando a aba ativa");
     }
 
     #[test]
