@@ -22,33 +22,5 @@
         desfaz o agrupamento, voltando à grade.
       </description>
     </key>
-    <!--
-      Compensação física de janelas de tamanho mínimo rígido (ADR 0048). Chave GNOME-only: vive AQUI,
-      não na config do daemon (compartilhada com o KDE), preservando o isolamento arquitetural.
-    -->
-    <key name="rigid-compensation" type="b">
-      <default>true</default>
-      <summary>Compensação física de janelas de tamanho mínimo rígido</summary>
-      <description>
-        Ajusta a exibição no GNOME para que apps com min-width/min-height rígidos (Calculadora,
-        Ajustes, lojas de apps) não flutuem, não oscilem nem quebrem o grid: trava a janela no seu
-        mínimo e preserva os gaps invioláveis comprimindo os vizinhos. Desligar reproduz o
-        comportamento anterior do compositor. Sem efeito no KDE.
-      </description>
-    </key>
-    <!--
-      Spawn-Time Merge: agrupamento preventivo no surgimento da janela (ADR 0049). Chave GNOME-only:
-      vive AQUI, não na config do daemon (compartilhada com o KDE), preservando o isolamento.
-    -->
-    <key name="spawn-merge" type="b">
-      <default>true</default>
-      <summary>Agrupar em abas no spawn quando o quadrante não comporta o mínimo</summary>
-      <description>
-        No GNOME, quando uma janela nasce num quadrante cujo espaço útil (descontado o gap
-        inviolável) é menor que o min-width/min-height que o app exige, agrupa a nova janela nas abas
-        da janela residente do quadrante em vez de abrir um split apertado que a faria flutuar ou
-        sobrepor. Desligar reproduz o comportamento anterior (split apertado). Sem efeito no KDE.
-      </description>
-    </key>
   </schema>
 </schemalist>

@@ -1,7 +1,10 @@
 # 0049 — Gaps invioláveis e Spawn-Time Merge preventivo (GNOME-only)
 
-**Status:** ✅ Aceita
-(emenda [0048](0048-compensacao-fisica-min-size-gnome.md) — a compensação física passa a tratar o `gap`
+**Status:** 🔄 Revogada por [#0052](0052-rollback-compensacao-rigida-e-spawn-merge-gnome.md) — os gaps
+invioláveis e o Spawn-Time Merge (com o toggle `spawn-merge`) foram REMOVIDOS da extensão GNOME
+(rollback estratégico por instabilidade do grid). O corpo abaixo permanece como histórico.
+
+(originalmente ✅ Aceita; emenda [0048](0048-compensacao-fisica-min-size-gnome.md) — a compensação física passa a tratar o `gap`
 como barreira **inviolável**, em vez de reabsorvê-lo; e reintroduz um agrupamento automático **estrito ao
 spawn**, distinto do auto-agrupamento por colisão aposentado por
 [0046](0046-agrupamento-so-manual-no-centro-e-fim-do-auto-colisao.md)/[0044](0044-guard-anti-reagrupamento-desagrupar-manual.md)

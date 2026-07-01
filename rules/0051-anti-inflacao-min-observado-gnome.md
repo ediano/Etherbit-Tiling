@@ -1,7 +1,10 @@
 # 0051 — Anti-inflação do min observado: não aprender no relayout pós-gesto (GNOME-only)
 
-**Status:** ✅ Aceita
-(emenda [0048](0048-compensacao-fisica-min-size-gnome.md) — corrige o aprendizado do min OBSERVADO
+**Status:** 🔄 Revogada por [#0052](0052-rollback-compensacao-rigida-e-spawn-merge-gnome.md) — o
+aprendizado do min observado foi REMOVIDO junto com a compensação GNOME (rollback estratégico por
+instabilidade do grid). O corpo abaixo permanece como histórico.
+
+(originalmente ✅ Aceita; emenda [0048](0048-compensacao-fisica-min-size-gnome.md) — corrige o aprendizado do min OBSERVADO
 (0048-D) para não gravar como mínimo o tamanho que o usuário escolheu num resize. Reafirma
 [0002](0002-arquitetura-core-agnostico.md)/[0016](0016-extensao-ponte-burra-render-no-daemon.md): a
 correção vive só na ponte GNOME; core, daemon, KDE e contrato D-Bus inalterados. O KDE não tem o

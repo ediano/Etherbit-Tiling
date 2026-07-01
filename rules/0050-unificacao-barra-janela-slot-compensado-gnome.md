@@ -1,7 +1,10 @@
 # 0050 — Unificação barra/janela por slot compensado em grupos de abas (GNOME-only)
 
-**Status:** ✅ Aceita
-(emenda [0048](0048-compensacao-fisica-min-size-gnome.md) — a compensação física passa a tratar cada grupo
+**Status:** 🔄 Revogada por [#0052](0052-rollback-compensacao-rigida-e-spawn-merge-gnome.md) — a
+unificação barra/janela por slot compensado foi REMOVIDA com o restante da compensação GNOME
+(rollback estratégico por instabilidade do grid). O corpo abaixo permanece como histórico.
+
+(originalmente ✅ Aceita; emenda [0048](0048-compensacao-fisica-min-size-gnome.md) — a compensação física passa a tratar cada grupo
 de abas como um **slot único** (`bar ∪ content`), de modo que a barra de abas e a janela ativa derivem da
 **mesma** geometria compensada; e estende a soberania de min-size do core
 [0040](0040-esmagamento-impositivo-e-menu-de-contexto-kde.md)/`build_min_sizes` à camada de EXIBIÇÃO do

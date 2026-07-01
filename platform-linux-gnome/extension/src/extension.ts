@@ -36,8 +36,6 @@ import {
   shouldSuppressSpawnMaximize,
   isResizable,
   effectiveMinSize,
-  learnObservedMin,
-  mergeMin,
   clampGeometry,
   geometryConverged,
   parseLayoutTrees,
@@ -54,8 +52,6 @@ import {
   toggleGroupDisabled,
   addToStack,
   setActiveMember,
-  pickResident,
-  shouldMergeOnSpawn,
   type Stack,
   type TabBar,
   type TreeNode,
@@ -64,12 +60,6 @@ import {
   type WindowSnapshot,
   type MonitorSnapshot,
 } from './bridge.js';
-import {
-  compensateWithStacks,
-  type RigidMin,
-  type CompWorkArea,
-  type StackSlot,
-} from './rigid-compensation.js';
 import { EtherbitIndicator } from './indicator.js';
 import { applyRoundedCorners, clearRoundedCorners } from './effects.js';
 import { initI18n } from './i18n.js';
@@ -184,22 +174,11 @@ export default class EtherbitTilingExtension extends Extension {
   //  - `_lastMinSizes`: último min-size REAL por id — cobre o `get_min_size()` degradado (0,0) de
   //    janelas minimizadas (abas inativas), para o core expandir a célula ao min do membro grande.
   private _lastMinSizes = new Map<number, [number, number]>();
-  //  - `_observedMins`: min-size EFETIVO por id, APRENDIDO pela recusa do cliente Wayland em encolher
-  //    (`learnObservedMin`, ADR 0048). Cobre o caso em que `get_min_size()` degrada para (0,0) no alvo:
-  //    sem ele o `mins` da compensação fica vazio e o toggle `rigid-compensation` vira no-op. Limpo no
-  //    `unmanaged` (por id) e no `disable` (inteiro); mantido através do floating para religar sem relearn.
-  private _observedMins = new Map<number, [number, number]>();
   // Spawn-unmaximize (ciclo de vida de maximização): ids que o core JÁ tilou ao menos uma vez. Uma
   // janela que é maximizada e NUNCA foi tilada "nasceu maximizada" → forçamos `unmaximize` para ela
   // entrar na Distribuição Cíclica. Já uma janela tilada que o usuário maximiza manualmente é
   // PRESERVADA (seu slot volta ao desmaximizar — Unmaximize Recovery). Limpo no `unmanaged`.
   private _everTiled = new Set<number>();
-  // Spawn-Time Merge (ADR 0049, Regra II): ids de janelas recém-criadas ainda PENDENTES de avaliação de
-  // encaixe no spawn. Se o quadrante de destino não comporta o min-size (descontado o gap inviolável), a
-  // janela é agrupada nas abas do residente em vez de abrir um split apertado. ONE-SHOT: a decisão ocorre
-  // uma vez por janela e a flag é consumida — nunca re-armada, então uma janela desagrupada manualmente
-  // depois NÃO é re-sugada (o que diferencia do auto-colisão aposentado pelo ADR 0046). Limpo no `unmanaged`.
-  private _pendingSpawnEval = new Set<number>();
   // Barras de abas desenhadas (recriadas a cada relayout). Settings do gschema (atalhos).
   private _tabBars: St.Widget[] = [];
   // Geometria (coords de stage) da barra de cada membro no ÚLTIMO layout, indexada por memberId. O
@@ -207,10 +186,6 @@ export default class EtherbitTilingExtension extends Extension {
   // um relayout no meio do gesto destruiria (`get_parent()` viraria null e o gesto "não pegaria").
   private _tabBarRects = new Map<number, { x: number; y: number; width: number; height: number }>();
   private _settings: Gio.Settings | null = null;
-  // Handler do `changed::rigid-compensation` no GSettings (toggle GNOME-only da compensação, ADR 0048).
-  private _settingsChangedId = 0;
-  // Handler do `changed::spawn-merge` no GSettings (toggle GNOME-only do Spawn-Time Merge, ADR 0049).
-  private _spawnMergeChangedId = 0;
   // Menu de contexto da aba (clique direito → "Desagrupar Janela"). O manager faz o grab (fecha ao
   // clicar fora) a partir de um anchor ESTÁVEL — as barras de abas são efêmeras (recriadas no relayout).
   private _tabMenuManager: PopupMenu.PopupMenuManager | null = null;
@@ -237,12 +212,6 @@ export default class EtherbitTilingExtension extends Extension {
     id: number;
     rect: { x: number; y: number; width: number; height: number };
   } | null = null;
-  // Id da janela cujo frame o usuário ACABOU de manipular (resize/move). O aprendizado do min
-  // observado (ADR 0048-D) o exclui por UM relayout pós-gesto: no relayout de settle o
-  // `_lastAppliedRects` (committed) ainda é o slot ANTIGO, enquanto o frame já cresceu pelo gesto —
-  // aprender aí gravaria o tamanho escolhido pelo usuário como mínimo e travaria o resize (ADR 0051).
-  // Consumido (zerado) na passada de aprendizado do primeiro `_relayout` seguinte.
-  private _lastGesturedId = 0;
 
   /// Garante um proxy vivo: cria (se ausente) e inscreve `ConfigChanged`. Devolve o proxy ou null.
   /// A criação é barata e dispara a ATIVAÇÃO D-Bus do daemon na primeira chamada (ver ADR 0020).
@@ -341,13 +310,6 @@ export default class EtherbitTilingExtension extends Extension {
       // O raio é a única fonte de verdade do arredondamento: `> 0` liga, `0` desliga. Derivamos o
       // `rounded_corners` do contrato a partir disso (não há mais toggle separado).
       onCornerRadius: (radius) => this._call((p) => p.SetRoundedCornersSync(radius > 0, radius)),
-      // Toggle GNOME-only (ADR 0048): persiste NO GSETTINGS da extensão, não no daemon (que é
-      // compartilhado com o KDE) — é isso que mantém o daemon/KDE alheios a esta correção. O
-      // `changed::rigid-compensation` reflete o estado de volta no switch e re-tila.
-      onRigidCompensation: (enabled) => this._settings?.set_boolean('rigid-compensation', enabled),
-      // Toggle GNOME-only (ADR 0049): idem — persiste no GSettings da extensão. O
-      // `changed::spawn-merge` reflete o estado de volta no switch e re-tila.
-      onSpawnMerge: (enabled) => this._settings?.set_boolean('spawn-merge', enabled),
     });
     Main.panel.addToStatusArea(this.uuid, this._indicator);
 
@@ -414,19 +376,6 @@ export default class EtherbitTilingExtension extends Extension {
         Shell.ActionMode.NORMAL,
         () => this._toggleTabbingShortcut(),
       );
-      // Toggle da compensação física de min-size (ADR 0048): reflete o estado no switch do indicador e
-      // re-tila ao alternar (via indicador, `gsettings` ou dconf). Chave GNOME-only — o daemon nem sabe.
-      this._indicator?.setRigidCompensation(this._rigidCompensationEnabled());
-      this._settingsChangedId = this._settings.connect('changed::rigid-compensation', () => {
-        this._indicator?.setRigidCompensation(this._rigidCompensationEnabled());
-        this._scheduleRelayout();
-      });
-      // Toggle do Spawn-Time Merge (ADR 0049): idem — reflete no switch e re-tila ao alternar.
-      this._indicator?.setSpawnMerge(this._spawnMergeEnabled());
-      this._spawnMergeChangedId = this._settings.connect('changed::spawn-merge', () => {
-        this._indicator?.setSpawnMerge(this._spawnMergeEnabled());
-        this._scheduleRelayout();
-      });
     } catch (error) {
       console.error(`Etherbit Tiling: falha ao registrar atalhos: ${error}`);
     }
@@ -464,23 +413,13 @@ export default class EtherbitTilingExtension extends Extension {
     }
     this._suppressRelayout = false;
     this._relayoutPending = false;
-    this._lastGesturedId = 0;
     this._lastLayoutSig = '';
     this._lastAppliedRects.clear();
-    this._observedMins.clear();
 
     // Remove os atalhos globais.
     if (this._settings) {
       Main.wm.removeKeybinding(KEY_TOGGLE_TILING);
       Main.wm.removeKeybinding(KEY_TOGGLE_TABBING);
-      if (this._settingsChangedId) {
-        this._settings.disconnect(this._settingsChangedId);
-        this._settingsChangedId = 0;
-      }
-      if (this._spawnMergeChangedId) {
-        this._settings.disconnect(this._spawnMergeChangedId);
-        this._spawnMergeChangedId = 0;
-      }
       this._settings = null;
     }
 
@@ -573,9 +512,7 @@ export default class EtherbitTilingExtension extends Extension {
         removeIdFromStacks(this._stacks, id);
         this._stackHidden.delete(id);
         this._lastMinSizes.delete(id);
-        this._observedMins.delete(id);
         this._everTiled.delete(id);
-        this._pendingSpawnEval.delete(id);
         this._scheduleRelayout();
       });
       // (Des)maximizar/fullscreen muda quais janelas entram no grid (Recovery): re-tila. Os sinais só
@@ -636,9 +573,6 @@ export default class EtherbitTilingExtension extends Extension {
         firstFrameId,
         spawnAt: GLib.get_monotonic_time(),
       });
-      // Marca para avaliação de Spawn-Time Merge (ADR 0049): consumida no primeiro relayout em que a
-      // janela já tem slot (Pass 1) e o residente tem rect pré-spawn. Só janelas com rastreio novo.
-      this._pendingSpawnEval.add(id);
     }
     // Nascimento: com o Tiling ativo, nenhuma janela inicia maximizada nem fullscreen (mesmo que o app peça).
     this._spawnUnmaximizeIfBorn(window, id);
@@ -754,42 +688,6 @@ export default class EtherbitTilingExtension extends Extension {
       }
     }
 
-    // Aprendizado do min-size OBSERVADO (GNOME/Wayland, ADR 0048): `Meta.Window.get_min_size()` degrada
-    // para (0,0) em alguns Mutter, deixando o `mins` da compensação vazio (o toggle `rigid-compensation`
-    // vira no-op). O cliente Wayland, porém, RECUSA encolher abaixo do seu mínimo: comparando o rect que
-    // committamos no ciclo anterior (`_lastAppliedRects` — ainda intacto aqui, só é limpo no apply mais
-    // adiante) com o frame assentado deste ciclo (`snap`), `learnObservedMin` deduz o piso real. Roda
-    // SEMPRE, mesmo com o toggle desligado: mantém o cache quente para religar sem atraso e o estado OFF
-    // (que pede o rect cru) serve de sonda para a auto-correção de baixa. Gates: pula maximizada/
-    // fullscreen/minimizada e o alvo de resize/arraste (frame ≠ slot ou gesto do usuário, não recusa).
-    for (const snap of snapshots) {
-      const window = byId.get(snap.id);
-      if (!window) {
-        continue;
-      }
-      const isMinimized =
-        (window as unknown as { is_minimized?: () => boolean }).is_minimized?.() ?? false;
-      const learnable =
-        snap.id !== this._resizeStart?.id &&
-        snap.id !== this._draggedId &&
-        snap.id !== this._lastGesturedId && // recém-gesticulada: frame ≠ slot committado (ADR 0051)
-        !snap.maximized &&
-        !this._isFullscreen(window) &&
-        !isMinimized;
-      learnObservedMin(
-        this._observedMins,
-        snap.id,
-        this._lastAppliedRects.get(snap.id),
-        { x: snap.x, y: snap.y, width: snap.width, height: snap.height },
-        learnable,
-        RELAYOUT_CONVERGE_EPSILON_PX,
-      );
-    }
-    // One-shot: a exclusão da janela gesticulada vale só para ESTE relayout (o de settle). A supressão
-    // do grab garante que este é o primeiro relayout após o gesto; a partir do próximo, o `committed`
-    // já reflete o slot aplicado e o aprendizado genuíno (recusa real do cliente) volta a operar.
-    this._lastGesturedId = 0;
-
     const focus = global.display.focus_window;
     const focusedId = focus ? focus.get_stable_sequence() : 0;
 
@@ -803,173 +701,13 @@ export default class EtherbitTilingExtension extends Extension {
     if (!res) {
       return;
     }
-    let layoutJson = res[0];
+    const layoutJson = res[0];
 
-    // ---- Spawn-Time Merge preventivo (ADR 0049, Regra II, GNOME-only, atrás do toggle `spawn-merge`) ----
-    // No surgimento de uma janela, se o quadrante de destino (descontado o gap INVIOLÁVEL) não comporta o
-    // min-size que o app exige, agrupamos a nova janela nas abas do RESIDENTE em vez de abrir um split
-    // apertado que a faria flutuar/sobrepor. Roda ANTES da compensação/dedup/apply. Quando algo é agrupado,
-    // uma 2ª passada SÍNCRONA de `SyncWindows` devolve a geometria final (sem paint intermediário → zero
-    // flutuação). One-shot: a flag `_pendingSpawnEval` é consumida na decisão e nunca re-armada — uma
-    // janela desagrupada manualmente depois NÃO é re-sugada (diferencial vs. o auto-colisão do ADR 0046).
-    let didSpawnMerge = false;
-    if (this._spawnMergeEnabled() && this._pendingSpawnEval.size > 0) {
-      // Rects do Pass 1 (o slot que o core deu a cada janela) e ids que o core NÃO tilou (diagnóstico).
-      const pass1Rects = new Map<number, Rect>();
-      for (const c of parseLayout(layoutJson)) {
-        pass1Rects.set(c.id, { x: c.x, y: c.y, width: c.width, height: c.height });
-      }
-      const droppedIds = new Set(parseDropped(layoutJson).map((d) => d.id));
-      const snapById = new Map(snapshots.map((s) => [s.id, s] as const));
-      for (const newId of [...this._pendingSpawnEval]) {
-        const snap = snapById.get(newId);
-        if (!snap) {
-          // Janela fora do workspace ativo neste ciclo: reavalia quando aparecer (NÃO consome a flag).
-          continue;
-        }
-        const newRect = pass1Rects.get(newId);
-        if (!newRect) {
-          // Sem slot no Pass 1: se o core a descartou (não-tileável), consome; senão aguarda (min tarde).
-          if (droppedIds.has(newId)) {
-            this._pendingSpawnEval.delete(newId);
-          }
-          continue;
-        }
-        // A partir daqui a janela tem slot → decidimos AGORA e consumimos a flag one-shot.
-        this._pendingSpawnEval.delete(newId);
-        const key = orderKey(snap.monitor, snap.workspace);
-        if (this._disabledGroups.has(key)) {
-          continue; // grupo com tiling desligado (flutuante): não agrupa.
-        }
-        // Residente = janela cujo slot PRÉ-spawn (`_lastAppliedRects`, ainda intacto aqui) a nova invadiu.
-        const residentId = pickResident(this._lastAppliedRects, newId, newRect);
-        if (residentId === null) {
-          continue; // primeira janela do grupo / gap vazio: não há residente para agrupar.
-        }
-        const residentSnap = snapById.get(residentId);
-        const residentPrevRect = this._lastAppliedRects.get(residentId);
-        if (!residentSnap || !residentPrevRect) {
-          continue; // residente sumiu (fechou/mudou de ws) → nada a agrupar.
-        }
-        if (
-          shouldMergeOnSpawn({
-            residentPrevRect,
-            newMin: this._effectiveMin(snap),
-            residentMin: this._effectiveMin(residentSnap),
-            gap: this._config.gap,
-          })
-        ) {
-          addToStack(this._stacks, key, residentId, newId);
-          didSpawnMerge = true;
-        }
-      }
-    }
-
-    if (didSpawnMerge) {
-      // Pass 2: reenvia com o estado de abas mutado. O core recebe a árvore PRÉ-Pass-1 (`_trees` ainda não
-      // reatribuída) + a nova janela como membro de stack → colapsa-a no slot do residente, sem criar o
-      // split. A árvore devolvida (com `{stack}`) é a que persistimos abaixo — nunca a folha do Pass 1.
-      const res2 = this._call((p) =>
-        p.SyncWindowsSync(
-          serializeWindows(snapshots),
-          serializeMonitors(this._collectMonitors()),
-          serializeState(this._stacks, this._disabledGroups, this._trees, focusedId),
-        ),
-      );
-      if (res2) {
-        layoutJson = res2[0];
-      }
-    }
-
-    // Persiste as árvores reconciliadas pelo core (do Pass 2, se houve merge) para reenviar no próximo sync.
+    // Persiste as árvores reconciliadas pelo core para reenviar no próximo sync (estabilidade).
     this._trees = parseLayoutTrees(layoutJson);
 
-    const rawCommands = parseLayout(layoutJson);
+    const commands = parseLayout(layoutJson);
     const tabBars = parseTabBars(layoutJson);
-
-    // Compensação física de min-size (GNOME-only, ADR 0048): trava as janelas rígidas no seu mínimo e
-    // reabsorve o overflow do esmagamento impositivo do core (ADR 0040) comprimindo gaps/vizinhos —
-    // puramente na EXIBIÇÃO, recomputada a cada relayout e NUNCA persistida de volta ao core (a árvore
-    // lógica `_trees`, montada acima, permanece CRUA). Atrás do toggle GSettings `rigid-compensation`
-    // (válvula de segurança). A compensação é determinística, então o dedup (`layoutSig`) e a
-    // convergência abaixo seguem operando corretamente sobre a geometria já compensada.
-    // Geometria de EXIBIÇÃO. Com o toggle OFF, barra e janela vêm ambas do core CRU (que já concordam,
-    // pois saem do mesmo `srect`) — sem divergência. Com o toggle ON, ambas passam a vir do MESMO slot
-    // compensado (ADR 0050), permanecendo sincronizadas por construção.
-    let commands = rawCommands;
-    let compensatedTabBars = tabBars;
-    if (this._rigidCompensationEnabled()) {
-      const mins = new Map<number, RigidMin>();
-      const monitorOf = new Map<number, number>();
-      for (const snap of snapshots) {
-        const [minWidth, minHeight] = this._effectiveMin(snap);
-        if (minWidth > 0 || minHeight > 0) {
-          mins.set(snap.id, { minWidth, minHeight });
-        }
-        monitorOf.set(snap.id, snap.monitor);
-      }
-      // Soberania do grupo (ADR 0050): a célula do stack trava no MAIOR min-size entre TODOS os membros
-      // (não só o da aba ativa), com a faixa da barra (`bar.height`) embutida na altura. Sobrescreve o min
-      // da ativa com o agregado, de modo que a Fase I expanda o slot e a Fase II empurre os vizinhos.
-      const snapById = new Map(snapshots.map((s) => [s.id, s] as const));
-      for (const bar of tabBars) {
-        let aggW = 0;
-        let aggH = 0;
-        for (const memberId of bar.members) {
-          const snap = snapById.get(memberId);
-          const [mw, mh] = snap
-            ? this._effectiveMin(snap)
-            : (this._observedMins.get(memberId) ?? [0, 0]);
-          aggW = Math.max(aggW, mw);
-          aggH = Math.max(aggH, mh);
-        }
-        mins.set(bar.active, { minWidth: aggW, minHeight: aggH + bar.height });
-      }
-      const workAreas = new Map<number, CompWorkArea>();
-      for (const m of this._collectMonitors()) {
-        workAreas.set(m.index, { x: m.x, y: m.y, width: m.width, height: m.height });
-      }
-      const stacks: StackSlot[] = tabBars.map((bar) => ({
-        activeId: bar.active,
-        memberIds: bar.members,
-        bar: { id: bar.active, x: bar.x, y: bar.y, width: bar.width, height: bar.height },
-        content: {
-          id: bar.active,
-          x: bar.content.x,
-          y: bar.content.y,
-          width: bar.content.width,
-          height: bar.content.height,
-        },
-        barHeight: bar.height,
-      }));
-      const result = compensateWithStacks({
-        commands: rawCommands,
-        mins,
-        monitorOf,
-        workAreas,
-        gap: this._config.gap,
-        stacks,
-      });
-      commands = result.commands;
-      // Reconstrói as barras a partir da MESMA geometria compensada: faixa da barra do mapa `bars` e o
-      // content = o command compensado da aba ativa. Fallback para a barra crua se algo faltar (corrida).
-      const compById = new Map(result.commands.map((c) => [c.id, c] as const));
-      compensatedTabBars = tabBars.map((bar) => {
-        const b = result.bars.get(bar.active);
-        const content = compById.get(bar.active);
-        if (!b || !content) {
-          return bar;
-        }
-        return {
-          ...bar,
-          x: b.x,
-          y: b.y,
-          width: b.width,
-          height: b.height,
-          content: { x: content.x, y: content.y, width: content.width, height: content.height },
-        };
-      });
-    }
     // Diagnóstico (ADR): janelas recebidas que o daemon NÃO tilou, com o motivo. Faz o log refletir
     // a tela — `total > aplicadas` deixa de parecer bug quando é só uma janela não-tileável (ex.:
     // desktop/DING) ou uma "nascida maximizada" ainda fora do grid (`excluded_maximized`).
@@ -991,7 +729,7 @@ export default class EtherbitTilingExtension extends Extension {
     // geometria. Resetada em `_releaseToFloating` p/ a chave geral religar mesmo com layout igual.
     const layoutSig = JSON.stringify([
       commands,
-      compensatedTabBars,
+      tabBars,
       [...shouldHide].sort((a, b) => a - b),
       this._config.corner_radius,
     ]);
@@ -1003,30 +741,6 @@ export default class EtherbitTilingExtension extends Extension {
       return;
     }
     this._lastLayoutSig = layoutSig;
-
-    // Diagnóstico da compensação de min-size (ADR 0048): por janela rígida (min real e/ou observado),
-    // a fonte do mínimo (`raw` do get_min_size, `obs` aprendido, `eff` mesclado) e se a compensação
-    // alterou a geometria. Só imprime em relayout REAL (pós-dedup) e só quando há alguma rígida — baixo
-    // ruído. É a evidência que valida o toggle na sessão viva (ON deve mudar o grid; ver plano/ADR 0048).
-    const rigidLines: string[] = [];
-    for (const snap of snapshots) {
-      const obs = this._observedMins.get(snap.id) ?? [0, 0];
-      if (snap.min_width <= 0 && snap.min_height <= 0 && obs[0] <= 0 && obs[1] <= 0) {
-        continue;
-      }
-      const [effW, effH] = mergeMin([snap.min_width, snap.min_height], obs);
-      rigidLines.push(
-        `${snap.id}:${snap.app_id} raw=${snap.min_width}x${snap.min_height} ` +
-          `obs=${obs[0]}x${obs[1]} eff=${effW}x${effH}`,
-      );
-    }
-    if (rigidLines.length > 0) {
-      const compensou = JSON.stringify(commands) !== JSON.stringify(rawCommands);
-      console.log(
-        `[etherbit] rigid: on=${this._rigidCompensationEnabled()} rigidas=${rigidLines.length} ` +
-          `compensou=${compensou} | ${rigidLines.join(' | ')}`,
-      );
-    }
 
     // Observabilidade FIEL À TELA (regressão do tiling): mostra o round-trip ponte→daemon→ponte no
     // journal do gnome-shell. `total` = janelas recebidas; `aplicadas` = quantas ganharam slot;
@@ -1148,12 +862,10 @@ export default class EtherbitTilingExtension extends Extension {
     this._stackHidden = shouldHide;
 
     // Ids tiláveis por grupo (singles + membros de stacks) — base do toggle de abas (Super+S).
-    this._groupTiled = this._collectGroupTiled(commands, compensatedTabBars, byId);
+    this._groupTiled = this._collectGroupTiled(commands, tabBars, byId);
 
-    // Desenha as barras de abas a partir da MESMA geometria compensada aplicada às janelas (ADR 0050) —
-    // barra e janela ativa ficam sincronizadas. `_tabBarRects` (drag-to-ungroup) passa a refletir a barra
-    // real na tela.
-    this._rebuildTabBars(compensatedTabBars, byId);
+    // Desenha as barras de abas a partir da geometria devolvida pelo core.
+    this._rebuildTabBars(tabBars, byId);
   }
 
   /// Confronta a geometria que committamos no último ciclo (`_lastAppliedRects`) com o
@@ -1414,9 +1126,6 @@ export default class EtherbitTilingExtension extends Extension {
   /// MoveWindow `global` (bloco de 50% / maximizar no centro). O `_scheduleRelayout()` re-tila das árvores.
   private _onGrabEnd(window: Meta.Window | null): void {
     if (this._draggedId && window) {
-      // Exclui a janela arrastada do aprendizado do min observado no relayout de settle (ADR 0051):
-      // um move reancora/reslota a janela, e o `committed` do ciclo anterior ficaria stale.
-      this._lastGesturedId = this._draggedId;
       const [x, y] = global.get_pointer();
       const target = this._windowUnderPointObj(x, y, this._draggedId);
       const hot = this._lastHot;
@@ -1470,10 +1179,6 @@ export default class EtherbitTilingExtension extends Extension {
       window &&
       window.get_stable_sequence() === this._resizeStart.id
     ) {
-      // Exclui a janela redimensionada do aprendizado do min observado no relayout de settle (ADR
-      // 0051): o frame já cresceu pelo gesto, mas o `committed` ainda é o slot anterior — aprender aí
-      // gravaria o tamanho escolhido como mínimo (piso inflado) e travaria o próximo resize.
-      this._lastGesturedId = this._resizeStart.id;
       this._applyResize(window);
     }
     this._resizeStart = null;
@@ -1911,7 +1616,6 @@ export default class EtherbitTilingExtension extends Extension {
   private _releaseToFloating(): void {
     // Chave geral DESLIGADA libera as janelas: invalida a assinatura para que RELIGAR sempre reaplique
     // o grid, mesmo que o layout calculado coincida com o último de antes do desligamento.
-    this._lastGesturedId = 0;
     this._lastLayoutSig = '';
     this._lastAppliedRects.clear();
     this._restoreHiddenWindows();
@@ -2232,36 +1936,6 @@ export default class EtherbitTilingExtension extends Extension {
       // Defensivo: na dúvida, tratar como redimensionável (o core ainda filtra por normal/maximizable).
       return true;
     }
-  }
-
-  /// `true` se a compensação física de min-size (ADR 0048) está ligada. Lê a chave GSettings
-  /// GNOME-only `rigid-compensation` (default ligado — válvula de segurança). Defensivo: sem
-  /// `_settings` (ou se a chave não existir num schema antigo), assume ligado.
-  private _rigidCompensationEnabled(): boolean {
-    try {
-      return this._settings?.get_boolean('rigid-compensation') ?? true;
-    } catch {
-      return true;
-    }
-  }
-
-  /// `true` se o Spawn-Time Merge (ADR 0049, Regra II) está ligado. Lê a chave GSettings GNOME-only
-  /// `spawn-merge` (default ligado — válvula de segurança, no padrão do ADR 0048). Defensivo: sem
-  /// `_settings` (ou chave ausente num schema antigo), assume ligado.
-  private _spawnMergeEnabled(): boolean {
-    try {
-      return this._settings?.get_boolean('spawn-merge') ?? true;
-    } catch {
-      return true;
-    }
-  }
-
-  /// Min-size EFETIVO de uma janela (ADR 0048): maior por eixo entre o `get_min_size()` real do
-  /// snapshot e o piso APRENDIDO pela recusa do cliente Wayland em encolher (`_observedMins`). Aditivo —
-  /// funciona mesmo se o método real degradar para (0,0). Compartilhado pela compensação e pelo spawn-merge.
-  private _effectiveMin(snap: WindowSnapshot): [number, number] {
-    const observed = this._observedMins.get(snap.id) ?? [0, 0];
-    return mergeMin([snap.min_width, snap.min_height], observed);
   }
 
   /// Áreas úteis de cada monitor (já descontadas barras/docks do Shell).

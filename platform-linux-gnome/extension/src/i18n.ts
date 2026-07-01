@@ -15,15 +15,11 @@ const MESSAGES: Record<Lang, Record<string, string>> = {
     'toggle.enable': 'Enable tiling',
     'gap.label': 'Spacing (px)',
     'radius.label': 'Corner radius (px)',
-    'rigid.label': 'Fit rigid windows',
-    'spawnMerge.label': 'Group on tight spawn',
   },
   'pt-BR': {
     'toggle.enable': 'Ativar tiling',
     'gap.label': 'Espaçamento (px)',
     'radius.label': 'Raio dos cantos (px)',
-    'rigid.label': 'Ajustar janelas rígidas',
-    'spawnMerge.label': 'Agrupar em spawn apertado',
   },
 };
 

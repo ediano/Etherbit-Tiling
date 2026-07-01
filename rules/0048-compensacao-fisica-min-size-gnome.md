@@ -1,7 +1,10 @@
 # 0048 — Compensação física de min-size na exibição (GNOME-only)
 
-**Status:** ✅ Aceita
-(emenda [0040](0040-esmagamento-impositivo-e-menu-de-contexto-kde.md) — o "deslocamento compensatório"
+**Status:** 🔄 Revogada por [#0052](0052-rollback-compensacao-rigida-e-spawn-merge-gnome.md) — a
+compensação física, o min observado e o toggle `rigid-compensation` foram REMOVIDOS da extensão GNOME
+(rollback estratégico por instabilidade do grid). O corpo abaixo permanece como histórico.
+
+(originalmente ✅ Aceita; emenda [0040](0040-esmagamento-impositivo-e-menu-de-contexto-kde.md) — o "deslocamento compensatório"
 que empurrava as vizinhas para fora da borda deixa de VAZAR para a tela no GNOME; o esmagamento
 impositivo do core permanece intacto e agnóstico. NÃO reintroduz o auto-agrupamento por colisão
 aposentado por [0046](0046-agrupamento-so-manual-no-centro-e-fim-do-auto-colisao.md). Quebra DELIBERADA
