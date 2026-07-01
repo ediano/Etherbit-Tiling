@@ -1511,6 +1511,16 @@ export default class EtherbitTilingExtension extends Extension {
   private _beginTabDrag(memberId: number, tab: St.Widget): void {
     this._endTabDrag();
     this._tabDrag = { memberId, tab };
+    // Suprime o relayout enquanto o gesto de aba está ativo (espelha `_onGrabBegin`): sem isso, um
+    // relayout entre o press e o release rodaria `_destroyTabBars`, destruindo a aba efêmera sob o
+    // grab implícito do Clutter — o ponteiro trava e o `_finishTabDrag` perde a referência. Cancela
+    // qualquer settle em corrida para a supressão valer pela duração inteira do arraste; liberada no
+    // `_finishTabDrag`.
+    if (this._settleSource) {
+      GLib.source_remove(this._settleSource);
+      this._settleSource = 0;
+    }
+    this._suppressRelayout = true;
     this._tabDragCapturedId = global.stage.connect(
       'captured-event',
       (_actor: Clutter.Actor, event: Clutter.Event) => {
@@ -1536,7 +1546,11 @@ export default class EtherbitTilingExtension extends Extension {
   private _finishTabDrag(): void {
     const drag = this._tabDrag;
     this._endTabDrag();
+    // Libera a supressão ativada no `_beginTabDrag` em TODOS os caminhos: um único relayout após o
+    // settle de 50 ms (coalescendo o `_scheduleRelayout` interno do `_ejectTabAt` via `_relayoutPending`,
+    // mesmo padrão do `_onGrabEnd`). Sem isso, a supressão ficaria presa e o tiling congelaria.
     if (!drag) {
+      this._releaseSuppression();
       return;
     }
     const [x, y] = global.get_pointer();
@@ -1546,10 +1560,12 @@ export default class EtherbitTilingExtension extends Extension {
       const [bw, bh] = box.get_transformed_size();
       const inside = x >= bx && x < bx + bw && y >= by && y < by + bh;
       if (inside) {
+        this._releaseSuppression();
         return; // soltou dentro da barra → clique normal (troca de aba), não ejeta
       }
     }
     this._ejectTabAt(drag.memberId, x, y);
+    this._releaseSuppression();
   }
 
   /// Ejeta a janela `memberId` do stack e a reposiciona na zona de drop resolvida em `(x, y)` — o gesto
