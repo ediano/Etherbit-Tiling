@@ -139,6 +139,26 @@ export function collisionKey(members: string[]): string {
   return [...members].sort().join(',');
 }
 
+/// Decide se a maximização (ou fullscreen) de uma janela deve ser SUPRIMIDA por ser "nascida
+/// maximizada" no spawn (ADR 0043). Regra:
+///   - `!enabled` ou `!isMaximized` → nunca suprime (nada a fazer / Tiling desligado);
+///   - dentro da janela de graça pós-nascimento → suprime SEMPRE, mesmo já tilada (`everTiled`): apps
+///     de restore lento auto-maximizam DEPOIS do `windowAdded`, e essa auto-maximização de spawn não
+///     pode ser confundida com ato manual;
+///   - após a graça → só suprime se a janela NUNCA foi tilada; do contrário é maximização MANUAL do
+///     usuário e deve ser preservada (congela o grid). Pura e determinística. Espelha o GNOME.
+export function shouldSuppressSpawnMaximize(p: {
+  enabled: boolean;
+  isMaximized: boolean;
+  everTiled: boolean;
+  withinSpawnGrace: boolean;
+}): boolean {
+  if (!p.enabled || !p.isMaximized) {
+    return false;
+  }
+  return p.withinSpawnGrace || !p.everTiled;
+}
+
 function isLayoutCommand(value: unknown): value is LayoutCommand {
   if (typeof value !== 'object' || value === null) {
     return false;

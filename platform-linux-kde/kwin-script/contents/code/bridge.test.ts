@@ -6,6 +6,7 @@ import {
   parseLayout,
   parseCollisions,
   collisionKey,
+  shouldSuppressSpawnMaximize,
   parseLayoutTrees,
   parsePreview,
   orderKey,
@@ -126,6 +127,57 @@ describe('collisionKey', () => {
 
   it('distingue conjuntos diferentes', () => {
     expect(collisionKey(['w1', 'w2'])).not.toBe(collisionKey(['w1', 'w3']));
+  });
+});
+
+describe('shouldSuppressSpawnMaximize', () => {
+  it('nunca suprime com o Tiling desligado nem quando não está maximizada', () => {
+    expect(
+      shouldSuppressSpawnMaximize({
+        enabled: false,
+        isMaximized: true,
+        everTiled: false,
+        withinSpawnGrace: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldSuppressSpawnMaximize({
+        enabled: true,
+        isMaximized: false,
+        everTiled: false,
+        withinSpawnGrace: true,
+      }),
+    ).toBe(false);
+  });
+
+  it('suprime a nascida maximizada nunca tilada; dentro da graça suprime mesmo já tilada', () => {
+    expect(
+      shouldSuppressSpawnMaximize({
+        enabled: true,
+        isMaximized: true,
+        everTiled: false,
+        withinSpawnGrace: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldSuppressSpawnMaximize({
+        enabled: true,
+        isMaximized: true,
+        everTiled: true,
+        withinSpawnGrace: true,
+      }),
+    ).toBe(true);
+  });
+
+  it('preserva a maximização MANUAL: já tilada e fora da graça → não suprime', () => {
+    expect(
+      shouldSuppressSpawnMaximize({
+        enabled: true,
+        isMaximized: true,
+        everTiled: true,
+        withinSpawnGrace: false,
+      }),
+    ).toBe(false);
   });
 });
 

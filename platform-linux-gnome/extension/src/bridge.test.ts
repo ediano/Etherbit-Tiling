@@ -7,6 +7,7 @@ import {
   parseTabBars,
   parseCollisions,
   collisionKey,
+  shouldSuppressSpawnMaximize,
   clampGeometry,
   parseLayoutTrees,
   parsePreview,
@@ -202,6 +203,63 @@ describe('collisionKey', () => {
 
   it('distingue conjuntos diferentes', () => {
     expect(collisionKey([1, 2])).not.toBe(collisionKey([1, 3]));
+  });
+});
+
+describe('shouldSuppressSpawnMaximize', () => {
+  it('nunca suprime com o Tiling desligado', () => {
+    expect(
+      shouldSuppressSpawnMaximize({
+        enabled: false,
+        isMaximized: true,
+        everTiled: false,
+        withinSpawnGrace: true,
+      }),
+    ).toBe(false);
+  });
+
+  it('nunca suprime quando a janela não está maximizada', () => {
+    expect(
+      shouldSuppressSpawnMaximize({
+        enabled: true,
+        isMaximized: false,
+        everTiled: false,
+        withinSpawnGrace: true,
+      }),
+    ).toBe(false);
+  });
+
+  it('suprime a janela que nasceu maximizada e nunca foi tilada (fora da graça)', () => {
+    expect(
+      shouldSuppressSpawnMaximize({
+        enabled: true,
+        isMaximized: true,
+        everTiled: false,
+        withinSpawnGrace: false,
+      }),
+    ).toBe(true);
+  });
+
+  it('dentro da graça suprime MESMO já tilada (auto-maximização tardia de app de restore lento)', () => {
+    expect(
+      shouldSuppressSpawnMaximize({
+        enabled: true,
+        isMaximized: true,
+        everTiled: true,
+        withinSpawnGrace: true,
+      }),
+    ).toBe(true);
+  });
+
+  it('preserva a maximização MANUAL: já tilada e fora da graça → não suprime (congela o grid)', () => {
+    expect(
+      shouldSuppressSpawnMaximize({
+        enabled: true,
+        isMaximized: true,
+        everTiled: true,
+        withinSpawnGrace: false,
+      }),
+    ).toBe(false);
   });
 });
 

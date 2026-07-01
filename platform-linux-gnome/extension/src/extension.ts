@@ -35,6 +35,7 @@ import {
   parseDropped,
   parseCollisions,
   collisionKey,
+  shouldSuppressSpawnMaximize,
   isResizable,
   clampGeometry,
   geometryConverged,
@@ -76,6 +77,14 @@ const DRAG_TICK_MS = 16;
 /// negociado tardiamente (apps de min grande, ex.: Ubuntu Store). Ver ADR 0034.
 const SPAWN_SETTLE_MS = [50, 150, 400];
 
+/// Janela de graça (µs) após o nascimento da janela em que QUALQUER maximização/fullscreen é tratada
+/// como "nascida no spawn" e desmaximizada incondicionalmente — mesmo que a janela já tenha sido tilada
+/// (ADR 0043). Cobre apps de restore lento (GTK/gsettings) que auto-maximizam depois do último settle
+/// tick (400 ms). Após a graça, uma maximização é ato MANUAL do usuário e é preservada (congela o grid).
+/// 1,5 s equilibra: pega o restore tardio de boot frio com risco mínimo de brigar com quem maximiza
+/// manualmente no primeiro segundo. Ajustável. `GLib.get_monotonic_time()` já retorna µs.
+const SPAWN_MAXIMIZE_GRACE_US = 1_500_000;
+
 /// Tolerância (px) ao confrontar a geometria que committamos com o `get_frame_rect()` atual, para
 /// decidir se o último layout "pegou" na tela (dedup gated por realização, ADR 0038). Folga pequena
 /// para absorver arredondamento de frame/escala sem mascarar um `move_resize_frame` descartado.
@@ -91,6 +100,9 @@ interface Tracked {
   /// sinal já disparou (one-shot) ou não pôde ser conectado (ator ainda inexistente em `window-created`).
   actor: Meta.WindowActor | null;
   firstFrameId: number;
+  /// Instante monotônico (µs) do nascimento da janela — base da janela de graça de spawn-unmaximize
+  /// (`SPAWN_MAXIMIZE_GRACE_US`, ADR 0043). Sai de cena junto com o `Tracked` no `unmanaged`.
+  spawnAt: number;
   /// Timers de estabilização do spawn (`GLib.timeout_add`). Auto-removidos ao disparar; cancelados no
   /// `unmanaged`/`disable`. Multi-disparo (ver `SPAWN_SETTLE_MS`): a rede para o caso "ator ainda
   /// inexistente em `window-created`" (Wayland), em que o `first-frame` nunca arma.
@@ -569,6 +581,7 @@ export default class EtherbitTilingExtension extends Extension {
         notifyIds,
         actor,
         firstFrameId,
+        spawnAt: GLib.get_monotonic_time(),
         spawnSettleIds: [],
       });
       // Estabilização do spawn (Wayland): arma SEMPRE, inclusive quando `firstFrameId === 0` (ator
@@ -1805,12 +1818,32 @@ export default class EtherbitTilingExtension extends Extension {
     }
   }
 
+  /// `true` se a janela `id` ainda está na janela de graça de spawn (`SPAWN_MAXIMIZE_GRACE_US` desde o
+  /// nascimento, ADR 0043). Dentro dela, uma maximização é sempre "de spawn" (mesmo já tilada) e é
+  /// suprimida — cobre o app de restore lento que auto-maximiza depois do último settle tick. Sem o
+  /// `Tracked` (janela já fechada/desconhecida), retorna `false` (fora da graça: comportamento manual).
+  private _withinSpawnGrace(id: number): boolean {
+    const tracked = this._tracked.get(id);
+    if (!tracked) {
+      return false;
+    }
+    return GLib.get_monotonic_time() - tracked.spawnAt < SPAWN_MAXIMIZE_GRACE_US;
+  }
+
   /// Spawn-unmaximize: com o Tiling ATIVO, uma janela que está maximizada e que o core ainda NÃO tilou
   /// "nasceu maximizada" (o app pediu tela cheia ao nascer) — desmaximiza para ela entrar na
-  /// Distribuição Cíclica. Uma janela já tilada (em `_everTiled`) que o usuário maximiza é PRESERVADA
-  /// (slot mantido, volta ao desmaximizar — Unmaximize Recovery), então NÃO é tocada aqui. Defensivo.
+  /// Distribuição Cíclica. Uma janela já tilada (em `_everTiled`) que o usuário maximiza FORA da janela
+  /// de graça é PRESERVADA (slot mantido, volta ao desmaximizar — Unmaximize Recovery). A decisão vive
+  /// no predicado puro `shouldSuppressSpawnMaximize` (ADR 0043); ver `_withinSpawnGrace`. Defensivo.
   private _spawnUnmaximizeIfBorn(window: Meta.Window, id: number): void {
-    if (!this._config.enabled || this._everTiled.has(id) || !this._isMaximized(window)) {
+    if (
+      !shouldSuppressSpawnMaximize({
+        enabled: this._config.enabled,
+        isMaximized: this._isMaximized(window),
+        everTiled: this._everTiled.has(id),
+        withinSpawnGrace: this._withinSpawnGrace(id),
+      })
+    ) {
       return;
     }
     try {
@@ -1839,7 +1872,14 @@ export default class EtherbitTilingExtension extends Extension {
   /// fullscreen é PRESERVADA (mesmo guard do Unmaximize Recovery). `unmake_fullscreen` é 0-arg em toda
   /// a linha (sem a armadilha de assinatura do `unmaximize`); ainda assim chamamos defensivo. Defensivo.
   private _spawnUnfullscreenIfBorn(window: Meta.Window, id: number): void {
-    if (!this._config.enabled || this._everTiled.has(id) || !this._isFullscreen(window)) {
+    if (
+      !shouldSuppressSpawnMaximize({
+        enabled: this._config.enabled,
+        isMaximized: this._isFullscreen(window),
+        everTiled: this._everTiled.has(id),
+        withinSpawnGrace: this._withinSpawnGrace(id),
+      })
+    ) {
       return;
     }
     try {

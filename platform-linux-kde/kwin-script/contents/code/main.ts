@@ -26,6 +26,7 @@ import {
   parseLayoutTrees,
   parseCollisions,
   collisionKey,
+  shouldSuppressSpawnMaximize,
   resolveHotZone,
   serializeScope,
   resizeDeltaFrom,
@@ -144,6 +145,12 @@ const disabled = new Set<string>();
 /// "nasceu maximizada" → spawn-unmaximize (entra na Distribuição Cíclica). Já uma janela tilada que o
 /// usuário maximiza é PRESERVADA (volta ao slot ao desmaximizar — Unmaximize Recovery).
 const everTiled = new Set<string>();
+/// Instante (ms, `Date.now`) do nascimento de cada janela — base da janela de graça de spawn-unmaximize
+/// (ADR 0043). Dentro dela, QUALQUER maximização é tratada como spawn e desmaximizada, mesmo já tilada:
+/// apps de restore lento auto-maximizam depois do `windowAdded`. Limpo no `windowRemoved`.
+const spawnAt = new Map<string, number>();
+/// Duração (ms) da janela de graça de spawn-unmaximize. Espelha `SPAWN_MAXIMIZE_GRACE_US` do GNOME.
+const SPAWN_MAXIMIZE_GRACE_MS = 1500;
 /// Árvores BSP persistentes por `(monitor, desktop)`, com folhas em internalId (forma canônica).
 /// O core reconcilia e devolve a versão atualizada a cada SyncWindows/MoveWindow.
 let trees = new Map<string, TreeNode | null>();
@@ -223,16 +230,37 @@ function isMaximized(win: KWinWindow): boolean {
   }
 }
 
-/// Spawn-unmaximize: com o Tiling ATIVO, uma janela maximizada que o core ainda NÃO tilou "nasceu
-/// maximizada" — desmaximiza para entrar na Distribuição Cíclica. Uma janela já tilada (em `everTiled`)
-/// que o usuário maximiza é PRESERVADA (não é tocada aqui). Defensivo: `setMaximize` é opcional e a
-/// referência pode estar morta — nunca derruba o retile.
-function spawnUnmaximizeIfBorn(win: KWinWindow): void {
-  if (!tilingEnabled) {
-    return;
+/// `true` se a janela `id` ainda está na janela de graça de spawn (`SPAWN_MAXIMIZE_GRACE_MS` desde o
+/// nascimento, ADR 0043). Dentro dela, uma maximização é sempre "de spawn" (mesmo já tilada) e é
+/// suprimida — cobre o app de restore lento que auto-maximiza depois do `windowAdded`. Sem registro de
+/// nascimento (janela desconhecida), retorna `false` (fora da graça: comportamento manual).
+function withinSpawnGrace(id: string): boolean {
+  const born = spawnAt.get(id);
+  if (born === undefined) {
+    return false;
   }
+  return Date.now() - born < SPAWN_MAXIMIZE_GRACE_MS;
+}
+
+/// Spawn-unmaximize: com o Tiling ATIVO, uma janela maximizada que o core ainda NÃO tilou "nasceu
+/// maximizada" — desmaximiza para entrar na Distribuição Cíclica. Uma janela já tilada que o usuário
+/// maximiza FORA da janela de graça é PRESERVADA (volta ao slot ao desmaximizar — Unmaximize Recovery).
+/// A decisão vive no predicado puro `shouldSuppressSpawnMaximize` (ADR 0043); ver `withinSpawnGrace`.
+/// Defensivo: `setMaximize` é opcional e a referência pode estar morta — nunca derruba o retile.
+function spawnUnmaximizeIfBorn(win: KWinWindow): void {
   try {
-    if (!isLiveWindow(win) || everTiled.has(windowId(win)) || !isMaximized(win)) {
+    if (!isLiveWindow(win)) {
+      return;
+    }
+    const id = windowId(win);
+    if (
+      !shouldSuppressSpawnMaximize({
+        enabled: tilingEnabled,
+        isMaximized: isMaximized(win),
+        everTiled: everTiled.has(id),
+        withinSpawnGrace: withinSpawnGrace(id),
+      })
+    ) {
       return;
     }
     win.setMaximize?.(false, false);
@@ -1081,6 +1109,12 @@ function trackWindow(win: KWinWindow): void {
 
 workspace.windowAdded.connect((win) => {
   trackWindow(win);
+  // Marca o instante de nascimento (base da janela de graça, ADR 0043) ANTES do spawn-unmaximize.
+  try {
+    spawnAt.set(windowId(win), Date.now());
+  } catch (e) {
+    // referência morta ao ler o id — segue; sem registro a janela cai no ramo "manual" (guard everTiled)
+  }
   // Nascimento: com o Tiling ativo, nenhuma janela inicia maximizada (mesmo que o app peça).
   spawnUnmaximizeIfBorn(win);
   retile();
@@ -1095,6 +1129,7 @@ workspace.windowRemoved.connect((win) => {
     removeIdFromStacks(stacks, id);
     stackHidden.delete(id);
     everTiled.delete(id);
+    spawnAt.delete(id);
   } catch (e) {
     // referência morta — segue direto para o retile
   }
