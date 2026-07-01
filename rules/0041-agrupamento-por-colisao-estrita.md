@@ -1,6 +1,10 @@
 # 0041 — Agrupamento automático por colisão estrita (reverte B/C do 0040; mantém esmagamento, menu e spawn)
 
 **Status:** ✅ Aceita
+(emendada por [0042](0042-colisao-por-celula-resize-grab-gnome-e-drag-to-ungroup.md) — o sinal
+`collisions` ganha um **segundo gatilho por célula** (`child_below_min`: folha cujo slot resolvido fica
+abaixo do mínimo na costura `Σ ≈ avail`), reusando o mesmo caminho e o guard `≥ 2`; a Regra II das abas
+passa a valer também no GNOME após o conserto do resize sob grab; o desagrupar ganha **drag-to-ungroup**)
 (emenda [0040](0040-esmagamento-impositivo-e-menu-de-contexto-kde.md) — **reverte a parte B** (o core
 volta a emitir um sinal de "não cabe", agora `collisions`, geométrico por célula) e a **parte C** (as
 pontes voltam a agrupar automaticamente sob colapso, **GNOME e KDE**); **mantém** a parte A (esmagamento

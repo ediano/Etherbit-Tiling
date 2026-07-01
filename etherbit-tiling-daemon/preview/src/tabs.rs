@@ -53,8 +53,28 @@ pub enum PointerButton {
 pub struct TabAction {
     pub stack_id: String,
     pub member_id: String,
-    /// `"activate"` | `"close"` | `"ungroup"`.
+    /// `"activate"` | `"close"` | `"ungroup"` | `"ungroup_drag"`.
     pub kind: &'static str,
+    /// Coordenadas GLOBAIS de soltura, só para `"ungroup_drag"` (drag-to-ungroup, ADR 0042); `0,0` nas
+    /// demais. A ponte resolve a zona de drop nesse ponto e reposiciona a janela ejetada ("cai onde foi
+    /// solta"). `#[serde(default)]` mantém retrocompat do JSON drenado.
+    #[serde(default)]
+    pub x: i32,
+    #[serde(default)]
+    pub y: i32,
+}
+
+impl TabAction {
+    /// Ação simples (sem coordenadas) — `activate`/`close`/`ungroup`.
+    pub fn simple(stack_id: String, member_id: String, kind: &'static str) -> Self {
+        TabAction { stack_id, member_id, kind, x: 0, y: 0 }
+    }
+
+    /// Ejeção por arraste (ADR 0042): a janela `member_id` sai do stack e é reposicionada na zona de
+    /// drop resolvida em `(x, y)` (coordenadas globais de tela).
+    pub fn ungroup_drag(stack_id: String, member_id: String, x: i32, y: i32) -> Self {
+        TabAction { stack_id, member_id, kind: "ungroup_drag", x, y }
+    }
 }
 
 /// Resultado de um clique sobre uma barra de abas (ADR 0040). O clique esquerdo resolve em uma `Action`
@@ -140,11 +160,11 @@ pub fn hit_test_local(
         return match button {
             PointerButton::Left => {
                 let kind = if slot.close.contains(px, py) { "close" } else { "activate" };
-                Some(BarHit::Action(TabAction {
-                    stack_id: stack_id.to_string(),
-                    member_id: slot.member_id.clone(),
+                Some(BarHit::Action(TabAction::simple(
+                    stack_id.to_string(),
+                    slot.member_id.clone(),
                     kind,
-                }))
+                )))
             }
             PointerButton::Right => Some(BarHit::OpenContextMenu {
                 stack_id: stack_id.to_string(),
@@ -210,11 +230,7 @@ pub fn menu_hit_test(model: &MenuModel, px: i32, py: i32) -> Option<TabAction> {
     }
     let idx = (py / MENU_ITEM_H) as usize;
     let item = model.items.get(idx)?;
-    Some(TabAction {
-        stack_id: model.stack_id.clone(),
-        member_id: model.member_id.clone(),
-        kind: item.kind,
-    })
+    Some(TabAction::simple(model.stack_id.clone(), model.member_id.clone(), item.kind))
 }
 
 #[cfg(test)]
@@ -371,9 +387,20 @@ mod tests {
 
     #[test]
     fn serializes_action_json() {
-        let a = TabAction { stack_id: "s1".into(), member_id: "w2".into(), kind: "close" };
+        let a = TabAction::simple("s1".into(), "w2".into(), "close");
         let s = serde_json::to_string(&a).unwrap();
         assert!(s.contains("\"kind\":\"close\""));
         assert!(s.contains("\"member_id\":\"w2\""));
+    }
+
+    #[test]
+    fn serializes_ungroup_drag_with_coords() {
+        // ADR 0042: a ejeção por arraste carrega as coordenadas globais de soltura para a ponte
+        // resolver a zona de drop ("cai onde foi solta").
+        let a = TabAction::ungroup_drag("s1".into(), "w2".into(), 640, 360);
+        let s = serde_json::to_string(&a).unwrap();
+        assert!(s.contains("\"kind\":\"ungroup_drag\""));
+        assert!(s.contains("\"x\":640"));
+        assert!(s.contains("\"y\":360"));
     }
 }

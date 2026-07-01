@@ -690,6 +690,18 @@ function applyTabActions(json: string): void {
           // referência morta — ignora (o retile encaixa o quadrante)
         }
       }
+    } else if (action.kind === 'ungroup_drag') {
+      // Ejeta por arraste E reposiciona no ponto de soltura ("cai onde foi solta", ADR 0042). Traduz o
+      // id ANTES de mexer no stack (o mapa de transporte é do último retile). Se conseguir resolver uma
+      // zona de drop, delega ao core via MoveWindow (que destaca a aba do stack na árvore e a reinsere no
+      // alvo); senão, cai no ungroup simples (reinsere no grid cíclico).
+      const draggedT = lastTransportOf.get(action.member_id);
+      const ejected = removeIdFromStacks(stacks, action.member_id);
+      const placed =
+        draggedT !== undefined && dropEjectedAt(action.member_id, draggedT, action.x, action.y);
+      if (!placed && ejected) {
+        needRetile = true;
+      }
     } else {
       // ungroup → o core reinsere no grid cíclico no próximo sync
       if (removeIdFromStacks(stacks, action.member_id)) {
@@ -700,6 +712,57 @@ function applyTabActions(json: string): void {
   if (needRetile) {
     retile();
   }
+}
+
+/// Reposiciona a janela recém-ejetada `draggedStable` (transporte `draggedT`) na zona de drop resolvida
+/// em `(x, y)` — coordenadas GLOBAIS de tela (ADR 0042, "cai onde foi solta"). Espelha `onMoveFinish`:
+/// escopo global (gap vazio) = bloco de 50% / maximizar; escopo local (sobre uma janela) = split do slot
+/// do alvo. Emite `MoveWindow` (o core usa `detach_window` para tirar a aba do stack e reinseri-la) e
+/// re-tila na resposta. Devolve `true` se disparou o MoveWindow; `false` se não havia zona útil.
+function dropEjectedAt(draggedStable: string, draggedT: number, x: number, y: number): boolean {
+  const target = windowUnderPointObj(x, y, draggedStable);
+  const targetRect = target
+    ? {
+        x: target.frameGeometry.x,
+        y: target.frameGeometry.y,
+        width: target.frameGeometry.width,
+        height: target.frameGeometry.height,
+      }
+    : null;
+  const monitor = monitorRectUnder(x, y);
+  const hot = resolveHotZone({ x, y }, targetRect, monitor, draggedMinSize(draggedStable));
+  if (hot.dropZone === 'none') {
+    return false;
+  }
+  const emit = (targetT: number, zoneStr: string, scope: 'local' | 'global'): void => {
+    callDBus(
+      BUS_NAME,
+      OBJECT_PATH,
+      IFACE,
+      'MoveWindow',
+      serializeState(stacks, disabled, lastTransportOf, trees, draggedStable),
+      String(draggedT),
+      String(targetT),
+      zoneStr,
+      serializeScope(scope),
+      (treesJson: string) => {
+        trees = parseLayoutTrees(treesJson, lastTransportToStable);
+        retile();
+      },
+    );
+  };
+  if (hot.scope === 'global') {
+    emit(0, hot.dropZone, 'global');
+    return true;
+  }
+  if (target) {
+    const targetT = lastTransportOf.get(windowId(target));
+    if (targetT !== undefined) {
+      emit(targetT, hot.dropZone, 'local');
+      return true;
+    }
+  }
+  return false;
 }
 
 // ---- Atalhos globais (Meta+Shift+Y geral / Meta+Y por workspace / Meta+S abas) ----

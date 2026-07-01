@@ -478,14 +478,17 @@ describe('barras de abas visuais (ADR 0039 — helper de overlay)', () => {
       { stack_id: 's', member_id: 'a', kind: 'activate' },
       { stack_id: 's', member_id: 'b', kind: 'close' },
       { stack_id: 's', member_id: 'c', kind: 'ungroup' },
+      // ungroup_drag carrega coords globais de soltura (ADR 0042).
+      { stack_id: 's', member_id: 'e', kind: 'ungroup_drag', x: 640, y: 360 },
       { stack_id: 's', member_id: 'd', kind: 'explode' }, // kind inválido → descartado
       { stack_id: 's', kind: 'close' }, // sem member_id → descartado
     ]);
     const actions = parseTabActions(json);
     expect(actions).toEqual([
-      { stack_id: 's', member_id: 'a', kind: 'activate' },
-      { stack_id: 's', member_id: 'b', kind: 'close' },
-      { stack_id: 's', member_id: 'c', kind: 'ungroup' },
+      { stack_id: 's', member_id: 'a', kind: 'activate', x: 0, y: 0 },
+      { stack_id: 's', member_id: 'b', kind: 'close', x: 0, y: 0 },
+      { stack_id: 's', member_id: 'c', kind: 'ungroup', x: 0, y: 0 },
+      { stack_id: 's', member_id: 'e', kind: 'ungroup_drag', x: 640, y: 360 },
     ]);
     // JSON inválido / não-array → vazio.
     expect(parseTabActions('{')).toEqual([]);
