@@ -5,9 +5,6 @@ import {
   serializeMonitors,
   parseLayout,
   parseTabBars,
-  parseCollisions,
-  collisionKey,
-  filterRegroupable,
   shouldSuppressSpawnMaximize,
   clampGeometry,
   parseLayoutTrees,
@@ -195,76 +192,6 @@ describe('parseLayout', () => {
   it('lê os rects do formato objeto novo { rects, tab_bars }', () => {
     const json = '{"rects":[{"id":1,"x":12,"y":40,"width":484,"height":748}],"tab_bars":[]}';
     expect(parseLayout(json)).toEqual([{ id: 1, x: 12, y: 40, width: 484, height: 748 }]);
-  });
-});
-
-describe('parseCollisions', () => {
-  it('lê os grupos de colisão do formato objeto { collisions }', () => {
-    const json = JSON.stringify({
-      rects: [],
-      tab_bars: [],
-      collisions: [{ cell_id: 1, members: [1, 2] }],
-    });
-    expect(parseCollisions(json)).toEqual([{ cellId: 1, members: [1, 2] }]);
-  });
-
-  it('ausente (daemon antigo = comportamento 0040) → vazio', () => {
-    expect(parseCollisions('{"rects":[],"tab_bars":[]}')).toEqual([]);
-  });
-
-  it('formato legado (array) → vazio', () => {
-    expect(parseCollisions('[{"cell_id":1,"members":[1,2]}]')).toEqual([]);
-  });
-
-  it('descarta grupos com < 2 membros e entradas malformadas, e JSON inválido', () => {
-    expect(parseCollisions('not json')).toEqual([]);
-    const json = JSON.stringify({
-      collisions: [
-        { cell_id: 1, members: [1] }, // < 2 → descartado (nada a agrupar)
-        { cell_id: 2, members: [3, 4] }, // ok
-        { cell_id: 'x', members: [5, 6] }, // cell_id inválido → descartado
-        { members: [7, 8] }, // sem cell_id → descartado
-      ],
-    });
-    expect(parseCollisions(json)).toEqual([{ cellId: 2, members: [3, 4] }]);
-  });
-});
-
-describe('collisionKey', () => {
-  it('é ordem-insensível (guard de idempotência do merge por colisão)', () => {
-    expect(collisionKey([2, 1, 3])).toBe(collisionKey([3, 2, 1]));
-    expect(collisionKey([1, 2])).toBe('1,2');
-  });
-
-  it('distingue conjuntos diferentes', () => {
-    expect(collisionKey([1, 2])).not.toBe(collisionKey([1, 3]));
-  });
-});
-
-describe('filterRegroupable (guard anti-re-agrupamento, ADR 0044)', () => {
-  it('remove o membro desagrupado, mantendo os >= 2 restantes', () => {
-    expect(filterRegroupable([1, 2, 3], new Set([2]))).toEqual([1, 3]);
-  });
-
-  it('colapsa para [] quando sobra < 2 (janela fica no esmagamento, não agrupa)', () => {
-    expect(filterRegroupable([1, 2], new Set([2]))).toEqual([]);
-  });
-
-  it('passthrough quando ninguém foi desagrupado (ou id irrelevante)', () => {
-    expect(filterRegroupable([1, 2], new Set<number>())).toEqual([1, 2]);
-    expect(filterRegroupable([1, 2], new Set([9]))).toEqual([1, 2]);
-  });
-
-  it('preserva a ordem (o 1º remanescente é a âncora do addToStack)', () => {
-    expect(filterRegroupable([3, 1, 2], new Set([1]))).toEqual([3, 2]);
-  });
-
-  it('devolve [] quando o guard cobre todos os membros', () => {
-    expect(filterRegroupable([1, 2], new Set([1, 2]))).toEqual([]);
-  });
-
-  it('com >= 3 membros, remove 1 e ainda agrupa os 2 restantes', () => {
-    expect(filterRegroupable([1, 2, 3], new Set([1]))).toEqual([2, 3]);
   });
 });
 

@@ -24,9 +24,6 @@ import {
   parseLayout,
   parseTabBars,
   parseLayoutTrees,
-  parseCollisions,
-  collisionKey,
-  filterRegroupable,
   shouldSuppressSpawnMaximize,
   resolveHotZone,
   serializeScope,
@@ -160,15 +157,6 @@ let trees = new Map<string, TreeNode | null>();
 const stacks = new Map<string, Stack[]>();
 /// Membros de stack OCULTOS (minimizados) por nós — para reexibir ao saírem do stack/aba inativa.
 const stackHidden = new Set<string>();
-/// Conjuntos já agrupados por colisão (ADR 0041), chave ordem-insensível de `collisionKey` sobre ids
-/// estáveis — evita re-agrupar o mesmo conjunto a cada sync (idempotência/anti-oscilação). Descartado
-/// quando o conjunto deixa de aparecer no sinal `collisions` do core.
-const mergedCollisions = new Set<string>();
-/// Guard anti-re-agrupamento (ADR 0044): internalIds que o usuário desagrupou EXPLICITAMENTE (menu ou
-/// drag-eject). Enquanto presente, o auto-agrupamento por colisão (ADR 0041) NÃO re-agrupa a janela —
-/// simétrico ao "uma vez agrupado, fica agrupado". Limpo ao fechar a janela (`windowRemoved`) ou ao
-/// reagrupar manual (drag-to-group central). Não expira por tempo/sync. Ortogonal a `mergedCollisions`.
-const userUngrouped = new Set<string>();
 /// Mapas de transporte do ÚLTIMO retile (internalId ↔ id opaco), reusados no drop (sem retile no meio
 /// do arrasto, eles seguem válidos para as janelas pré-existentes).
 let lastTransportOf = new Map<string, number>();
@@ -500,60 +488,6 @@ function retile(): void {
       const commands = parseLayout(layoutJson);
       const tabBars = parseTabBars(layoutJson);
       debug('SyncWindows OK (seq', mySeq, ') — retângulos:', commands.length);
-      // Agrupamento automático por colisão (ADR 0041): quando o core sinaliza colapso de célula (Σ mins
-      // rígidos > avail), agrupamos os membros em abas — cada aba recebe a célula inteira e cabe,
-      // eliminando a sobreposição do esmagamento (ADR 0040), que segue como rede. O merge vira
-      // Node::Stack → a célula deixa de colapsar → o sinal some no próximo sync (idempotente).
-      // `mergedCollisions` evita re-agrupar o mesmo conjunto; permanece agrupado (sem auto-desagrupar).
-      // Ids vêm em TRANSPORTE → traduz p/ estável (internalId) antes do addToStack (contrato ADR 0009).
-      const stableGroups = parseCollisions(layoutJson)
-        .map((c) =>
-          c.members
-            .map((m) => transportToStable.get(m))
-            .filter((s): s is string => s !== undefined),
-        )
-        .filter((g) => g.length >= 2);
-      const liveCollisions = new Set(stableGroups.map((g) => collisionKey(g)));
-      for (const k of [...mergedCollisions]) {
-        if (!liveCollisions.has(k)) {
-          mergedCollisions.delete(k);
-        }
-      }
-      let didMerge = false;
-      for (const group of stableGroups) {
-        // Chave de idempotência SEMPRE no conjunto ORIGINAL (casa com a limpeza de `liveCollisions`);
-        // o guard do usuário (ADR 0044) só decide O QUE agrupar, não a chave.
-        const key = collisionKey(group);
-        if (mergedCollisions.has(key)) {
-          continue;
-        }
-        // Remove os membros que o usuário desagrupou de propósito: não voltam às abas sozinhos (ficam
-        // no esmagamento). Se sobrarem < 2, nada a agrupar nesta célula.
-        const kept = filterRegroupable(group, userUngrouped);
-        const [targetStable, ...rest] = kept;
-        if (targetStable === undefined) {
-          continue;
-        }
-        const win = stableToWin.get(targetStable);
-        if (!win || !isLiveWindow(win)) {
-          continue;
-        }
-        const monitor = collectOutputs().indexOf(win.output);
-        const groupKey = orderKey(monitor < 0 ? 0 : monitor, desktopIndexOf(win));
-        let changed = false;
-        for (const member of rest) {
-          changed = addToStack(stacks, groupKey, targetStable, member) || changed;
-        }
-        if (changed) {
-          mergedCollisions.add(key);
-          didMerge = true;
-        }
-      }
-      if (didMerge) {
-        // A topologia mudou: re-tila para o core materializar os stacks e recalcular sem colapso.
-        retile();
-        return;
-      }
 
       // Abas inativas a ocultar (minimizar): todo membro de stack que não é o ativo (ids de transporte).
       const shouldHide = new Set<string>();
@@ -737,10 +671,6 @@ function applyTabActions(json: string): void {
       // no reconcile que teleportava; sem transporte conhecido, reinsere no grid cíclico no sync.
       const draggedT = lastTransportOf.get(action.member_id);
       const ejected = removeIdFromStacks(stacks, action.member_id);
-      if (ejected) {
-        // Guard anti-re-agrupamento (ADR 0044): arrastou a aba para fora → não volta às abas por colisão.
-        userUngrouped.add(action.member_id);
-      }
       const placed =
         draggedT !== undefined && dropEjectedAt(action.member_id, draggedT, action.x, action.y);
       if (!placed && ejected) {
@@ -757,7 +687,6 @@ function applyTabActions(json: string): void {
       // retile). Sem transporte conhecido, cai no reencaixe cíclico do sync (fallback antigo).
       const draggedT = lastTransportOf.get(action.member_id);
       if (removeIdFromStacks(stacks, action.member_id)) {
-        userUngrouped.add(action.member_id);
         if (draggedT !== undefined) {
           ejectFromStack(action.member_id, draggedT);
         } else {
@@ -775,7 +704,7 @@ function applyTabActions(json: string): void {
 /// drag-to-ungroup solto no vazio (ADR 0045). O core (zona `eject`) faz `detach_window`: o grupo
 /// remanescente REancora NO LUGAR (slot preservado) e o `reconcile` seguinte reinsere a ejetada pela
 /// distribuição cíclica — sem o teleporte que capturava janelas externas (o "efeito ímã"). O chamador já
-/// fez `removeIdFromStacks` + `userUngrouped.add`; aqui só materializa no core e re-tila na resposta.
+/// fez `removeIdFromStacks`; aqui só materializa no core e re-tila na resposta.
 function ejectFromStack(draggedStable: string, draggedT: number): void {
   callDBus(
     BUS_NAME,
@@ -1077,9 +1006,6 @@ function onMoveFinish(win: KWinWindow): void {
     const monitor = collectOutputs().indexOf(target.output);
     const key = orderKey(monitor < 0 ? 0 : monitor, desktopIndexOf(target));
     addToStack(stacks, key, targetStable, dragged);
-    // Reagrupou manualmente → revoga o guard anti-re-agrupamento (ADR 0044): volta a ser elegível ao
-    // auto-agrupamento por colisão.
-    userUngrouped.delete(dragged);
     retile();
     return;
   }
@@ -1186,7 +1112,6 @@ workspace.windowRemoved.connect((win) => {
     stackHidden.delete(id);
     everTiled.delete(id);
     spawnAt.delete(id);
-    userUngrouped.delete(id);
   } catch (e) {
     // referência morta — segue direto para o retile
   }

@@ -1,6 +1,9 @@
 # 0042 — Colisão por célula, resize sob grab no GNOME e desagrupar por arraste ("cai onde foi solta")
 
-**Status:** ✅ Aceita
+**Status:** ✅ Aceita; emendada por [0046](0046-agrupamento-so-manual-no-centro-e-fim-do-auto-colisao.md)
+(o 2º gatilho por célula `child_below_min` sai com o auto-colisão aposentado; o **drag-to-ungroup** é
+reativado em runtime — GNOME pela geometria da barra do último layout (sobrevive a relayout), KDE por
+rastreio de motion no helper (robusto a clamp do release))
 (emenda [0041](0041-agrupamento-por-colisao-estrita.md) — o sinal `collisions` ganha um **segundo
 gatilho por célula**; corrige a regressão de resize do [0038](0038-realizacao-gated-dedup-e-boot-settle.md)
 na ponte GNOME; estende o desagrupar de [0040](0040-esmagamento-impositivo-e-menu-de-contexto-kde.md)

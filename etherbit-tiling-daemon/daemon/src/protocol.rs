@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use etherbit_tiling_core::{
     compute_constrained, detect_drop_target, is_tileable, move_window as core_move_window,
-    reconcile, resize_window as core_resize_window, retain_tileable_when_maximized, CollisionGroup,
-    DropPreview, DropScope, DropZone, Edge, GridChild, LayoutOptions, LayoutTree, Node,
-    PreviewRect, StackDescriptor, TabBarRect, WindowInfo, WindowRect, WorkArea,
+    reconcile, resize_window as core_resize_window, retain_tileable_when_maximized, DropPreview,
+    DropScope, DropZone, Edge, GridChild, LayoutOptions, LayoutTree, Node, PreviewRect,
+    StackDescriptor, TabBarRect, WindowInfo, WindowRect, WorkArea,
 };
 
 /// Desserializa um índice (monitor/workspace) de forma TOLERANTE: aceita inteiro e SATURA negativos a
@@ -220,26 +220,6 @@ pub struct LayoutResultDto {
     /// (retrocompat). Não afeta o layout.
     #[serde(default)]
     pub dropped: Vec<DroppedDto>,
-    /// Sinal de COLISÃO (ADR 0041): conjuntos de janelas cujo espaço físico colapsou (`Σ mins rígidos
-    /// > avail` numa célula). A ponte agrupa cada conjunto em abas (onde cada aba recebe a célula
-    /// inteira e cabe). Ausente = vazio (retrocompat com ponte/daemon antigos = comportamento 0040).
-    #[serde(default)]
-    pub collisions: Vec<CollisionDto>,
-}
-
-/// Um grupo de janelas que colidem na mesma célula (ADR 0041): `members` são os IDs a agrupar em abas;
-/// `cell_id` é a âncora da célula. Espelha `CollisionGroup` do core. Os IDs são os mesmos que viajam em
-/// `rects`/`tab_bars` (transporte) — a ponte os traduz para seus IDs estáveis ao aplicar.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CollisionDto {
-    pub cell_id: u64,
-    pub members: Vec<u64>,
-}
-
-impl From<&CollisionGroup> for CollisionDto {
-    fn from(c: &CollisionGroup) -> Self {
-        CollisionDto { cell_id: c.cell_id, members: c.member_ids.clone() }
-    }
 }
 
 /// Uma janela recebida que o daemon NÃO posicionou, com o motivo. Motivos: `ignored` (lista de
@@ -564,7 +544,6 @@ pub fn sync_windows_dto(
     let mut rects: Vec<RectDto> = Vec::new();
     let mut tab_bars: Vec<TabBarDto> = Vec::new();
     let mut floating: Vec<RectDto> = Vec::new();
-    let mut collisions: Vec<CollisionDto> = Vec::new();
     let mut out_trees: Vec<TreeDto> = Vec::new();
 
     for (monitor, workspace) in group_order {
@@ -625,9 +604,6 @@ pub fn sync_windows_dto(
                         tab_bars.extend(res.tab_bars.iter().map(TabBarDto::from));
                     }
                     floating.extend(res.floating.iter().map(RectDto::from));
-                    // ADR 0041: sinal de colapso → a ponte agrupa em abas (cada aba pega a célula
-                    // inteira). Coexiste com o esmagamento (o slot já é satisfatível enquanto não agrupa).
-                    collisions.extend(res.collisions.iter().map(CollisionDto::from));
                 }
                 // Persiste a árvore reconciliada (topologia + ratios): o relayout seguinte reproduz os
                 // slots quando o espaço mudar, lembrando a posição de cada janela.
@@ -639,17 +615,16 @@ pub fn sync_windows_dto(
     }
 
     crate::dlog!(
-        "sync_windows: {n_windows} recebida(s) → {} tileável(is) → {} rect(s), {} barra(s), {} flutuante(s), {} colisão(ões), {} descartada(s), {} grupo(s)",
+        "sync_windows: {n_windows} recebida(s) → {} tileável(is) → {} rect(s), {} barra(s), {} flutuante(s), {} descartada(s), {} grupo(s)",
         tileable.len(),
         rects.len(),
         tab_bars.len(),
         floating.len(),
-        collisions.len(),
         dropped.len(),
         out_trees.len()
     );
 
-    Ok(LayoutResultDto { rects, tab_bars, trees: out_trees, floating, collisions, dropped })
+    Ok(LayoutResultDto { rects, tab_bars, trees: out_trees, floating, dropped })
 }
 
 /// Resolve o destino de um drop sob o ponto `(x, y)`. Escolhe a área útil que CONTÉM o ponto e
@@ -914,9 +889,9 @@ mod tests {
 
     #[test]
     fn resolve_drop_target_stack_label() {
-        // Janela-alvo (100,100,400,400); cursor na faixa superior (y=150) → zona "stack" = alvo.
+        // Janela-alvo (100,100,400,400); cursor no CENTRO (300,300) → zona "stack" = alvo (ADR 0046).
         let target = r#"{"x":100,"y":100,"width":400,"height":400}"#;
-        let out = resolve_drop_zone(AREAS, 300, 150, target, (0, 0), OPTS).expect("ok");
+        let out = resolve_drop_zone(AREAS, 300, 300, target, (0, 0), OPTS).expect("ok");
         let p: PreviewDto = serde_json::from_str(&out).unwrap();
         assert_eq!(p, PreviewDto { zone: "stack".into(), x: 100, y: 100, width: 400, height: 400 });
     }
@@ -1093,32 +1068,21 @@ mod tests {
     }
 
     #[test]
-    fn sync_oversized_min_sinaliza_colisao() {
-        // ADR 0041: duas rígidas cujos mínimos colapsam a célula → o daemon emite `collisions` com as
-        // duas (a ponte agrupa em abas). Coexiste com o esmagamento (`floating` segue vazio).
+    fn sync_oversized_min_nao_agrupa_sozinho() {
+        // ADR 0046: duas rígidas cujos mínimos colapsam a célula NÃO viram abas sozinhas — o
+        // esmagamento cooperativo (ADR 0040) as entrega no grid, sem barra de abas. Agrupar é só manual.
         let windows =
             format!("[{},{}]", win_json_min(1, "calc", 2000, 0), win_json_min(2, "store", 2000, 0));
         let out = sync_windows(&windows, AREAS, "", &[], OPTS).expect("ok");
         let res = layout_of(&out);
         assert!(res.floating.is_empty(), "floating segue vazio (deprecated)");
-        assert_eq!(res.collisions.len(), 1, "a célula colapsada é sinalizada");
-        let mut members = res.collisions[0].members.clone();
-        members.sort();
-        assert_eq!(members, vec![1, 2]);
-    }
-
-    #[test]
-    fn layout_result_dto_collisions_defaults_when_absent() {
-        // Resposta de daemon ANTIGO (sem `collisions`): desserializa vazio (retrocompat = comportamento
-        // 0040, sem agrupamento automático).
-        let legacy = r#"{"rects":[],"tab_bars":[],"trees":[]}"#;
-        let dto: LayoutResultDto = serde_json::from_str(legacy).expect("parse");
-        assert!(dto.collisions.is_empty());
+        assert_eq!(res.rects.len(), 2, "as duas seguem tiladas (sem auto-agrupamento)");
+        assert!(res.tab_bars.is_empty(), "nenhuma barra emerge por colisão");
     }
 
     #[test]
     fn sync_ignora_campo_title_desconhecido() {
-        // Fronteira da Regra I (ADR 0029/0041): o core nunca vê título. Um `windows_json` com um campo
+        // Fronteira da Regra I (ADR 0029): o core nunca vê título. Um `windows_json` com um campo
         // "title" extra é IGNORADO pelo serde (`WindowDto` não tem o campo) — o layout sai idêntico ao
         // de uma janela sem título. O título vive 100% na ponte (renderização das abas).
         let com_title = r#"[{"id":1,"app_id":"a","title":"Janela Secreta","x":0,"y":0,"width":100,"height":100,"normal":true,"resizable":true,"maximizable":true,"monitor":0,"workspace":0}]"#;
