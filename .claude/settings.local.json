@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:zeroxoneafour.github.io)"
+    ]
+  }
+}
