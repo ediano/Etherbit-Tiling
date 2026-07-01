@@ -36,6 +36,8 @@ import {
   shouldSuppressSpawnMaximize,
   isResizable,
   effectiveMinSize,
+  learnRefusedMin,
+  applyRefusedFloor,
   clampGeometry,
   geometryConverged,
   parseLayoutTrees,
@@ -174,6 +176,10 @@ export default class EtherbitTilingExtension extends Extension {
   //  - `_lastMinSizes`: último min-size REAL por id — cobre o `get_min_size()` degradado (0,0) de
   //    janelas minimizadas (abas inativas), para o core expandir a célula ao min do membro grande.
   private _lastMinSizes = new Map<number, [number, number]>();
+  //  - `_refusedMins`: piso de min-size APRENDIDO POR RECUSA (ADR 0053). Apps que mentem `min≈0` mas
+  //    recusam encolher (Flutter/CSD) têm seu tamanho recusado gravado aqui e composto no `_minSize`,
+  //    para o snapshot enviar o min REAL ao core (esmagamento impositivo ADR 0040). Limpo no `unmanaged`.
+  private _refusedMins = new Map<number, [number, number]>();
   // Spawn-unmaximize (ciclo de vida de maximização): ids que o core JÁ tilou ao menos uma vez. Uma
   // janela que é maximizada e NUNCA foi tilada "nasceu maximizada" → forçamos `unmaximize` para ela
   // entrar na Distribuição Cíclica. Já uma janela tilada que o usuário maximiza manualmente é
@@ -512,6 +518,7 @@ export default class EtherbitTilingExtension extends Extension {
         removeIdFromStacks(this._stacks, id);
         this._stackHidden.delete(id);
         this._lastMinSizes.delete(id);
+        this._refusedMins.delete(id);
         this._everTiled.delete(id);
         this._scheduleRelayout();
       });
@@ -654,6 +661,11 @@ export default class EtherbitTilingExtension extends Extension {
 
     const workspace = global.workspace_manager.get_active_workspace();
     const windows = workspace ? workspace.list_windows() : [];
+
+    // ADR 0053: antes de montar os snapshots, aprende o piso de min-size das janelas que RECUSARAM
+    // encolher no ciclo anterior — assim o min REAL entra JÁ neste snapshot e o esmagamento do core
+    // (ADR 0040) reserva o espaço nesta mesma passada, sem depender de um ciclo extra.
+    this._learnRefusals(windows);
 
     const byId = new Map<number, Meta.Window>();
     // Agrupa por `(monitor, workspace)` e registra a ordem estável de cada grupo.
@@ -873,6 +885,40 @@ export default class EtherbitTilingExtension extends Extension {
   /// aplicação, logo seu frame não reflete o slot — ignorada). Delega ao helper puro
   /// `geometryConverged`. É o que impede o dedup por `_lastLayoutSig` de mascarar um
   /// `move_resize_frame` descartado no boot frio (ADR 0038): sem convergência, reaplica.
+  /// Aprende o piso de min-size por RECUSA (ADR 0053). Compara o que committamos no ciclo anterior
+  /// (`_lastAppliedRects`, comandado) com o `get_frame_rect()` atual de cada janela; se o frame voltou
+  /// MAIOR que o comandado além do epsilon, a janela recusou encolher (Flutter/CSD que reportam min≈0
+  /// mas travam o buffer). Grava o tamanho recusado (limitado à área útil do monitor) em `_refusedMins`
+  /// para o próximo `_minSize`/snapshot enviar o min REAL ao core. Maximizada/fullscreen/morta são
+  /// puladas (o frame não reflete o slot — mesmas exclusões da convergência). O piso só CRESCE e tem
+  /// teto do monitor: não infla via realimentação do grid (o grid só amplia o `commanded`, e amplitude
+  /// nunca vira recusa), evitando o loop que derrubou o ADR 0051. Roda no início do `_relayout`.
+  private _learnRefusals(windows: Meta.Window[]): void {
+    if (this._lastAppliedRects.size === 0) {
+      return;
+    }
+    for (const window of windows) {
+      const id = window.get_stable_sequence();
+      const commanded = this._lastAppliedRects.get(id);
+      if (!commanded) {
+        continue;
+      }
+      if (!this._isWindowLive(window) || this._isMaximized(window) || this._isFullscreen(window)) {
+        continue;
+      }
+      const r = window.get_frame_rect();
+      const area = Main.layoutManager.getWorkAreaForMonitor(Math.max(0, window.get_monitor()));
+      learnRefusedMin(
+        this._refusedMins,
+        id,
+        { width: commanded.width, height: commanded.height },
+        { width: r.width, height: r.height },
+        RELAYOUT_CONVERGE_EPSILON_PX,
+        { width: area.width, height: area.height },
+      );
+    }
+  }
+
   private _appliedGeometryConverged(byId: Map<number, Meta.Window>): boolean {
     if (this._lastAppliedRects.size === 0) {
       return true;
@@ -1897,7 +1943,13 @@ export default class EtherbitTilingExtension extends Extension {
     // core agregar o `max` correto e a célula de abas expandir ao min do membro grande.
     const minimized =
       (window as unknown as { is_minimized?: () => boolean }).is_minimized?.() ?? false;
-    return effectiveMinSize(this._lastMinSizes, window.get_stable_sequence(), raw, minimized);
+    const id = window.get_stable_sequence();
+    // Compõe o piso aprendido por recusa (ADR 0053) sobre o min memoizado por minimização (ADR 0033):
+    // o snapshot passa a enviar o min REAL de janelas rígidas que mentem `min≈0` ao Mutter.
+    return applyRefusedFloor(
+      effectiveMinSize(this._lastMinSizes, id, raw, minimized),
+      this._refusedMins.get(id),
+    );
   }
 
   /// Tamanho MÁXIMO (px de frame) imposto pelo app via `Meta.Window.get_max_size()` — espelha o

@@ -82,6 +82,54 @@ export function effectiveMinSize(
   return cache.get(id) ?? [0, 0];
 }
 
+/// Piso de min-size APRENDIDO POR RECUSA (ADR 0053). Apps de toolkit híbrido no Wayland (Flutter/CSD)
+/// reportam `get_min_size() ≈ 0` ao Mutter mas RECUSAM encolher abaixo do seu mínimo interno: o core
+/// lhes dá uma célula pequena, o cliente ignora, o frame real diverge do pedido e o relayout oscila.
+/// Aqui aprendemos o mínimo REAL observando o tamanho recusado — SÓ quando o frame aplicado (`actual`)
+/// volta MAIOR que o comandado (`commanded`) além de `epsilon` num eixo (a janela recusou aquele eixo).
+/// O piso por id só CRESCE (nunca reduz nesta chamada) e é LIMITADO a `cap` (área útil do monitor).
+/// Aprender só de recusas — nunca de tamanhos voluntariamente grandes (célula grande do grid, resize
+/// manual do usuário) — mantém o piso num PONTO FIXO (o mínimo de conteúdo), evitando a inflação em
+/// espiral que derrubou o ADR 0051. Devolve `true` se o piso mudou (o chamador reagenda o relayout
+/// para reenviar o min corrigido). Pura e sem dependência de GJS (testável em vitest).
+export function learnRefusedMin(
+  cache: Map<number, [number, number]>,
+  id: number,
+  commanded: { width: number; height: number },
+  actual: { width: number; height: number },
+  epsilon: number,
+  cap: { width: number; height: number },
+): boolean {
+  const capW = cap.width > 0 ? cap.width : Number.POSITIVE_INFINITY;
+  const capH = cap.height > 0 ? cap.height : Number.POSITIVE_INFINITY;
+  const refusedW = actual.width > commanded.width + epsilon ? Math.min(actual.width, capW) : 0;
+  const refusedH = actual.height > commanded.height + epsilon ? Math.min(actual.height, capH) : 0;
+  if (refusedW <= 0 && refusedH <= 0) {
+    return false;
+  }
+  const [prevW, prevH] = cache.get(id) ?? [0, 0];
+  const nextW = Math.max(prevW, refusedW);
+  const nextH = Math.max(prevH, refusedH);
+  if (nextW === prevW && nextH === prevH) {
+    return false;
+  }
+  cache.set(id, [nextW, nextH]);
+  return true;
+}
+
+/// Compõe o piso aprendido por recusa (ADR 0053) sobre o min-size reportado (`raw`): o MAIOR em cada
+/// eixo. É o que faz o snapshot enviar o mínimo REAL ao core, para o esmagamento impositivo (ADR 0040)
+/// reservar o espaço e comprimir/empurrar os vizinhos. `floor` ausente → devolve `raw` intacto. Pura.
+export function applyRefusedFloor(
+  raw: [number, number],
+  floor: [number, number] | undefined,
+): [number, number] {
+  if (!floor) {
+    return raw;
+  }
+  return [Math.max(raw[0], floor[0]), Math.max(raw[1], floor[1])];
+}
+
 /// Espelha o `MonitorDto` do daemon (área útil de um monitor).
 export interface MonitorSnapshot {
   index: number;
