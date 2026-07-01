@@ -1,6 +1,9 @@
 # 0044 — Guard anti-re-agrupamento: "desagrupou pelo usuário, fica desagrupado"
 
-**Status:** ✅ Aceita
+**Status:** 🔄 Substituída por [0046](0046-agrupamento-so-manual-no-centro-e-fim-do-auto-colisao.md)
+(o guard fica **moot** e é removido: sem o agrupamento automático por colisão (aposentado pelo 0046), nada
+re-suga a janela às abas, então não há re-agrupamento a impedir. `_userUngrouped`/`userUngrouped` e
+`filterRegroupable` saem do código)
 (emenda [0041](0041-agrupamento-por-colisao-estrita.md) e
 [0042](0042-colisao-por-celula-resize-grab-gnome-e-drag-to-ungroup.md) — implementa o guard
 persistente "o usuário desagrupou, não re-agrupe" que ambos deixaram **explicitamente fora de escopo**;

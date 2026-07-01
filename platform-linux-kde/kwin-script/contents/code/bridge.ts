@@ -90,67 +90,6 @@ export function parseLayout(json: string): LayoutCommand[] {
   return commands;
 }
 
-/// Um grupo de janelas que COLIDEM na mesma célula (ADR 0041): o core sinaliza que `Σ mins rígidos >
-/// avail` colapsou a célula; a ponte agrupa `members` em abas (cada aba recebe a célula inteira e
-/// cabe). Os IDs são os de TRANSPORTE (uint do core) — a ponte os traduz para internalId estável.
-export interface CollisionGroup {
-  cellId: number;
-  members: number[];
-}
-
-/// Parse defensivo das colisões (`collisions`) do `layout_json` (ADR 0041): conjuntos de janelas cujo
-/// espaço físico colapsou, que a ponte agrupa em abas. Ausente (daemon antigo = comportamento 0040) ou
-/// malformado → vazio. Filtra grupos com < 2 membros (nada a agrupar).
-export function parseCollisions(json: string): CollisionGroup[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(json);
-  } catch {
-    return [];
-  }
-  if (Array.isArray(parsed) || typeof parsed !== 'object' || parsed === null) {
-    return [];
-  }
-  const raw = (parsed as Record<string, unknown>).collisions;
-  if (!Array.isArray(raw)) {
-    return [];
-  }
-  const out: CollisionGroup[] = [];
-  for (const entry of raw) {
-    if (typeof entry !== 'object' || entry === null) {
-      continue;
-    }
-    const rec = entry as Record<string, unknown>;
-    if (!isFiniteNumber(rec.cell_id) || !Array.isArray(rec.members)) {
-      continue;
-    }
-    const ids = rec.members.filter((m): m is number => isFiniteNumber(m));
-    if (ids.length >= 2) {
-      out.push({ cellId: rec.cell_id, members: ids });
-    }
-  }
-  return out;
-}
-
-/// Chave estável (ordem-insensível) de um conjunto de membros — guard de idempotência do agrupamento
-/// por colisão (ADR 0041): uma vez agrupado um conjunto, não re-agrupa enquanto ele persistir no sinal.
-/// Opera sobre ids ESTÁVEIS (string) no KDE.
-export function collisionKey(members: string[]): string {
-  return [...members].sort().join(',');
-}
-
-/// Filtra de uma colisão (ADR 0041) os membros que o usuário desagrupou EXPLICITAMENTE — guard
-/// persistente do ADR 0044 (simétrico ao "uma vez agrupado, fica agrupado": uma vez desagrupado pelo
-/// usuário, fica desagrupado até ele reagrupar ou a janela fechar). Preserva a ORDEM (o 1º remanescente
-/// é a âncora do `addToStack`). Se sobrarem < 2, devolve `[]` — o guard `≥ 2` do 0041 vale para o resto:
-/// a janela desagrupada fica de fora (cai no esmagamento impositivo, ADR 0040), enquanto vizinhos
-/// não-desagrupados ainda se agrupam entre si. Pura e determinística. Genérica (ids `string` no KDE,
-/// `number` no GNOME).
-export function filterRegroupable<T>(members: T[], userUngrouped: Set<T>): T[] {
-  const kept = members.filter((m) => !userUngrouped.has(m));
-  return kept.length >= 2 ? kept : [];
-}
-
 /// Decide se a maximização (ou fullscreen) de uma janela deve ser SUPRIMIDA por ser "nascida
 /// maximizada" no spawn (ADR 0043). Regra:
 ///   - `!enabled` ou `!isMaximized` → nunca suprime (nada a fazer / Tiling desligado);

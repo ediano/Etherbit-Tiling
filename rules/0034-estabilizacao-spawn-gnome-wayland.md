@@ -1,6 +1,9 @@
 # 0034 — Estabilização de spawn no GNOME/Wayland: micro-delay + sinais reais (paridade com KDE)
 
-**Status:** ✅ Aceita
+**Status:** ✅ Aceita; emendada por [0046](0046-agrupamento-so-manual-no-centro-e-fim-do-auto-colisao.md)
+(a cascata de settle no spawn — `_scheduleSpawnSettle`/`SPAWN_SETTLE_MS`, que re-lia o min-size e re-tilava
+3× por janela para alimentar o auto-agrupamento — é **removida**; ficam o `first-frame` (gatilho primário),
+o `size-changed` (rede reativa) e o **boot settle** `BOOT_SETTLE_MS` para janelas pré-`enable()`)
 (emenda [0033](0033-min-size-real-e-merge-em-abas-sob-overflow.md) — o sinal `first-frame` deixa de ser
 o gatilho **único/suficiente** do encaixe no spawn e passa a **primário com fallback** de estabilização;
 emenda [0031](0031-cascata-sempre-spawn-unmaximize-e-preview-translucido.md) — o spawn-unmaximize passa a

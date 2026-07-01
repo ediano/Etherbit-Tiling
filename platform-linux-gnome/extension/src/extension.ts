@@ -33,9 +33,6 @@ import {
   parseLayout,
   parseTabBars,
   parseDropped,
-  parseCollisions,
-  collisionKey,
-  filterRegroupable,
   shouldSuppressSpawnMaximize,
   isResizable,
   effectiveMinSize,
@@ -73,11 +70,10 @@ const KEY_TOGGLE_TABBING = 'toggle-tabbing';
 /// Período do loop que amostra o cursor durante o arrasto (~60 FPS).
 const DRAG_TICK_MS = 16;
 
-/// Micro-atrasos (ms) de estabilização do spawn no Wayland: o Mutter popula actor/maximização/min-size
-/// DEPOIS do `window-created` (ao contrário do KWin, síncrono). Escalonado para cobrir a variância de
-/// hardware sem fixar um valor frágil — a 1ª passada pega geometria/maximização, a última o min-size
-/// negociado tardiamente (apps de min grande, ex.: Ubuntu Store). Ver ADR 0034.
-const SPAWN_SETTLE_MS = [50, 150, 400];
+/// Micro-atrasos (ms) do boot settle: janelas já abertas ANTES do `enable()` não disparam
+/// `window-created`, então re-tilamos em offsets escalonados até o grid convergir. Escalonado para
+/// cobrir a variância de hardware sem fixar um valor frágil. Ver ADR 0034/0038.
+const BOOT_SETTLE_MS = [50, 150, 400];
 
 /// Janela de graça (µs) após o nascimento da janela em que QUALQUER maximização/fullscreen é tratada
 /// como "nascida no spawn" e desmaximizada incondicionalmente — mesmo que a janela já tenha sido tilada
@@ -105,10 +101,6 @@ interface Tracked {
   /// Instante monotônico (µs) do nascimento da janela — base da janela de graça de spawn-unmaximize
   /// (`SPAWN_MAXIMIZE_GRACE_US`, ADR 0043). Sai de cena junto com o `Tracked` no `unmanaged`.
   spawnAt: number;
-  /// Timers de estabilização do spawn (`GLib.timeout_add`). Auto-removidos ao disparar; cancelados no
-  /// `unmanaged`/`disable`. Multi-disparo (ver `SPAWN_SETTLE_MS`): a rede para o caso "ator ainda
-  /// inexistente em `window-created`" (Wayland), em que o `first-frame` nunca arma.
-  spawnSettleIds: number[];
 }
 
 export default class EtherbitTilingExtension extends Extension {
@@ -147,10 +139,10 @@ export default class EtherbitTilingExtension extends Extension {
   // settle recalcula assinatura idêntica → cai no dedup → nunca reaplica (ADR 0038).
   private _lastAppliedRects = new Map<number, Rect>();
   // Timers do "boot settle cascade": janelas abertas ANTES do `enable()` não disparam
-  // `window-created`, logo não ganham a rede `first-frame`/`size-changed`/`SPAWN_SETTLE_MS`. Um
-  // único relayout no boot pode ser descartado (daemon ou janelas ainda não prontos). Reagendamos
-  // nos mesmos offsets de `SPAWN_SETTLE_MS`; com o dedup gated por realização (ADR 0038) os ticks
-  // convergem sem loop. Cancelados no `disable()`.
+  // `window-created`, logo não ganham a rede `first-frame`/`size-changed`. Um único relayout no boot
+  // pode ser descartado (daemon ou janelas ainda não prontos). Reagendamos nos offsets de
+  // `BOOT_SETTLE_MS`; com o dedup gated por realização (ADR 0038) os ticks convergem sem loop.
+  // Cancelados no `disable()`.
   private _bootSettleIds: number[] = [];
 
   // Operações de restack (make_above/raise/unmake_above/minimize) ADIADAS para um "later" do Mutter
@@ -181,15 +173,6 @@ export default class EtherbitTilingExtension extends Extension {
   //  - `_lastMinSizes`: último min-size REAL por id — cobre o `get_min_size()` degradado (0,0) de
   //    janelas minimizadas (abas inativas), para o core expandir a célula ao min do membro grande.
   private _lastMinSizes = new Map<number, [number, number]>();
-  // Agrupamento automático por colisão (ADR 0041): conjuntos já agrupados (chave ordem-insensível de
-  // `collisionKey`), para não re-agrupar o mesmo conjunto a cada sync (idempotência/anti-oscilação).
-  // Uma entrada é descartada quando seu conjunto deixa de aparecer no sinal `collisions` do core.
-  private _mergedCollisions = new Set<string>();
-  // Guard anti-re-agrupamento (ADR 0044): ids que o usuário desagrupou EXPLICITAMENTE (menu ou
-  // drag-eject). Enquanto presente, o auto-agrupamento por colisão (ADR 0041) NÃO re-agrupa a janela —
-  // simétrico ao "uma vez agrupado, fica agrupado". Limpo ao fechar a janela ou ao reagrupar manual;
-  // não expira por tempo/sync. Ortogonal a `_mergedCollisions` (intenção por id vs idempotência por conjunto).
-  private _userUngrouped = new Set<number>();
   // Spawn-unmaximize (ciclo de vida de maximização): ids que o core JÁ tilou ao menos uma vez. Uma
   // janela que é maximizada e NUNCA foi tilada "nasceu maximizada" → forçamos `unmaximize` para ela
   // entrar na Distribuição Cíclica. Já uma janela tilada que o usuário maximiza manualmente é
@@ -197,6 +180,10 @@ export default class EtherbitTilingExtension extends Extension {
   private _everTiled = new Set<number>();
   // Barras de abas desenhadas (recriadas a cada relayout). Settings do gschema (atalhos).
   private _tabBars: St.Widget[] = [];
+  // Geometria (coords de stage) da barra de cada membro no ÚLTIMO layout, indexada por memberId. O
+  // `_finishTabDrag` decide "soltou dentro/fora da barra" por AQUI — não pelo ator efêmero da aba, que
+  // um relayout no meio do gesto destruiria (`get_parent()` viraria null e o gesto "não pegaria").
+  private _tabBarRects = new Map<number, { x: number; y: number; width: number; height: number }>();
   private _settings: Gio.Settings | null = null;
   // Menu de contexto da aba (clique direito → "Desagrupar Janela"). O manager faz o grab (fecha ao
   // clicar fora) a partir de um anchor ESTÁVEL — as barras de abas são efêmeras (recriadas no relayout).
@@ -450,8 +437,6 @@ export default class EtherbitTilingExtension extends Extension {
     this._stacks.clear();
     this._disabledGroups.clear();
     this._groupTiled.clear();
-    this._mergedCollisions.clear();
-    this._userUngrouped.clear();
 
     for (const id of this._displayIds) {
       global.display.disconnect(id);
@@ -480,10 +465,6 @@ export default class EtherbitTilingExtension extends Extension {
         } catch {
           // ator já destruído — ignora.
         }
-      }
-      // Cancela timers de estabilização do spawn ainda pendentes (evita timeout vivo após o teardown).
-      for (const sid of tracked.spawnSettleIds) {
-        GLib.source_remove(sid);
       }
       // Remove o efeito de cantos arredondados para deixar as janelas no estado original.
       const actor = window.get_compositor_private() as Clutter.Actor | null;
@@ -524,16 +505,11 @@ export default class EtherbitTilingExtension extends Extension {
               // ator já destruído — ignora.
             }
           }
-          // Timers de estabilização do spawn ainda pendentes (janela fechada em <400ms): cancela.
-          for (const sid of tracked.spawnSettleIds) {
-            GLib.source_remove(sid);
-          }
           this._tracked.delete(id);
         }
         removeFromOrder(this._order, id);
         removeIdFromStacks(this._stacks, id);
         this._stackHidden.delete(id);
-        this._userUngrouped.delete(id);
         this._lastMinSizes.delete(id);
         this._everTiled.delete(id);
         this._scheduleRelayout();
@@ -595,13 +571,7 @@ export default class EtherbitTilingExtension extends Extension {
         actor,
         firstFrameId,
         spawnAt: GLib.get_monotonic_time(),
-        spawnSettleIds: [],
       });
-      // Estabilização do spawn (Wayland): arma SEMPRE, inclusive quando `firstFrameId === 0` (ator
-      // ainda inexistente no `window-created`). Re-lê maximização/min-size já populados e re-tila — a
-      // rede determinística que o `first-frame` (gatilho primário, quando o ator existe) não cobre. É
-      // o que dá paridade com o KWin (síncrono) sem o síncrono que o Mutter não permite. Ver ADR 0034.
-      this._scheduleSpawnSettle(window, id);
     }
     // Nascimento: com o Tiling ativo, nenhuma janela inicia maximizada nem fullscreen (mesmo que o app peça).
     this._spawnUnmaximizeIfBorn(window, id);
@@ -645,12 +615,12 @@ export default class EtherbitTilingExtension extends Extension {
     });
   }
 
-  /// Boot settle cascade (ADR 0038): reagenda relayouts nos offsets de `SPAWN_SETTLE_MS` para as
+  /// Boot settle cascade (ADR 0038): reagenda relayouts nos offsets de `BOOT_SETTLE_MS` para as
   /// janelas abertas ANTES do `enable()`, que não disparam `window-created` e por isso não têm a rede
   /// per-janela. Cada tick só chama `_scheduleRelayout` (respeita debounce/supressão); o dedup gated
   /// por realização torna os ticks no-op assim que o grid converge — sem loop. Cancelado no `disable`.
   private _scheduleBootSettle(): void {
-    for (const delay of SPAWN_SETTLE_MS) {
+    for (const delay of BOOT_SETTLE_MS) {
       let source = 0;
       source = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delay, () => {
         const idx = this._bootSettleIds.indexOf(source);
@@ -661,44 +631,6 @@ export default class EtherbitTilingExtension extends Extension {
         return GLib.SOURCE_REMOVE;
       });
       this._bootSettleIds.push(source);
-    }
-  }
-
-  /// Estabilização do spawn no Wayland: agenda micro-relayouts escalonados (`SPAWN_SETTLE_MS`) para
-  /// quando o Mutter já populou actor/maximização/min-size — que NÃO estão prontos no `window-created`
-  /// (diferente do KWin, síncrono). Cada disparo revalida a janela, reaplica o spawn-unmaximize (lendo
-  /// o estado agora confirmado) e re-tila: o re-snapshot lê o `min_size` já negociado, então o core
-  /// sinaliza overflow e o Merge Fallback encaixa a janela como aba JÁ no nascimento (sem depender de
-  /// uma 3ª janela). Idempotente: usa `_scheduleRelayout` (respeita debounce/supressão) e o dedup por
-  /// `_lastLayoutSig` torna no-op os disparos após a convergência — sem loop. Ver ADR 0034.
-  private _scheduleSpawnSettle(window: Meta.Window, id: number): void {
-    const tracked = this._tracked.get(id);
-    if (!tracked) {
-      return;
-    }
-    for (const delay of SPAWN_SETTLE_MS) {
-      let source = 0;
-      source = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delay, () => {
-        // Auto-limpeza: remove o próprio id da lista (o callback é one-shot — `SOURCE_REMOVE`).
-        const current = this._tracked.get(id);
-        if (current) {
-          const idx = current.spawnSettleIds.indexOf(source);
-          if (idx !== -1) {
-            current.spawnSettleIds.splice(idx, 1);
-          }
-        }
-        // Janela fechada/destruída no intervalo: não toca em referência morta (espelha `_relayout`).
-        if (!current || !this._isWindowLive(window)) {
-          return GLib.SOURCE_REMOVE;
-        }
-        // Estado já populado: desmaximiza/desfullscreena se "nasceu preenchendo a tela" e re-tila com
-        // o min-size negociado.
-        this._spawnUnmaximizeIfBorn(window, id);
-        this._spawnUnfullscreenIfBorn(window, id);
-        this._scheduleRelayout();
-        return GLib.SOURCE_REMOVE;
-      });
-      tracked.spawnSettleIds.push(source);
     }
   }
 
@@ -779,55 +711,6 @@ export default class EtherbitTilingExtension extends Extension {
     // a tela — `total > aplicadas` deixa de parecer bug quando é só uma janela não-tileável (ex.:
     // desktop/DING) ou uma "nascida maximizada" ainda fora do grid (`excluded_maximized`).
     const dropped = parseDropped(layoutJson);
-    // Agrupamento automático por colisão (ADR 0041): o esmagamento impositivo (ADR 0040) entrega a
-    // TODA janela rígida ≥ seu mínimo, mas pode empurrar a vizinha para fora da borda (sobreposição).
-    // Quando o core sinaliza que uma célula COLAPSOU (`Σ mins rígidos > avail`), agrupamos os membros
-    // em abas — cada aba recebe a célula inteira e cabe, eliminando a sobreposição. O merge muda a
-    // topologia (vira `Node::Stack`) → a célula deixa de colapsar → o sinal some no próximo sync
-    // (idempotente). `_mergedCollisions` evita re-agrupar o mesmo conjunto. Permanece agrupado (sem
-    // auto-desagrupar): o usuário desagrupa pelo menu/Super+S; fechar uma das duas dissolve o stack.
-    const collisions = parseCollisions(layoutJson);
-    const snapById = new Map(snapshots.map((s) => [s.id, s]));
-    const liveCollisions = new Set(collisions.map((c) => collisionKey(c.members)));
-    for (const k of [...this._mergedCollisions]) {
-      if (!liveCollisions.has(k)) {
-        this._mergedCollisions.delete(k);
-      }
-    }
-    let didMerge = false;
-    for (const collision of collisions) {
-      // Chave de idempotência SEMPRE no conjunto ORIGINAL do sinal (casa com a limpeza de
-      // `liveCollisions` acima); o guard do usuário (ADR 0044) só decide O QUE agrupar, não a chave.
-      const key = collisionKey(collision.members);
-      if (this._mergedCollisions.has(key)) {
-        continue;
-      }
-      // Remove os membros que o usuário desagrupou de propósito: eles não voltam às abas sozinhos
-      // (ficam no esmagamento). Se sobrarem < 2, nada a agrupar nesta célula.
-      const regroupable = filterRegroupable(collision.members, this._userUngrouped);
-      const [target, ...rest] = regroupable;
-      if (target === undefined) {
-        continue;
-      }
-      const snap = snapById.get(target);
-      if (!snap) {
-        continue;
-      }
-      const groupKey = orderKey(snap.monitor, snap.workspace);
-      let changed = false;
-      for (const member of rest) {
-        changed = addToStack(this._stacks, groupKey, target, member) || changed;
-      }
-      if (changed) {
-        this._mergedCollisions.add(key);
-        didMerge = true;
-      }
-    }
-    if (didMerge) {
-      // A topologia mudou: re-sincroniza para o core materializar os stacks e recalcular sem colapso.
-      this._scheduleRelayout();
-      return;
-    }
 
     // Abas inativas a ocultar (minimizar): todo membro de stack que não é o ativo.
     const shouldHide = new Set<number>();
@@ -1270,9 +1153,6 @@ export default class EtherbitTilingExtension extends Extension {
         // Centro de uma janela-alvo → empilha em abas (merge): estado de stacks local, o GNOME conserva
         // abas e NÃO manda `center` como MoveWindow. O core não muta a árvore neste caso.
         addToStack(this._stacks, key, targetId, this._draggedId);
-        // Reagrupou manualmente → revoga o guard anti-re-agrupamento (ADR 0044): a janela volta a ser
-        // elegível ao auto-agrupamento por colisão.
-        this._userUngrouped.delete(this._draggedId);
       } else if (hot && hot.scope === 'global' && hot.dropZone !== 'none') {
         // Gap vazio: 50% pela borda (ou maximizar no centro) como nó principal — não exige janela-alvo.
         moveWindow(hot.dropZone, 'global');
@@ -1388,6 +1268,7 @@ export default class EtherbitTilingExtension extends Extension {
   /// simples e barato (só existem quando há stacks). Cada aba mostra ícone + título nativos.
   private _rebuildTabBars(tabBars: TabBar[], byId: Map<number, Meta.Window>): void {
     this._destroyTabBars();
+    this._tabBarRects.clear();
     for (const bar of tabBars) {
       const box = new St.BoxLayout({
         style_class: 'etherbit-tab-bar',
@@ -1412,9 +1293,15 @@ export default class EtherbitTilingExtension extends Extension {
       box.set_position(bar.x, bar.y);
       // Clamp ≥ 1px: uma barra degenerada (0×0) vinda do core alimentaria o framebuffer do Cogl com
       // `set_size` e dispararia `cogl_framebuffer_set_viewport: assertion 'width > 0 && height > 0'`.
-      box.set_size(Math.max(1, bar.width), Math.max(1, bar.height));
+      const bw = Math.max(1, bar.width);
+      const bh = Math.max(1, bar.height);
+      box.set_size(bw, bh);
       Main.layoutManager.uiGroup.add_child(box);
       this._tabBars.push(box);
+      // Geometria por membro para o drag-to-ungroup sobreviver a um relayout (ver `_finishTabDrag`).
+      for (const memberId of bar.members) {
+        this._tabBarRects.set(memberId, { x: bar.x, y: bar.y, width: bw, height: bh });
+      }
     }
   }
 
@@ -1512,11 +1399,9 @@ export default class EtherbitTilingExtension extends Extension {
     const menu = new PopupMenu.PopupMenu(source, 0.5, St.Side.TOP);
     menu.addAction('Desagrupar Janela', () => {
       if (removeIdFromStacks(this._stacks, memberId)) {
-        // Guard anti-re-agrupamento (ADR 0044): o usuário desagrupou de propósito → não deixe a
-        // colisão sugá-la de volta às abas.
-        this._userUngrouped.add(memberId);
         // Ejeta pelo core reancorando o grupo NO LUGAR (ADR 0045) — sem o teleporte que capturava
-        // janelas externas quando o `reconcile` reinseria o novo âncora ciclicamente.
+        // janelas externas quando o `reconcile` reinseria o novo âncora ciclicamente. Sem
+        // auto-agrupamento (ADR 0046), nada re-suga a janela às abas.
         this._ejectFromStack(memberId);
       }
     });
@@ -1592,11 +1477,12 @@ export default class EtherbitTilingExtension extends Extension {
       return;
     }
     const [x, y] = global.get_pointer();
-    const box = drag.tab.get_parent();
-    if (box) {
-      const [bx, by] = box.get_transformed_position();
-      const [bw, bh] = box.get_transformed_size();
-      const inside = x >= bx && x < bx + bw && y >= by && y < by + bh;
+    // Decide dentro/fora pela geometria da barra no ÚLTIMO layout (coords de stage), não pelo ator da
+    // aba: um relayout no meio do gesto destruiria a guia e `get_parent()` viraria null, quebrando a
+    // detecção ("o gesto não pega"). A barra vem do core em coords absolutas — batem com `get_pointer`.
+    const bar = this._tabBarRects.get(drag.memberId);
+    if (bar) {
+      const inside = x >= bar.x && x < bar.x + bar.width && y >= bar.y && y < bar.y + bar.height;
       if (inside) {
         this._releaseSuppression();
         return; // soltou dentro da barra → clique normal (troca de aba), não ejeta
@@ -1610,8 +1496,8 @@ export default class EtherbitTilingExtension extends Extension {
   /// (ADR 0045). O core (zona `eject`) faz `detach_window`: o grupo remanescente REancora NO LUGAR (slot
   /// preservado) e o `reconcile` seguinte reinsere a janela ejetada pela distribuição cíclica. Assim o
   /// grupo não teleporta nem captura janela externa (o bug do "efeito ímã"). O chamador já fez
-  /// `removeIdFromStacks` + `_userUngrouped.add`; aqui só materializa no core e persiste a árvore. Sem
-  /// daemon (`_call` devolve null), cai no `_scheduleRelayout` — degradação suave.
+  /// `removeIdFromStacks`; aqui só materializa no core e persiste a árvore. Sem daemon (`_call` devolve
+  /// null), cai no `_scheduleRelayout` — degradação suave.
   private _ejectFromStack(memberId: number): void {
     const res = this._call((p) =>
       p.MoveWindowSync(
@@ -1642,9 +1528,6 @@ export default class EtherbitTilingExtension extends Extension {
     if (!removeIdFromStacks(this._stacks, memberId)) {
       return; // não estava agrupada (nada a ejetar)
     }
-    // Guard anti-re-agrupamento (ADR 0044): arrastou a aba para fora → a janela não volta às abas
-    // sozinha por colisão (até o usuário reagrupar ou fechar).
-    this._userUngrouped.add(memberId);
     if (hot.dropZone === 'none') {
       this._ejectFromStack(memberId); // solto no vazio: reancora no lugar + reinsere ciclicamente (ADR 0045)
       return;

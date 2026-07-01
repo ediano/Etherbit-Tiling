@@ -114,6 +114,10 @@ struct MenuSurface {
 /// uma guia (o `activate` fica ADIADO até o `Release`, para distinguir clique de arraste). Guarda a
 /// superfície da barra (para casar os eventos sob o grab implícito do ponteiro), a ação `activate` adiada
 /// e a geometria GLOBAL da faixa (origem + tamanho), usada para resolver o ponto de soltura.
+///
+/// `last_pos` acompanha a ÚLTIMA posição de `Motion` (local à barra) sob o grab: o `Release` isolado é
+/// frágil (alguns compositores clampeiam a posição do release à superfície), então a decisão
+/// "soltou dentro/fora" usa a trajetória rastreada, não só o ponto do release (ADR 0046).
 struct DragState {
     surface: wl_surface::WlSurface,
     activate: TabAction,
@@ -121,6 +125,7 @@ struct DragState {
     bar_y: i32,
     bar_w: i32,
     bar_h: i32,
+    last_pos: (f64, f64),
 }
 
 struct App {
@@ -362,6 +367,7 @@ impl App {
                                 bar_y: ts.view.y,
                                 bar_w: ts.view.w,
                                 bar_h: ts.view.h,
+                                last_pos: pos,
                             });
                         }
                     }
@@ -381,9 +387,11 @@ impl App {
     }
 
     /// Fim do arraste de uma guia (ADR 0042). Sob o grab implícito do ponteiro, os eventos seguem na
-    /// superfície da barra onde o `Press` começou, então `pos` é LOCAL a ela (podendo sair de `[0,w]×
-    /// [0,h]`). Se soltou FORA da faixa → ejeta com as coordenadas GLOBAIS de soltura (`ungroup_drag`);
-    /// se soltou dentro → era um clique: enfileira o `activate` adiado.
+    /// superfície da barra onde o `Press` começou, com posição LOCAL a ela (podendo sair de `[0,w]×
+    /// [0,h]`). A decisão "dentro/fora" usa a ÚLTIMA posição rastreada (`drag.last_pos`, atualizada pelos
+    /// `Motion`), preferindo-a ao ponto do `Release` — que alguns compositores clampeiam à superfície,
+    /// tornando a ejeção inativa (ADR 0046). Fora da faixa → ejeta com coords GLOBAIS (`ungroup_drag`);
+    /// dentro → era um clique: enfileira o `activate` adiado.
     fn on_pointer_release(&mut self, surface: &wl_surface::WlSurface, pos: (f64, f64)) {
         let Some(drag) = self.drag.take() else {
             return;
@@ -392,18 +400,28 @@ impl App {
             // Release numa superfície diferente (raro sob grab): trata como clique cancelado.
             return;
         }
-        let px = pos.0 as i32;
-        let py = pos.1 as i32;
-        let outside = px < 0 || px >= drag.bar_w || py < 0 || py >= drag.bar_h;
-        if outside {
-            self.enqueue_action(TabAction::ungroup_drag(
+        // "Fora da barra?" para um ponto local (origem 0,0; dentro = `[0,w)×[0,h)`).
+        let is_outside = |p: (f64, f64)| -> bool {
+            let (x, y) = (p.0 as i32, p.1 as i32);
+            x < 0 || x >= drag.bar_w || y < 0 || y >= drag.bar_h
+        };
+        // A trajetória rastreada (Motion) é a fonte confiável; o ponto do release entra como reforço
+        // (cobre compositores que só reportam a posição no release). Ejeta se QUALQUER um indicar fora.
+        let drop = if is_outside(drag.last_pos) {
+            Some(drag.last_pos)
+        } else if is_outside(pos) {
+            Some(pos)
+        } else {
+            None
+        };
+        match drop {
+            Some((x, y)) => self.enqueue_action(TabAction::ungroup_drag(
                 drag.activate.stack_id,
                 drag.activate.member_id,
-                drag.bar_x + px,
-                drag.bar_y + py,
-            ));
-        } else {
-            self.enqueue_action(drag.activate);
+                drag.bar_x + x as i32,
+                drag.bar_y + y as i32,
+            )),
+            None => self.enqueue_action(drag.activate),
         }
     }
 
@@ -728,6 +746,16 @@ impl PointerHandler for App {
             match e.kind {
                 PointerEventKind::Press { button, .. } => {
                     self.on_pointer_press(&e.surface, e.position, button);
+                }
+                // Rastreia a trajetória do arraste sob o grab implícito: guarda a última posição de
+                // motion na barra que detém o `drag` (a posição pode sair de `[0,w]×[0,h]`). O `Release`
+                // usa isto em vez de confiar só no ponto do release (ADR 0046, drag-to-ungroup).
+                PointerEventKind::Motion { .. } => {
+                    if let Some(drag) = self.drag.as_mut() {
+                        if drag.surface == e.surface {
+                            drag.last_pos = e.position;
+                        }
+                    }
                 }
                 // Fim do arraste/clique adiado da guia (ADR 0042).
                 PointerEventKind::Release { .. } => {

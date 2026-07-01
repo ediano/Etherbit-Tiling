@@ -1,6 +1,9 @@
 # 0041 — Agrupamento automático por colisão estrita (reverte B/C do 0040; mantém esmagamento, menu e spawn)
 
-**Status:** ✅ Aceita
+**Status:** 🔄 Substituída por [0046](0046-agrupamento-so-manual-no-centro-e-fim-do-auto-colisao.md)
+(o agrupamento **automático** por colisão é **aposentado**: o core deixa de emitir `collisions` e o
+agrupamento passa a ser **só manual** (drop no centro geométrico) — o auto-merge era a raiz do sequestro de
+janelas externas ao desagrupar. O esmagamento cooperativo de min-size ([0040](0040-esmagamento-impositivo-e-menu-de-contexto-kde.md)) permanece)
 (emendada por [0042](0042-colisao-por-celula-resize-grab-gnome-e-drag-to-ungroup.md) — o sinal
 `collisions` ganha um **segundo gatilho por célula** (`child_below_min`: folha cujo slot resolvido fica
 abaixo do mínimo na costura `Σ ≈ avail`), reusando o mesmo caminho e o guard `≥ 2`; a Regra II das abas
