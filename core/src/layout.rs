@@ -3289,6 +3289,30 @@ mod tests {
     }
 
     #[test]
+    fn stack_expande_ao_min_do_membro_ainda_que_inativo() {
+        // Regressão do bug de NÃO-EXPANSÃO (agrupamento manual GNOME): a célula de abas cresce até o
+        // MAIOR min dos membros mesmo quando o membro grande é o NÃO-ativo (na ponte, a aba inativa é
+        // minimizada e teria min degradado — aqui o core recebe o min real e deve expandir). Stack
+        // [1(grande), 2(pequeno)] active=2 ao lado do vizinho 3: a track do stack satura no seu min.
+        let area = area_1000x800();
+        let ids = [1u64, 2, 3];
+        let stacks = vec![StackDescriptor { member_ids: vec![1, 2], active_id: 2 }];
+        let tree = reconcile(&LayoutTree::default(), &ids, &stacks, None, &area, &opts());
+        let windows = vec![win_min(1, 700, 0), win_min(2, 100, 0), win_min(3, 100, 0)];
+        let res = compute_constrained(&tree, &area, &opts(), &stacks, &ids, &windows, None);
+        // O stack rende o slot sob a aba ATIVA (id 2), com a largura da célula do grupo. Essa largura
+        // deve alcançar o min agregado (700, vindo do membro 1 inativo/"minimizado"), ainda que a aba
+        // visível seja a pequena. Sem o min real do membro grande, a célula ficaria em ~500 (metade da
+        // tela) — o sintoma "não expande nada".
+        let cell = res.rects.iter().find(|r| r.id == 2).expect("aba ativa rende o slot do stack");
+        assert!(
+            cell.width >= 700,
+            "célula de abas expandiu ao min do membro grande (700), got {}",
+            cell.width
+        );
+    }
+
+    #[test]
     fn resize_abaixo_do_min_satura_geometria_mas_preserva_o_resize() {
         // Encolher a 1 abaixo do seu min: a geometria satura no mínimo, mas o resize (ratio) valeu.
         let area = area_1000x800();

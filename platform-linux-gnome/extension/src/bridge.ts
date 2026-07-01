@@ -62,6 +62,26 @@ export function isResizable(opts: {
   return !isFixedSize(opts);
 }
 
+/// Último `min-size` REAL conhecido de uma janela, memoizado por id. `Meta.Window.get_min_size()` de
+/// uma janela MINIMIZADA/não-mapeada no Wayland devolve `(0,0)`/stale — e como as abas inativas de um
+/// grupo são minimizadas, o membro grande (ex.: Firefox alvo) chegaria ao core com min zerado e a
+/// célula de abas não expandiria (`build_min_sizes` agrega `max` sobre valores degradados). Enquanto a
+/// janela está VISÍVEL e reporta `min > 0`, gravamos o valor no cache; quando a fonte degrada
+/// (minimizada), devolvemos o memoizado. Um `raw` zerado de janela VISÍVEL não polui o cache (a janela
+/// simplesmente não tem mínimo). Pura e sem dependência de GJS (testável em vitest).
+export function effectiveMinSize(
+  cache: Map<number, [number, number]>,
+  id: number,
+  raw: [number, number],
+  minimized: boolean,
+): [number, number] {
+  if (!minimized && (raw[0] > 0 || raw[1] > 0)) {
+    cache.set(id, raw);
+    return raw;
+  }
+  return cache.get(id) ?? [0, 0];
+}
+
 /// Espelha o `MonitorDto` do daemon (área útil de um monitor).
 export interface MonitorSnapshot {
   index: number;
