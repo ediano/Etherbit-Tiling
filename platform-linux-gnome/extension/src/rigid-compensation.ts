@@ -37,8 +37,9 @@ export interface CompWorkArea {
 }
 
 /// Entrada da compensação. `mins` só carrega janelas com mínimo > 0 (ausente = flexível); `monitorOf`
-/// e `workAreas` localizam cada rect no seu monitor; `gap` é o espaçamento configurado (reservado
-/// para políticas de espaçamento; a reabsorção de gap já emerge das arestas dos rects do core).
+/// e `workAreas` localizam cada rect no seu monitor; `gap` é o espaçamento configurado, tratado como
+/// BARREIRA FÍSICA INVIOLÁVEL (ADR 0049): preservado como margem externa (Fase I) e interna (Fase II),
+/// nunca colapsado — salvo overflow real de hardware, onde cede por último e só o necessário.
 export interface CompensationInput {
   commands: CompRect[];
   mins: Map<number, RigidMin>;
@@ -95,20 +96,25 @@ function sharePerpBand(a: CompRect, b: CompRect, axis: Axis): boolean {
   return Math.min(aHi, bHi) - Math.max(aLo, bLo) > BAND_EPS;
 }
 
-/// Quanto `a` e `b` se sobrepõem NO EIXO principal (positivo = sobreposição em px).
-function mainOverlap(a: CompRect, b: CompRect, axis: Axis): number {
+/// Separação COM SINAL entre `a` e `b` no eixo principal, olhando apenas para as bordas voltadas uma
+/// para a outra: negativo = sobreposição (px); positivo = espaço livre entre elas (px). É o que permite
+/// tratar o `gap` como barreira: uma folga menor que `gap` (mesmo sem overlap) já viola o espaçamento.
+function separationBetween(a: CompRect, b: CompRect, axis: Axis): number {
   const aLo = mainPos(a, axis);
   const aHi = aLo + mainSize(a, axis);
   const bLo = mainPos(b, axis);
   const bHi = bLo + mainSize(b, axis);
-  return Math.min(aHi, bHi) - Math.max(aLo, bLo);
+  return Math.max(aLo, bLo) - Math.min(aHi, bHi);
 }
 
-/// Faz o vizinho `o` CEDER a `w` no eixo, removendo a sobreposição: empurra a borda de `o` encostada em
-/// `w` até a borda oposta de `w`, MANTENDO a borda de `o` mais distante de `w` (a compressão fica local
-/// no lado de `o` voltado para `w`). Encolhe o vizinho (nível 3) e, no limite, o trunca (nível 4) — a
-/// rígida vencedora nunca é tocada. `clampGeometry` na aplicação garante ≥ 1px; aqui já limitamos a 1.
-function yieldNeighbor(w: CompRect, o: CompRect, axis: Axis): void {
+/// Faz o vizinho `o` CEDER a `w` no eixo, deixando um `gap` INTEIRO entre eles: empurra a borda de `o`
+/// voltada para `w` até `gap` px além da borda oposta de `w`, MANTENDO a borda de `o` mais distante de
+/// `w` (a compressão fica local no lado de `o` voltado para `w`). O `gap` é INVIOLÁVEL nos casos
+/// normais — encolhe o vizinho (nível 3) preservando o espaçamento. Em overflow REAL de hardware (duas
+/// rígidas somam mais que a tela), o `Math.max(1, …)` clampa o vizinho a 1px: aí, e só aí, o gap
+/// efetivo cede POR ÚLTIMO (o vizinho já esgotou o próprio corpo). A rígida vencedora nunca é tocada.
+/// `clampGeometry` na aplicação também garante ≥ 1px.
+function yieldNeighbor(w: CompRect, o: CompRect, axis: Axis, gap: number): void {
   const wLo = mainPos(w, axis);
   const wHi = wLo + mainSize(w, axis);
   const oLo = mainPos(o, axis);
@@ -117,16 +123,16 @@ function yieldNeighbor(w: CompRect, o: CompRect, axis: Axis): void {
   const wCenter = wLo + mainSize(w, axis) / 2;
 
   if (oCenter >= wCenter) {
-    // `o` está DEPOIS de `w` (à direita/abaixo): recua a borda inicial de `o` para `wHi`, preservando a
-    // borda final `oHi`. Encolhe `o` exatamente pela sobreposição.
-    const newLo = Math.max(oLo, wHi);
+    // `o` está DEPOIS de `w` (à direita/abaixo): recua a borda inicial de `o` para `wHi + gap`,
+    // preservando a borda final `oHi`. Deixa o gap inteiro; só encolhe abaixo dele em overflow real.
+    const newLo = Math.max(oLo, wHi + gap);
     const newSize = Math.max(1, oHi - newLo);
     setMainPos(o, axis, oHi - newSize);
     setMainSize(o, axis, newSize);
   } else {
-    // `o` está ANTES de `w` (à esquerda/acima): recua a borda final de `o` para `wLo`, preservando a
-    // borda inicial `oLo`.
-    const newHi = Math.min(oHi, wLo);
+    // `o` está ANTES de `w` (à esquerda/acima): recua a borda final de `o` para `wLo - gap`,
+    // preservando a borda inicial `oLo`.
+    const newHi = Math.min(oHi, wLo - gap);
     const newSize = Math.max(1, newHi - oLo);
     setMainSize(o, axis, newSize);
     // borda inicial (oLo) preservada; a borda final recuou.
@@ -134,21 +140,26 @@ function yieldNeighbor(w: CompRect, o: CompRect, axis: Axis): void {
 }
 
 /// Compensa UM eixo dos rects de UM monitor (mutação in-place). Fase I: trava cada rígida no seu mínimo
-/// e a desloca para dentro da work area (recupera a margem externa). Fase II: resolve sobreposições — o
-/// rect de MENOR prioridade cede ao de maior (rígida > flexível; entre iguais, menor índice de entrada
-/// vence). Vizinhos cedem preservando a borda distante, então nenhum novo overlap é criado no lado
-/// oposto — uma passada por vencedor converge. Determinístico: ordem fixa por prioridade e índice.
+/// e a desloca para dentro da work area PRESERVANDO o gap externo (a margem que o core teria deixado).
+/// Fase II: garante o gap INTERNO — o rect de MENOR prioridade cede ao de maior (rígida > flexível;
+/// entre iguais, menor índice de entrada vence) sempre que a folga entre eles for menor que `gap`.
+/// Vizinhos cedem preservando a borda distante, então nenhum novo overlap é criado no lado oposto — uma
+/// passada por vencedor converge. Determinístico: ordem fixa por prioridade e índice; `gap` inviolável.
 function compensateAxis(
   rects: CompRect[],
   mins: Map<number, RigidMin>,
   wa: CompWorkArea,
   axis: Axis,
+  gap: number,
 ): void {
   const lo = waLo(wa, axis);
   const size = waSize(wa, axis);
   const hi = lo + size;
+  // Limites internos: a borda útil recuada do `gap` inviolável em cada lado.
+  const loInner = lo + gap;
+  const hiInner = hi - gap;
 
-  // Fase I — trava no mínimo + desloca para dentro da work area.
+  // Fase I — trava no mínimo + desloca para dentro da work area (preservando o gap externo).
   for (const r of rects) {
     const m = minOn(mins.get(r.id), axis);
     if (m <= 0) continue;
@@ -157,8 +168,17 @@ function compensateAxis(
     if (s > size) s = size; // mínimo maior que a tela: clamp de hardware (não há como caber além disso).
     setMainSize(r, axis, s);
     let p = mainPos(r, axis);
-    if (p + s > hi) p = hi - s; // transbordou a borda final → ancora à borda.
-    if (p < lo) p = lo; // transbordou a borda inicial → ancora à borda.
+    if (s <= size - 2 * gap) {
+      // Cabe com os DOIS gaps externos: só reancora se transbordar os limites internos (não mexe numa
+      // janela que já está confortavelmente dentro — preserva idempotência).
+      if (p + s > hiInner) p = hiInner - s; // transbordou a borda final → ancora com gap externo.
+      if (p < loInner) p = loInner; // transbordou a borda inicial → ancora com gap externo.
+    } else {
+      // Cabe no monitor mas não com os dois gaps completos: o gap externo cede POR ÚLTIMO e só o
+      // necessário — mantém a rígida inteira, dentro do monitor, ancorando o mais próximo possível dela.
+      if (p + s > hi) p = hi - s;
+      if (p < lo) p = lo;
+    }
     setMainPos(r, axis, p);
   }
 
@@ -170,15 +190,16 @@ function compensateAxis(
   });
   const rank = (id: number): number => rankOf.get(id) ?? Number.MAX_SAFE_INTEGER;
 
-  // Fase II — vencedores em ordem de prioridade fazem os vizinhos de menor prioridade cederem.
+  // Fase II — vencedores em ordem de prioridade fazem os vizinhos de menor prioridade cederem sempre que
+  // a folga entre eles for menor que o `gap` (sobreposição OU aproximação demais violam o espaçamento).
   const winners = [...rects].sort((a, b) => rank(a.id) - rank(b.id));
   for (const w of winners) {
     for (const o of rects) {
       if (o === w) continue;
       if (rank(o.id) <= rank(w.id)) continue; // `o` tem prioridade ≥ `w`: não cede a ele.
       if (!sharePerpBand(w, o, axis)) continue;
-      if (mainOverlap(w, o, axis) <= 0) continue;
-      yieldNeighbor(w, o, axis);
+      if (separationBetween(w, o, axis) >= gap) continue; // já há gap suficiente → não mexe.
+      yieldNeighbor(w, o, axis, gap);
     }
   }
 }
@@ -189,7 +210,7 @@ function compensateAxis(
 /// borda no vizinho). PURA e DETERMINÍSTICA (mesma entrada → mesma saída, para o dedup de layout da
 /// ponte não oscilar). Não muta a entrada. `mins` vazio → devolve os comandos inalterados (no-op).
 export function compensateRigidWindows(input: CompensationInput): CompRect[] {
-  const { commands, mins, workAreas, monitorOf } = input;
+  const { commands, mins, workAreas, monitorOf, gap } = input;
   if (mins.size === 0) {
     return commands; // caminho comum (sem janelas rígidas): nada a fazer.
   }
@@ -219,8 +240,8 @@ export function compensateRigidWindows(input: CompensationInput): CompRect[] {
     const hasRigid = rects.some((r) => mins.has(r.id));
     if (!hasRigid) continue;
     // Eixos independentes. X primeiro, depois Y (as operações de X só tocam x/width; as de Y, y/height).
-    compensateAxis(rects, mins, wa, 'x');
-    compensateAxis(rects, mins, wa, 'y');
+    compensateAxis(rects, mins, wa, 'x', gap);
+    compensateAxis(rects, mins, wa, 'y', gap);
   }
 
   // Arredonda para inteiro (o core entrega i32; o /2 dos centros pode gerar subpixel) — evita que a

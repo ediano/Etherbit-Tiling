@@ -40,6 +40,8 @@ export interface IndicatorHandlers {
   /// Compensação física de min-size (ADR 0048) — persiste no GSettings da extensão (GNOME-only), NÃO
   /// no daemon (compartilhado com o KDE). Por isso não passa por `_call`/D-Bus como os demais.
   onRigidCompensation: (enabled: boolean) => void;
+  /// Spawn-Time Merge (ADR 0049) — idem: persiste no GSettings da extensão (GNOME-only).
+  onSpawnMerge: (enabled: boolean) => void;
 }
 
 class EtherbitIndicatorImpl extends PanelMenu.Button {
@@ -48,6 +50,7 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
   private _gapSpin!: SpinRow;
   private _radiusSpin!: SpinRow;
   private _rigidSwitch!: PopupMenu.PopupSwitchMenuItem;
+  private _spawnMergeSwitch!: PopupMenu.PopupSwitchMenuItem;
   // Evita reentrância: ao refletir a config do daemon não queremos re-disparar handlers.
   private _syncing = false;
 
@@ -96,6 +99,15 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
       if (!this._syncing) this._handlers.onRigidCompensation(state);
     });
     this._menu.addMenuItem(this._rigidSwitch);
+
+    // Spawn-Time Merge (ADR 0049): switch GNOME-only. Estado inicial e mudanças externas
+    // (gsettings/dconf) chegam por `setSpawnMerge`, sem disparar o handler.
+    this._spawnMergeSwitch = new PopupMenu.PopupSwitchMenuItem(_('spawnMerge.label'), true);
+    this._keepOpenOnToggle(this._spawnMergeSwitch);
+    this._spawnMergeSwitch.connect('toggled', (_item, state) => {
+      if (!this._syncing) this._handlers.onSpawnMerge(state);
+    });
+    this._menu.addMenuItem(this._spawnMergeSwitch);
   }
 
   /// Faz um switch ALTERNAR sem fechar o painel. O `activate` padrão de um item de menu emite o sinal
@@ -123,6 +135,14 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
   setRigidCompensation(enabled: boolean): void {
     this._syncing = true;
     this._rigidSwitch.setToggleState(enabled);
+    this._syncing = false;
+  }
+
+  /// Reflete o estado do toggle de Spawn-Time Merge (ADR 0049) sem disparar o handler. Fonte: GSettings
+  /// da extensão (não o daemon), então é sincronizado à parte de `sync(config)`.
+  setSpawnMerge(enabled: boolean): void {
+    this._syncing = true;
+    this._spawnMergeSwitch.setToggleState(enabled);
     this._syncing = false;
   }
 

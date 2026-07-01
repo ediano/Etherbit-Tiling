@@ -31,6 +31,8 @@ import {
   learnObservedMin,
   mergeMin,
   geometryConverged,
+  pickResident,
+  shouldMergeOnSpawn,
   type Stack,
   type TreeNode,
   type WindowSnapshot,
@@ -728,5 +730,128 @@ describe('mergeMin', () => {
     expect(mergeMin([300, 0], [0, 260])).toEqual([300, 260]);
     expect(mergeMin([0, 0], [360, 260])).toEqual([360, 260]);
     expect(mergeMin([400, 500], [360, 260])).toEqual([400, 500]);
+  });
+});
+
+// ---- Spawn-Time Merge (ADR 0049, Regra II) ----
+
+describe('pickResident', () => {
+  const rect = (x: number, y: number, width: number, height: number): Rect => ({
+    x,
+    y,
+    width,
+    height,
+  });
+
+  it('escolhe o rect (pré-spawn) de maior interseção com a nova janela', () => {
+    // Layout anterior: dois blocos lado a lado. A nova janela nasceu invadindo o bloco ESQUERDO (id 1).
+    const prev = new Map<number, Rect>([
+      [1, rect(0, 0, 500, 800)],
+      [2, rect(500, 0, 500, 800)],
+    ]);
+    expect(pickResident(prev, 3, rect(0, 0, 250, 800))).toBe(1);
+  });
+
+  it('ignora a própria janela nova ao procurar o residente', () => {
+    const prev = new Map<number, Rect>([
+      [3, rect(0, 0, 500, 800)], // rect da própria nova janela (já committado num ciclo anterior)
+      [1, rect(0, 0, 250, 800)],
+    ]);
+    expect(pickResident(prev, 3, rect(0, 0, 250, 800))).toBe(1);
+  });
+
+  it('sem sobreposição → null (primeira janela do grupo / gap vazio)', () => {
+    const prev = new Map<number, Rect>([[1, rect(0, 0, 100, 100)]]);
+    expect(pickResident(prev, 3, rect(500, 500, 100, 100))).toBeNull();
+  });
+
+  it('mapa vazio → null', () => {
+    expect(pickResident(new Map(), 3, rect(0, 0, 100, 100))).toBeNull();
+  });
+
+  it('empate de área → menor id (determinístico)', () => {
+    const prev = new Map<number, Rect>([
+      [5, rect(0, 0, 100, 100)],
+      [2, rect(0, 0, 100, 100)],
+    ]);
+    expect(pickResident(prev, 3, rect(0, 0, 100, 100))).toBe(2);
+  });
+});
+
+describe('shouldMergeOnSpawn', () => {
+  const rect = (x: number, y: number, width: number, height: number): Rect => ({
+    x,
+    y,
+    width,
+    height,
+  });
+
+  it('quadrante horizontal: usa o min de LARGURA; não cabem com o gap → agrupa', () => {
+    // Quadrante 600×400 (largura ≥ altura → split no eixo X). 300+300+8 = 608 > 600 → agrupa.
+    expect(
+      shouldMergeOnSpawn({
+        residentPrevRect: rect(0, 0, 600, 400),
+        newMin: [300, 0],
+        residentMin: [300, 0],
+        gap: 8,
+      }),
+    ).toBe(true);
+  });
+
+  it('quadrante horizontal: cabem com o gap → NÃO agrupa (split normal)', () => {
+    // 280+280+8 = 568 ≤ 600 → cabe.
+    expect(
+      shouldMergeOnSpawn({
+        residentPrevRect: rect(0, 0, 600, 400),
+        newMin: [280, 0],
+        residentMin: [280, 0],
+        gap: 8,
+      }),
+    ).toBe(false);
+  });
+
+  it('quadrante vertical: usa o min de ALTURA', () => {
+    // Quadrante 400×600 (altura > largura → split no eixo Y). 300+300+8 = 608 > 600 → agrupa.
+    expect(
+      shouldMergeOnSpawn({
+        residentPrevRect: rect(0, 0, 400, 600),
+        newMin: [0, 300],
+        residentMin: [0, 300],
+        gap: 8,
+      }),
+    ).toBe(true);
+  });
+
+  it('ignora o min do eixo PERPENDICULAR (herdado inteiro pelo split)', () => {
+    // Quadrante horizontal: só o min de largura conta. Um min de ALTURA enorme não força agrupamento.
+    expect(
+      shouldMergeOnSpawn({
+        residentPrevRect: rect(0, 0, 600, 400),
+        newMin: [100, 9999],
+        residentMin: [100, 0],
+        gap: 8,
+      }),
+    ).toBe(false);
+  });
+
+  it('o gap inviolável entra na conta: aumentar o gap pode virar a decisão', () => {
+    const base = {
+      residentPrevRect: rect(0, 0, 600, 400),
+      newMin: [290, 0] as [number, number],
+      residentMin: [290, 0] as [number, number],
+    };
+    expect(shouldMergeOnSpawn({ ...base, gap: 0 })).toBe(false); // 580 ≤ 600
+    expect(shouldMergeOnSpawn({ ...base, gap: 40 })).toBe(true); // 620 > 600
+  });
+
+  it('residente também rígido e apertado → agrupa (critério simétrico)', () => {
+    expect(
+      shouldMergeOnSpawn({
+        residentPrevRect: rect(0, 0, 1000, 400),
+        newMin: [600, 0],
+        residentMin: [450, 0],
+        gap: 8,
+      }),
+    ).toBe(true); // 600+450+8 = 1058 > 1000
   });
 });

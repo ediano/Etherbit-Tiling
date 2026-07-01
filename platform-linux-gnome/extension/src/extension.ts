@@ -54,6 +54,8 @@ import {
   toggleGroupDisabled,
   addToStack,
   setActiveMember,
+  pickResident,
+  shouldMergeOnSpawn,
   type Stack,
   type TabBar,
   type TreeNode,
@@ -187,6 +189,12 @@ export default class EtherbitTilingExtension extends Extension {
   // entrar na Distribuição Cíclica. Já uma janela tilada que o usuário maximiza manualmente é
   // PRESERVADA (seu slot volta ao desmaximizar — Unmaximize Recovery). Limpo no `unmanaged`.
   private _everTiled = new Set<number>();
+  // Spawn-Time Merge (ADR 0049, Regra II): ids de janelas recém-criadas ainda PENDENTES de avaliação de
+  // encaixe no spawn. Se o quadrante de destino não comporta o min-size (descontado o gap inviolável), a
+  // janela é agrupada nas abas do residente em vez de abrir um split apertado. ONE-SHOT: a decisão ocorre
+  // uma vez por janela e a flag é consumida — nunca re-armada, então uma janela desagrupada manualmente
+  // depois NÃO é re-sugada (o que diferencia do auto-colisão aposentado pelo ADR 0046). Limpo no `unmanaged`.
+  private _pendingSpawnEval = new Set<number>();
   // Barras de abas desenhadas (recriadas a cada relayout). Settings do gschema (atalhos).
   private _tabBars: St.Widget[] = [];
   // Geometria (coords de stage) da barra de cada membro no ÚLTIMO layout, indexada por memberId. O
@@ -196,6 +204,8 @@ export default class EtherbitTilingExtension extends Extension {
   private _settings: Gio.Settings | null = null;
   // Handler do `changed::rigid-compensation` no GSettings (toggle GNOME-only da compensação, ADR 0048).
   private _settingsChangedId = 0;
+  // Handler do `changed::spawn-merge` no GSettings (toggle GNOME-only do Spawn-Time Merge, ADR 0049).
+  private _spawnMergeChangedId = 0;
   // Menu de contexto da aba (clique direito → "Desagrupar Janela"). O manager faz o grab (fecha ao
   // clicar fora) a partir de um anchor ESTÁVEL — as barras de abas são efêmeras (recriadas no relayout).
   private _tabMenuManager: PopupMenu.PopupMenuManager | null = null;
@@ -324,6 +334,9 @@ export default class EtherbitTilingExtension extends Extension {
       // compartilhado com o KDE) — é isso que mantém o daemon/KDE alheios a esta correção. O
       // `changed::rigid-compensation` reflete o estado de volta no switch e re-tila.
       onRigidCompensation: (enabled) => this._settings?.set_boolean('rigid-compensation', enabled),
+      // Toggle GNOME-only (ADR 0049): idem — persiste no GSettings da extensão. O
+      // `changed::spawn-merge` reflete o estado de volta no switch e re-tila.
+      onSpawnMerge: (enabled) => this._settings?.set_boolean('spawn-merge', enabled),
     });
     Main.panel.addToStatusArea(this.uuid, this._indicator);
 
@@ -397,6 +410,12 @@ export default class EtherbitTilingExtension extends Extension {
         this._indicator?.setRigidCompensation(this._rigidCompensationEnabled());
         this._scheduleRelayout();
       });
+      // Toggle do Spawn-Time Merge (ADR 0049): idem — reflete no switch e re-tila ao alternar.
+      this._indicator?.setSpawnMerge(this._spawnMergeEnabled());
+      this._spawnMergeChangedId = this._settings.connect('changed::spawn-merge', () => {
+        this._indicator?.setSpawnMerge(this._spawnMergeEnabled());
+        this._scheduleRelayout();
+      });
     } catch (error) {
       console.error(`Etherbit Tiling: falha ao registrar atalhos: ${error}`);
     }
@@ -445,6 +464,10 @@ export default class EtherbitTilingExtension extends Extension {
       if (this._settingsChangedId) {
         this._settings.disconnect(this._settingsChangedId);
         this._settingsChangedId = 0;
+      }
+      if (this._spawnMergeChangedId) {
+        this._settings.disconnect(this._spawnMergeChangedId);
+        this._spawnMergeChangedId = 0;
       }
       this._settings = null;
     }
@@ -540,6 +563,7 @@ export default class EtherbitTilingExtension extends Extension {
         this._lastMinSizes.delete(id);
         this._observedMins.delete(id);
         this._everTiled.delete(id);
+        this._pendingSpawnEval.delete(id);
         this._scheduleRelayout();
       });
       // (Des)maximizar/fullscreen muda quais janelas entram no grid (Recovery): re-tila. Os sinais só
@@ -600,6 +624,9 @@ export default class EtherbitTilingExtension extends Extension {
         firstFrameId,
         spawnAt: GLib.get_monotonic_time(),
       });
+      // Marca para avaliação de Spawn-Time Merge (ADR 0049): consumida no primeiro relayout em que a
+      // janela já tem slot (Pass 1) e o residente tem rect pré-spawn. Só janelas com rastreio novo.
+      this._pendingSpawnEval.add(id);
     }
     // Nascimento: com o Tiling ativo, nenhuma janela inicia maximizada nem fullscreen (mesmo que o app peça).
     this._spawnUnmaximizeIfBorn(window, id);
@@ -759,9 +786,85 @@ export default class EtherbitTilingExtension extends Extension {
     if (!res) {
       return;
     }
-    const layoutJson = res[0];
+    let layoutJson = res[0];
 
-    // Persiste as árvores reconciliadas pelo core para reenviar no próximo sync (estabilidade).
+    // ---- Spawn-Time Merge preventivo (ADR 0049, Regra II, GNOME-only, atrás do toggle `spawn-merge`) ----
+    // No surgimento de uma janela, se o quadrante de destino (descontado o gap INVIOLÁVEL) não comporta o
+    // min-size que o app exige, agrupamos a nova janela nas abas do RESIDENTE em vez de abrir um split
+    // apertado que a faria flutuar/sobrepor. Roda ANTES da compensação/dedup/apply. Quando algo é agrupado,
+    // uma 2ª passada SÍNCRONA de `SyncWindows` devolve a geometria final (sem paint intermediário → zero
+    // flutuação). One-shot: a flag `_pendingSpawnEval` é consumida na decisão e nunca re-armada — uma
+    // janela desagrupada manualmente depois NÃO é re-sugada (diferencial vs. o auto-colisão do ADR 0046).
+    let didSpawnMerge = false;
+    if (this._spawnMergeEnabled() && this._pendingSpawnEval.size > 0) {
+      // Rects do Pass 1 (o slot que o core deu a cada janela) e ids que o core NÃO tilou (diagnóstico).
+      const pass1Rects = new Map<number, Rect>();
+      for (const c of parseLayout(layoutJson)) {
+        pass1Rects.set(c.id, { x: c.x, y: c.y, width: c.width, height: c.height });
+      }
+      const droppedIds = new Set(parseDropped(layoutJson).map((d) => d.id));
+      const snapById = new Map(snapshots.map((s) => [s.id, s] as const));
+      for (const newId of [...this._pendingSpawnEval]) {
+        const snap = snapById.get(newId);
+        if (!snap) {
+          // Janela fora do workspace ativo neste ciclo: reavalia quando aparecer (NÃO consome a flag).
+          continue;
+        }
+        const newRect = pass1Rects.get(newId);
+        if (!newRect) {
+          // Sem slot no Pass 1: se o core a descartou (não-tileável), consome; senão aguarda (min tarde).
+          if (droppedIds.has(newId)) {
+            this._pendingSpawnEval.delete(newId);
+          }
+          continue;
+        }
+        // A partir daqui a janela tem slot → decidimos AGORA e consumimos a flag one-shot.
+        this._pendingSpawnEval.delete(newId);
+        const key = orderKey(snap.monitor, snap.workspace);
+        if (this._disabledGroups.has(key)) {
+          continue; // grupo com tiling desligado (flutuante): não agrupa.
+        }
+        // Residente = janela cujo slot PRÉ-spawn (`_lastAppliedRects`, ainda intacto aqui) a nova invadiu.
+        const residentId = pickResident(this._lastAppliedRects, newId, newRect);
+        if (residentId === null) {
+          continue; // primeira janela do grupo / gap vazio: não há residente para agrupar.
+        }
+        const residentSnap = snapById.get(residentId);
+        const residentPrevRect = this._lastAppliedRects.get(residentId);
+        if (!residentSnap || !residentPrevRect) {
+          continue; // residente sumiu (fechou/mudou de ws) → nada a agrupar.
+        }
+        if (
+          shouldMergeOnSpawn({
+            residentPrevRect,
+            newMin: this._effectiveMin(snap),
+            residentMin: this._effectiveMin(residentSnap),
+            gap: this._config.gap,
+          })
+        ) {
+          addToStack(this._stacks, key, residentId, newId);
+          didSpawnMerge = true;
+        }
+      }
+    }
+
+    if (didSpawnMerge) {
+      // Pass 2: reenvia com o estado de abas mutado. O core recebe a árvore PRÉ-Pass-1 (`_trees` ainda não
+      // reatribuída) + a nova janela como membro de stack → colapsa-a no slot do residente, sem criar o
+      // split. A árvore devolvida (com `{stack}`) é a que persistimos abaixo — nunca a folha do Pass 1.
+      const res2 = this._call((p) =>
+        p.SyncWindowsSync(
+          serializeWindows(snapshots),
+          serializeMonitors(this._collectMonitors()),
+          serializeState(this._stacks, this._disabledGroups, this._trees, focusedId),
+        ),
+      );
+      if (res2) {
+        layoutJson = res2[0];
+      }
+    }
+
+    // Persiste as árvores reconciliadas pelo core (do Pass 2, se houve merge) para reenviar no próximo sync.
     this._trees = parseLayoutTrees(layoutJson);
 
     const rawCommands = parseLayout(layoutJson);
@@ -778,10 +881,7 @@ export default class EtherbitTilingExtension extends Extension {
       const mins = new Map<number, RigidMin>();
       const monitorOf = new Map<number, number>();
       for (const snap of snapshots) {
-        // Min EFETIVO = maior entre o `get_min_size()` real (quando disponível) e o piso APRENDIDO pela
-        // recusa do cliente (`_observedMins`) — aditivo, funciona mesmo se o método real degradar (0,0).
-        const observed = this._observedMins.get(snap.id) ?? [0, 0];
-        const [minWidth, minHeight] = mergeMin([snap.min_width, snap.min_height], observed);
+        const [minWidth, minHeight] = this._effectiveMin(snap);
         if (minWidth > 0 || minHeight > 0) {
           mins.set(snap.id, { minWidth, minHeight });
         }
@@ -2062,6 +2162,25 @@ export default class EtherbitTilingExtension extends Extension {
     } catch {
       return true;
     }
+  }
+
+  /// `true` se o Spawn-Time Merge (ADR 0049, Regra II) está ligado. Lê a chave GSettings GNOME-only
+  /// `spawn-merge` (default ligado — válvula de segurança, no padrão do ADR 0048). Defensivo: sem
+  /// `_settings` (ou chave ausente num schema antigo), assume ligado.
+  private _spawnMergeEnabled(): boolean {
+    try {
+      return this._settings?.get_boolean('spawn-merge') ?? true;
+    } catch {
+      return true;
+    }
+  }
+
+  /// Min-size EFETIVO de uma janela (ADR 0048): maior por eixo entre o `get_min_size()` real do
+  /// snapshot e o piso APRENDIDO pela recusa do cliente Wayland em encolher (`_observedMins`). Aditivo —
+  /// funciona mesmo se o método real degradar para (0,0). Compartilhado pela compensação e pelo spawn-merge.
+  private _effectiveMin(snap: WindowSnapshot): [number, number] {
+    const observed = this._observedMins.get(snap.id) ?? [0, 0];
+    return mergeMin([snap.min_width, snap.min_height], observed);
   }
 
   /// Áreas úteis de cada monitor (já descontadas barras/docks do Shell).

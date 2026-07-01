@@ -46,12 +46,14 @@ describe('compensateRigidWindows', () => {
     expect(result).toEqual(commands);
   });
 
-  it('2) rígida cabe recuperando o gap interno, sem tocar no vizinho', () => {
-    // Dois slots com gap de 8px (496|504). A rígida esquerda tem min 500 → cresce 496→500, come 4px do
-    // gap, mas ainda não encosta no vizinho (504) → vizinho intacto.
-    const commands = [cmd(1, 0, 0, 496, 800), cmd(2, 504, 0, 496, 800)];
+  it('2) rígida cresce até o mínimo SEM comer o gap: o vizinho cede para preservá-lo', () => {
+    // Layout com outer_gap=8 e inner_gap=8 (como o core entrega): slot 8|488 · gap 8 · 504|488, borda
+    // final em 992 (outer_gap 8 à direita). A rígida esquerda tem min 500 → cresce 488→500 (borda final
+    // 508). ADR 0049: o gap é INVIOLÁVEL — em vez de a rígida comer o gap, o vizinho flexível recua para
+    // restaurar os 8px (nova borda inicial 508+8=516), preservando o espaçamento simétrico.
+    const commands = [cmd(1, 8, 0, 488, 800), cmd(2, 504, 0, 488, 800)];
     const result = compensateRigidWindows(input({ commands, mins: [[1, 500, 0]], gap: 8 }));
-    expect(result).toEqual([cmd(1, 0, 0, 500, 800), cmd(2, 504, 0, 496, 800)]);
+    expect(result).toEqual([cmd(1, 8, 0, 500, 800), cmd(2, 516, 0, 476, 800)]);
   });
 
   it('3) rígida não cabe no slot → encolhe o vizinho flexível, sem sobrepor', () => {
@@ -128,5 +130,56 @@ describe('compensateRigidWindows', () => {
     const commands = [cmd(1, 0, 0, 300, 600)];
     const result = compensateRigidWindows(input({ commands, mins: [[1, 2000, 0]] }));
     expect(result).toEqual([cmd(1, 0, 0, 1000, 600)]); // clampado à largura do monitor
+  });
+
+  it('10) Fase I preserva o gap EXTERNO ao reancorar uma rígida que transborda (ADR 0049)', () => {
+    // Rígida encostando na direita e crescendo além dela: min 400 numa work area de 1000, gap 8. A borda
+    // final deve parar em `hi - gap` = 992 (não rente a 1000) → x = 992 - 400 = 592, mantendo os 8px.
+    const commands = [cmd(1, 700, 0, 250, 800)];
+    const result = compensateRigidWindows(input({ commands, mins: [[1, 400, 0]], gap: 8 }));
+    expect(result).toEqual([cmd(1, 592, 0, 400, 800)]);
+  });
+
+  it('11) gatilho por PROXIMIDADE < gap: vizinho sem overlap, mas colado, é empurrado ao gap cheio', () => {
+    // Rígida (8|500, borda 508) e vizinho (512|480). Não há sobreposição, mas a folga é só 4px (< gap 8):
+    // isso já viola o espaçamento → o vizinho recua para 508+8=516, restaurando os 8px inteiros.
+    const commands = [cmd(1, 8, 0, 500, 800), cmd(2, 512, 0, 480, 800)];
+    const result = compensateRigidWindows(input({ commands, mins: [[1, 500, 0]], gap: 8 }));
+    expect(result).toEqual([cmd(1, 8, 0, 500, 800), cmd(2, 516, 0, 476, 800)]);
+  });
+
+  it('12) overflow de hardware com gap: vencedora intacta e com gap; perdedora truncada', () => {
+    const wa: CompWorkArea = { x: 0, y: 0, width: 500, height: 800 };
+    // Duas rígidas de min 300 numa tela de 500 (impossível caber ambas). Vencedora (id 1) mantém 300 e o
+    // gap de 8px; perdedora (id 2) trunca abaixo do próprio mínimo para não invadir o gap (borda final em
+    // 492 = outer_gap 8; borda inicial em 316 = 308 + gap; largura 176). O gap só cederia em último caso.
+    const commands = [cmd(1, 0, 0, 300, 800), cmd(2, 200, 0, 300, 800)];
+    const result = compensateRigidWindows(
+      input({
+        commands,
+        mins: [
+          [1, 300, 0],
+          [2, 300, 0],
+        ],
+        workAreas: [[0, wa]],
+        gap: 8,
+      }),
+    );
+    expect(result).toEqual([cmd(1, 8, 0, 300, 800), cmd(2, 316, 0, 176, 800)]);
+  });
+
+  it('13) determinístico e idempotente COM gap (o dedup da ponte não oscila)', () => {
+    const build = (): CompensationInput =>
+      input({
+        commands: [cmd(1, 8, 0, 500, 800), cmd(2, 512, 0, 480, 800)],
+        mins: [[1, 500, 0]],
+        gap: 8,
+      });
+    const first = compensateRigidWindows(build());
+    const second = compensateRigidWindows(build());
+    expect(second).toEqual(first);
+    // Alimentar a própria saída de volta é ponto-fixo (gap já preservado → nada muda).
+    const again = compensateRigidWindows(input({ commands: first, mins: [[1, 500, 0]], gap: 8 }));
+    expect(again).toEqual(first);
   });
 });

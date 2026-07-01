@@ -893,6 +893,66 @@ export function toggleGroupDisabled(disabled: Set<string>, key: string): boolean
   return true;
 }
 
+// ---- Spawn-Time Merge: agrupamento preventivo no surgimento da janela (ADR 0049, GNOME-only) ----
+//
+// Quando uma janela nasce num quadrante cujo espaço útil (descontado o gap INVIOLÁVEL) não comporta o
+// min-size que o app exige, agrupá-la nas abas do residente é melhor que abrir um split apertado que
+// forçaria flutuação/sobreposição. A DECISÃO é PURA (testável sem GJS); a orquestração (duas passadas
+// de SyncWindows, one-shot por janela) vive em extension.ts. Não há sinal de colisão do core (aposentado
+// pelo 0046) — o esmagamento impositivo do 0040 segue intacto; aqui só reordenamos o estado de abas.
+
+/// Área de interseção (px²) entre dois retângulos; `0` se não se tocam.
+function intersectionArea(a: Rect, b: Rect): number {
+  const w = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+  const h = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+  return w > 0 && h > 0 ? w * h : 0;
+}
+
+/// "Residente" do quadrante em que a nova janela nasceu: entre os rects committados ANTES do spawn
+/// (`prev` = `_lastAppliedRects`, exceto a própria nova janela), aquele cuja interseção com `newRect` é
+/// máxima e > 0 — o território que a nova janela invadiu ao ser encaixada pelo core. `null` se nenhum
+/// sobrepõe (primeira janela do grupo / gap vazio). Determinístico: empate de área desfeito pelo menor
+/// id. PURA e read-only (não muta `prev`).
+export function pickResident(prev: Map<number, Rect>, newId: number, newRect: Rect): number | null {
+  let bestId: number | null = null;
+  let bestArea = 0;
+  for (const [id, rect] of prev) {
+    if (id === newId) continue;
+    const area = intersectionArea(newRect, rect);
+    if (area <= 0) continue;
+    if (area > bestArea || (area === bestArea && (bestId === null || id < bestId))) {
+      bestArea = area;
+      bestId = id;
+    }
+  }
+  return bestId;
+}
+
+/// Entrada da decisão de agrupamento preventivo no spawn (ADR 0049, Regra II).
+export interface SpawnFitInput {
+  /// Rect que o residente ocupava ANTES do spawn (o quadrante inteiro, antes do split).
+  residentPrevRect: Rect;
+  /// Min-size `[width, height]` efetivo da nova janela e do residente (px de frame; `0` = flexível).
+  newMin: [number, number];
+  residentMin: [number, number];
+  /// Gap configurado (barreira inviolável): entra na conta do espaço útil.
+  gap: number;
+}
+
+/// Decide se a nova janela deve ser AGRUPADA em abas no residente em vez de abrir um novo split (ADR
+/// 0049, Regra II). O core racha o quadrante ao meio no eixo do LADO MAIOR do slot do residente (espelha
+/// o BSP: `rect.w >= rect.h`). Critério ROBUSTO: agrupa quando a nova E o residente NÃO coexistem nesse
+/// eixo mantendo o gap inteiro entre elas — `newMin + residentMin + gap > extensão do quadrante`. Só o
+/// eixo do split importa (o perpendicular é herdado inteiro). PURA e determinística (testável sem GJS).
+export function shouldMergeOnSpawn(input: SpawnFitInput): boolean {
+  const { residentPrevRect, newMin, residentMin, gap } = input;
+  const horizontal = residentPrevRect.width >= residentPrevRect.height;
+  const extent = horizontal ? residentPrevRect.width : residentPrevRect.height;
+  const newMinAxis = horizontal ? newMin[0] : newMin[1];
+  const residentMinAxis = horizontal ? residentMin[0] : residentMin[1];
+  return newMinAxis + residentMinAxis + gap > extent;
+}
+
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
