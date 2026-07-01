@@ -34,6 +34,7 @@ import {
   sortByOrder,
   toggleGroupDisabled,
   removeIdFromStacks,
+  isStackMember,
   addToStack,
   setActiveMember,
   toggleStackGroup,
@@ -963,6 +964,36 @@ function onMoveFinish(win: KWinWindow): void {
   const cursor = workspace.cursorPos;
   const target = windowUnderPointObj(cursor.x, cursor.y, dragged);
   const draggedT = lastTransportOf.get(dragged);
+
+  // Desagrupar pela BARRA DE TÍTULO NATIVA (ADR 0047): se a janela arrastada é membro de um stack,
+  // arrastá-la pela decoração do KWin ejeta SÓ ela e a reposiciona onde foi solta — igual ao arraste
+  // da aba no overlay. Reusa o MESMO caminho do `ungroup_drag` (traduz `draggedT` ANTES de mutar,
+  // `dropEjectedAt` resolve a zona pelo cursor global, com fallback `ejectFromStack` — zona `eject`,
+  // reancora no lugar, ADR 0045). Sem isso o `stacks` Map re-materializava o grupo no próximo `retile`
+  // ("agrupamento travado"). Exceção `reGroupCenter`: center sobre OUTRA janela segue reagrupando
+  // (`addToStack`, abaixo). Janela SOLTA (não é membro) cai no fluxo normal de move/tile intocado.
+  if (isStackMember(stacks, dragged)) {
+    const reGroupCenter =
+      hot !== null &&
+      hot.scope === 'local' &&
+      hot.dropZone === 'center' &&
+      target !== null &&
+      windowId(target) !== dragged;
+    if (!reGroupCenter) {
+      const ejected = removeIdFromStacks(stacks, dragged);
+      // `dropEjectedAt` recomputa a zona pelo cursor e devolve `false` se não houver zona útil
+      // ('none') — fonte única da verdade, igual ao ramo `ungroup_drag` do overlay.
+      const placed = draggedT !== undefined && dropEjectedAt(dragged, draggedT, cursor.x, cursor.y);
+      if (!placed && ejected) {
+        if (draggedT !== undefined) {
+          ejectFromStack(dragged, draggedT);
+        } else {
+          retile();
+        }
+      }
+      return;
+    }
+  }
 
   // MoveWindow (ADR 0028): IDs como string decimal (o `callDBus` do KWin não empacota uint64 — ADR
   // 0009); `scope` define local (split do slot do alvo / swap no centro) vs global (50% / maximizar).

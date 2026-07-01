@@ -833,6 +833,21 @@ export function removeIdFromStacks(stacks: Map<string, Stack[]>, id: string): bo
   return changed;
 }
 
+/// `true` se `id` é membro de ALGUM stack (varre todos os grupos — a janela pode estar num stack de
+/// outro monitor/workspace). Consulta PURA e read-only (não muta o Map, ao contrário de
+/// `removeIdFromStacks`): usada para decidir se um arraste pela barra de título nativa deve ejetar
+/// (desagrupar) em vez de seguir o fluxo normal de move/tile.
+export function isStackMember(stacks: Map<string, Stack[]>, id: string): boolean {
+  for (const list of stacks.values()) {
+    for (const s of list) {
+      if (s.members.includes(id)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /// Empilha o `draggedId` na janela-alvo do grupo `key`. Se o alvo já está num stack, adiciona-o a ele;
 /// senão cria `[targetId, draggedId]`. O recém-agrupado vira a aba ativa. Remove-o de stacks anteriores.
 export function addToStack(

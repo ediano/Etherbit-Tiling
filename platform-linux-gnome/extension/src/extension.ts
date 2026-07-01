@@ -46,6 +46,7 @@ import {
   appendToOrder,
   removeFromOrder,
   removeIdFromStacks,
+  isStackMember,
   sortByOrder,
   toggleStackGroup,
   toggleGroupDisabled,
@@ -1135,6 +1136,19 @@ export default class EtherbitTilingExtension extends Extension {
         `[etherbit][drag] soltar: zona=${hot?.dropZone ?? 'none'} escopo=${hot?.scope ?? '-'}` +
           ` arrastada=${this._draggedId} alvo=${target ? targetId : 'nenhum'}`,
       );
+      // Desagrupar pela BARRA DE TÍTULO NATIVA (ADR 0047): se a janela arrastada é membro de um stack,
+      // arrastá-la pela decoração do Mutter ejeta SÓ ela e a reposiciona onde foi solta — igual ao
+      // arraste da aba. Reusa `_ejectTabAt` (que faz `removeIdFromStacks` + `resolveHotZone`, com
+      // fallback zona `eject`/reancora no lugar — ADR 0045); sem isso o bridge re-materializava o stack
+      // no próximo relayout ("agrupamento travado"). Exceção: center sobre OUTRA janela (`isMerge`)
+      // segue reagrupando (`addToStack`, abaixo); center no gap (global) passa e ejeta+maximiza.
+      const isMerge = hot?.scope === 'local' && !!target && hot.dropZone === 'center';
+      if (isStackMember(this._stacks, this._draggedId) && !isMerge) {
+        this._ejectTabAt(this._draggedId, x, y);
+        this._resizeStart = null;
+        this._stopDrag();
+        return;
+      }
       const moveWindow = (zoneStr: string, scope: 'local' | 'global'): void => {
         const res = this._call((p) =>
           p.MoveWindowSync(
@@ -1366,9 +1380,17 @@ export default class EtherbitTilingExtension extends Extension {
 
     // Botão DIREITO → menu de contexto. Botão ESQUERDO → inicia o possível arraste-para-desagrupar (ADR
     // 0042): se soltar FORA da barra, a janela é ejetada e reposicionada; se soltar dentro, o `clicked`
-    // do `activateBtn` cuida da troca de aba (o arraste só age no release fora). PROPAGA o esquerdo para
-    // o `activateBtn` continuar recebendo o clique normal.
-    tab.connect('button-press-event', (_actor: Clutter.Actor, event: Clutter.Event) => {
+    // do `activateBtn` cuida da troca de aba (o arraste só age no release fora).
+    //
+    // Fase de CAPTURA no `tab` (pai), NÃO `button-press-event` em bubble: o `activateBtn` (`St.Button`)
+    // consome o press PRIMÁRIO na sua vfunc antes de subir, então um handler de bubble no `tab` nunca
+    // via o primário — só o secundário (não mascarado) subia e abria o menu, enquanto o arraste ficava
+    // morto. O `captured-event` roda no pai ANTES do filho; retornar EVENT_PROPAGATE deixa o primário
+    // seguir ao `activateBtn`, preservando o clique normal (troca de aba se soltar dentro).
+    tab.connect('captured-event', (_actor: Clutter.Actor, event: Clutter.Event) => {
+      if (event.type() !== Clutter.EventType.BUTTON_PRESS) {
+        return Clutter.EVENT_PROPAGATE;
+      }
       const button = event.get_button();
       if (button === Clutter.BUTTON_SECONDARY) {
         this._openTabContextMenu(tab, memberId);

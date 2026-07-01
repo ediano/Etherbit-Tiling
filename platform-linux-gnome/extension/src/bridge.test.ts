@@ -17,6 +17,7 @@ import {
   serializeState,
   serializeTarget,
   removeIdFromStacks,
+  isStackMember,
   toggleStackGroup,
   addToStack,
   setActiveMember,
@@ -343,6 +344,23 @@ describe('stacks: remoção, toggle de grupo e serialização', () => {
     expect(removeIdFromStacks(stacks, 2)).toBe(true);
     // sobrou 1 membro → stack dissolvido → grupo vazio removido
     expect(stacks.has(orderKey(0, 0))).toBe(false);
+  });
+
+  it('isStackMember detecta membro em qualquer grupo, sem mutar (ADR 0047)', () => {
+    const stacks = new Map<string, Stack[]>([
+      [orderKey(0, 0), [{ members: [1, 2], active: 2 }]],
+      [orderKey(1, 0), [{ members: [8, 9], active: 8 }]], // outro monitor/workspace
+    ]);
+    expect(isStackMember(stacks, 1)).toBe(true); // membro do 1º grupo
+    expect(isStackMember(stacks, 9)).toBe(true); // membro de OUTRO grupo
+    expect(isStackMember(stacks, 5)).toBe(false); // janela solta (não agrupada)
+    // read-only: o Map não muda
+    expect(stacks.get(orderKey(0, 0))).toEqual([{ members: [1, 2], active: 2 }]);
+    expect(stacks.size).toBe(2);
+  });
+
+  it('isStackMember é false para Map vazio', () => {
+    expect(isStackMember(new Map<string, Stack[]>(), 1)).toBe(false);
   });
 
   it('toggleGroupDisabled liga e desliga o grupo', () => {

@@ -22,6 +22,7 @@ import {
   parseTabBars,
   addToStack,
   removeIdFromStacks,
+  isStackMember,
   setActiveMember,
   toggleStackGroup,
   buildTabBarViews,
@@ -383,6 +384,23 @@ describe('Merge Fallback / abas (ADR 0033, paridade com GNOME — ids string)', 
     const stacks = new Map<string, Stack[]>([[key, [{ members: ['a', 'b'], active: 'b' }]]]);
     expect(removeIdFromStacks(stacks, 'b')).toBe(true);
     expect(stacks.has(key)).toBe(false); // sobrou 1 membro → dissolve, grupo vazio removido
+  });
+
+  it('isStackMember detecta membro em qualquer grupo, sem mutar (ADR 0047)', () => {
+    const stacks = new Map<string, Stack[]>([
+      [orderKey(0, 0), [{ members: ['a', 'b'], active: 'b' }]],
+      [orderKey(1, 0), [{ members: ['h', 'i'], active: 'h' }]], // outro monitor/workspace
+    ]);
+    expect(isStackMember(stacks, 'a')).toBe(true); // membro do 1º grupo
+    expect(isStackMember(stacks, 'i')).toBe(true); // membro de OUTRO grupo
+    expect(isStackMember(stacks, 'z')).toBe(false); // janela solta (não agrupada)
+    // read-only: o Map não muda
+    expect(stacks.get(orderKey(0, 0))).toEqual([{ members: ['a', 'b'], active: 'b' }]);
+    expect(stacks.size).toBe(2);
+  });
+
+  it('isStackMember é false para Map vazio', () => {
+    expect(isStackMember(new Map<string, Stack[]>(), 'a')).toBe(false);
   });
 
   it('setActiveMember troca a aba ativa do stack que contém o membro', () => {
