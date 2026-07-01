@@ -182,6 +182,11 @@ export default class EtherbitTilingExtension extends Extension {
   private _tabMenu: PopupMenu.PopupMenu | null = null;
   private _tabMenuAnchor: St.Widget | null = null;
 
+  // Arraste de uma guia para FORA da barra (drag-to-ungroup, ADR 0042). Nasce no press esquerdo sobre a
+  // guia; `captured-event` no stage observa o release. Soltar fora da barra ejeta e reposiciona a janela.
+  private _tabDrag: { memberId: number; tab: St.Widget } | null = null;
+  private _tabDragCapturedId = 0;
+
   // Estado do arrasto + HUD de "eixos limpos" (1–2 células: split, bloco ou merge).
   private _dragSource = 0;
   private _draggedId = 0;
@@ -328,7 +333,11 @@ export default class EtherbitTilingExtension extends Extension {
     this._displayIds.push(
       global.display.connect('grab-op-end', (_display, window) => {
         this._onGrabEnd(window);
-        this._scheduleRelayout();
+        // O drop/resize já mutou a árvore (`_trees`); libera a supressão do grab e dispara UM relayout
+        // coalescido (settle de 50 ms) com a geometria nova. `_relayoutPending` garante o disparo mesmo
+        // que nenhum `size-changed` tenha chegado (ex.: mover sem redimensionar).
+        this._relayoutPending = true;
+        this._releaseSuppression();
       }),
     );
 
@@ -414,6 +423,7 @@ export default class EtherbitTilingExtension extends Extension {
 
     // Encerra um arrasto em andamento (ex.: troca de extensão durante o drag) sem deixar lixo.
     this._stopDrag();
+    this._endTabDrag();
     this._order.clear();
     this._stacks.clear();
     this._disabledGroups.clear();
@@ -1009,6 +1019,16 @@ export default class EtherbitTilingExtension extends Extension {
     if (!window || !this._ensureProxy()) {
       return;
     }
+    // Suprime o relayout enquanto o grab (mover OU redimensionar) está ativo: durante o arraste da
+    // borda o `size-changed` (ADR 0038, sem latch one-shot) reagendaria um relayout que reaplica a
+    // geometria ANTIGA e puxa a janela de volta ao slot — o gesto do usuário é anulado e, no fim, o
+    // delta lido é ≈0 (o resize "não pega"). Cancela qualquer settle em corrida para a supressão valer
+    // pela duração inteira do grab; é liberada no `grab-op-end`.
+    if (this._settleSource) {
+      GLib.source_remove(this._settleSource);
+      this._settleSource = 0;
+    }
+    this._suppressRelayout = true;
     if (op === Meta.GrabOp.MOVING) {
       this._stopDrag(); // encerra qualquer arrasto pendente antes de iniciar outro
       this._resizeStart = null;
@@ -1415,11 +1435,18 @@ export default class EtherbitTilingExtension extends Extension {
     });
     tab.add_child(closeBtn);
 
-    // Clique com o botão DIREITO em qualquer ponto da guia → menu de contexto.
+    // Botão DIREITO → menu de contexto. Botão ESQUERDO → inicia o possível arraste-para-desagrupar (ADR
+    // 0042): se soltar FORA da barra, a janela é ejetada e reposicionada; se soltar dentro, o `clicked`
+    // do `activateBtn` cuida da troca de aba (o arraste só age no release fora). PROPAGA o esquerdo para
+    // o `activateBtn` continuar recebendo o clique normal.
     tab.connect('button-press-event', (_actor: Clutter.Actor, event: Clutter.Event) => {
-      if (event.get_button() === Clutter.BUTTON_SECONDARY) {
+      const button = event.get_button();
+      if (button === Clutter.BUTTON_SECONDARY) {
         this._openTabContextMenu(tab, memberId);
         return Clutter.EVENT_STOP;
+      }
+      if (button === Clutter.BUTTON_PRIMARY) {
+        this._beginTabDrag(memberId, tab);
       }
       return Clutter.EVENT_PROPAGATE;
     });
@@ -1457,6 +1484,108 @@ export default class EtherbitTilingExtension extends Extension {
     });
     this._tabMenu = menu;
     menu.open();
+  }
+
+  /// Inicia o rastreio de um arraste de guia (ADR 0042). Registra um `captured-event` no stage que só
+  /// age no BUTTON_RELEASE: se o ponteiro estiver FORA da barra, ejeta a janela e a reposiciona ("cai
+  /// onde foi solta"); dentro, é um clique comum (o `activateBtn` já trata). Substitui qualquer arraste
+  /// pendente. Não interfere no clique normal — só observa, propagando todos os eventos.
+  private _beginTabDrag(memberId: number, tab: St.Widget): void {
+    this._endTabDrag();
+    this._tabDrag = { memberId, tab };
+    this._tabDragCapturedId = global.stage.connect(
+      'captured-event',
+      (_actor: Clutter.Actor, event: Clutter.Event) => {
+        if (event.type() === Clutter.EventType.BUTTON_RELEASE) {
+          this._finishTabDrag();
+        }
+        return Clutter.EVENT_PROPAGATE;
+      },
+    );
+  }
+
+  /// Encerra o rastreio do arraste de guia (desconecta o `captured-event`). Idempotente.
+  private _endTabDrag(): void {
+    if (this._tabDragCapturedId) {
+      global.stage.disconnect(this._tabDragCapturedId);
+      this._tabDragCapturedId = 0;
+    }
+    this._tabDrag = null;
+  }
+
+  /// Resolve o fim do arraste: se o ponteiro soltou FORA da barra da guia, ejeta e reposiciona; se dentro,
+  /// não faz nada (o clique normal troca a aba).
+  private _finishTabDrag(): void {
+    const drag = this._tabDrag;
+    this._endTabDrag();
+    if (!drag) {
+      return;
+    }
+    const [x, y] = global.get_pointer();
+    const box = drag.tab.get_parent();
+    if (box) {
+      const [bx, by] = box.get_transformed_position();
+      const [bw, bh] = box.get_transformed_size();
+      const inside = x >= bx && x < bx + bw && y >= by && y < by + bh;
+      if (inside) {
+        return; // soltou dentro da barra → clique normal (troca de aba), não ejeta
+      }
+    }
+    this._ejectTabAt(drag.memberId, x, y);
+  }
+
+  /// Ejeta a janela `memberId` do stack e a reposiciona na zona de drop resolvida em `(x, y)` — o gesto
+  /// drag-to-ungroup "cai onde foi solta" (ADR 0042). Espelha `_onGrabEnd`: escopo global (gap vazio) =
+  /// bloco de 50% / maximizar; local (sobre uma janela) = split do slot do alvo. `removeIdFromStacks`
+  /// tira a aba do estado leve; o `MoveWindow` (core `detach_window`) a destaca da árvore e a reinsere.
+  private _ejectTabAt(memberId: number, x: number, y: number): void {
+    const target = this._windowUnderPointObj(x, y, memberId);
+    const targetRect = target ? this._frameRectOf(target) : null;
+    const monitor = this._monitorRectUnder(x, y);
+    const draggedMin = this._minSizeById(memberId);
+    const hot = resolveHotZone({ x, y }, targetRect, monitor, draggedMin);
+
+    if (!removeIdFromStacks(this._stacks, memberId)) {
+      return; // não estava agrupada (nada a ejetar)
+    }
+    if (hot.dropZone === 'none') {
+      this._scheduleRelayout();
+      return;
+    }
+    const targetId = target ? target.get_stable_sequence() : 0;
+    const scope: 'local' | 'global' = hot.scope === 'global' ? 'global' : 'local';
+    // Escopo local exige um alvo real; sem alvo, cai para o reencaixe cíclico (só ejeta).
+    if (scope === 'local' && !target) {
+      this._scheduleRelayout();
+      return;
+    }
+    const res = this._call((p) =>
+      p.MoveWindowSync(
+        serializeState(this._stacks, this._disabledGroups, this._trees, memberId),
+        String(memberId),
+        String(targetId),
+        hot.dropZone,
+        serializeScope(scope),
+      ),
+    );
+    if (res) {
+      this._trees = parseLayoutTrees(res[0]);
+    }
+    this._scheduleRelayout();
+  }
+
+  /// Tamanho mínimo (px) da janela com `stable_sequence == id`, ou `(0,0)` se ausente. Usado para esticar
+  /// a metade do preview ao reposicionar a aba ejetada.
+  private _minSizeById(id: number): { width: number; height: number } {
+    const workspace = global.workspace_manager.get_active_workspace();
+    const windows = workspace ? workspace.list_windows() : [];
+    for (const window of windows) {
+      if (window.get_stable_sequence() === id) {
+        const [w, h] = this._minSize(window);
+        return { width: w, height: h };
+      }
+    }
+    return { width: 0, height: 0 };
   }
 
   /// Fecha e descarta o menu de contexto atual (se houver). Idempotente.

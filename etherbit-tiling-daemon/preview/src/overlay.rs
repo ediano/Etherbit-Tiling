@@ -110,6 +110,19 @@ struct MenuSurface {
     h: i32,
 }
 
+/// Arraste em curso de uma guia (ADR 0042 — drag-to-ungroup). Nasce no `Press` esquerdo sobre o corpo de
+/// uma guia (o `activate` fica ADIADO até o `Release`, para distinguir clique de arraste). Guarda a
+/// superfície da barra (para casar os eventos sob o grab implícito do ponteiro), a ação `activate` adiada
+/// e a geometria GLOBAL da faixa (origem + tamanho), usada para resolver o ponto de soltura.
+struct DragState {
+    surface: wl_surface::WlSurface,
+    activate: TabAction,
+    bar_x: i32,
+    bar_y: i32,
+    bar_w: i32,
+    bar_h: i32,
+}
+
 struct App {
     registry_state: RegistryState,
     output_state: OutputState,
@@ -128,6 +141,8 @@ struct App {
     /// Menu de contexto aberto (no máximo um por vez). `None` = nenhum menu aberto. ADR 0040.
     menu: Option<MenuSurface>,
     pointer: Option<wl_pointer::WlPointer>,
+    /// Arraste de guia em curso (drag-to-ungroup, ADR 0042). `None` = nenhum.
+    drag: Option<DragState>,
     /// Fila de ações (clique) drenada pela interface D-Bus `Tabs`.
     actions: Arc<Mutex<Vec<TabAction>>>,
     /// Acorda o KWin Script (via `invokeShortcut`) após enfileirar uma ação.
@@ -322,10 +337,27 @@ impl App {
 
         // 2) Sem menu: roteia o clique na barra cuja superfície casa.
         let mut open: Option<(String, String, i32, i32)> = None;
+        let mut start_drag: Option<DragState> = None;
         for ts in &self.tab_surfaces {
             if ts.layer.wl_surface() == surface {
                 match hit_test_local(&ts.view.stack_id, &ts.slots, px, py, pb) {
-                    Some(BarHit::Action(action)) => self.enqueue_action(action),
+                    // `close` age na hora; `activate` fica ADIADO (vira candidato a arraste, ADR 0042):
+                    // se o botão soltar FORA da barra, ejeta ("cai onde foi solta"); se soltar dentro,
+                    // o `activate` é enfileirado no `Release`.
+                    Some(BarHit::Action(action)) => {
+                        if action.kind == "close" {
+                            self.enqueue_action(action);
+                        } else {
+                            start_drag = Some(DragState {
+                                surface: surface.clone(),
+                                activate: action,
+                                bar_x: ts.view.x,
+                                bar_y: ts.view.y,
+                                bar_w: ts.view.w,
+                                bar_h: ts.view.h,
+                            });
+                        }
+                    }
                     Some(BarHit::OpenContextMenu { stack_id, member_id }) => {
                         // Posição GLOBAL do cursor = origem da barra (view.x, view.y) + offset local.
                         open = Some((stack_id, member_id, ts.view.x + px, ts.view.y + py));
@@ -337,6 +369,34 @@ impl App {
         }
         if let Some((stack_id, member_id, ax, ay)) = open {
             self.open_menu(&stack_id, &member_id, ax, ay);
+        }
+        self.drag = start_drag;
+    }
+
+    /// Fim do arraste de uma guia (ADR 0042). Sob o grab implícito do ponteiro, os eventos seguem na
+    /// superfície da barra onde o `Press` começou, então `pos` é LOCAL a ela (podendo sair de `[0,w]×
+    /// [0,h]`). Se soltou FORA da faixa → ejeta com as coordenadas GLOBAIS de soltura (`ungroup_drag`);
+    /// se soltou dentro → era um clique: enfileira o `activate` adiado.
+    fn on_pointer_release(&mut self, surface: &wl_surface::WlSurface, pos: (f64, f64)) {
+        let Some(drag) = self.drag.take() else {
+            return;
+        };
+        if &drag.surface != surface {
+            // Release numa superfície diferente (raro sob grab): trata como clique cancelado.
+            return;
+        }
+        let px = pos.0 as i32;
+        let py = pos.1 as i32;
+        let outside = px < 0 || px >= drag.bar_w || py < 0 || py >= drag.bar_h;
+        if outside {
+            self.enqueue_action(TabAction::ungroup_drag(
+                drag.activate.stack_id,
+                drag.activate.member_id,
+                drag.bar_x + px,
+                drag.bar_y + py,
+            ));
+        } else {
+            self.enqueue_action(drag.activate);
         }
     }
 
@@ -658,8 +718,15 @@ impl PointerHandler for App {
         events: &[PointerEvent],
     ) {
         for e in events {
-            if let PointerEventKind::Press { button, .. } = e.kind {
-                self.on_pointer_press(&e.surface, e.position, button);
+            match e.kind {
+                PointerEventKind::Press { button, .. } => {
+                    self.on_pointer_press(&e.surface, e.position, button);
+                }
+                // Fim do arraste/clique adiado da guia (ADR 0042).
+                PointerEventKind::Release { .. } => {
+                    self.on_pointer_release(&e.surface, e.position);
+                }
+                _ => {}
             }
         }
     }
@@ -791,6 +858,7 @@ pub fn run(
         tab_surfaces: Vec::new(),
         menu: None,
         pointer: None,
+        drag: None,
         actions,
         wake_tx,
         exit: false,

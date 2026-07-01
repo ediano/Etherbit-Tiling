@@ -662,11 +662,15 @@ export interface TabBarView {
   tabs: Array<{ member_id: string; title: string; active: boolean }>;
 }
 
-/// Uma ação de aba devolvida pelo helper: clique resolvido em ativar/fechar/desagrupar.
+/// Uma ação de aba devolvida pelo helper: clique resolvido em ativar/fechar/desagrupar. `ungroup_drag`
+/// (ADR 0042) ejeta a janela E a reposiciona no ponto de soltura `(x, y)` em coordenadas GLOBAIS de tela.
 export interface TabAction {
   stack_id: string;
   member_id: string;
-  kind: 'activate' | 'close' | 'ungroup';
+  kind: 'activate' | 'close' | 'ungroup' | 'ungroup_drag';
+  /// Só em `ungroup_drag`: coordenadas globais de soltura ("cai onde foi solta"). `0` nas demais.
+  x: number;
+  y: number;
 }
 
 /// Traduz as `TabBar` do daemon (ids de TRANSPORTE) para `TabBarView` (ids ESTÁVEIS + título), prontas
@@ -724,7 +728,7 @@ export function parseTabActions(json: string): TabAction[] {
     const kind = e.kind;
     if (
       typeof e.member_id !== 'string' ||
-      (kind !== 'activate' && kind !== 'close' && kind !== 'ungroup')
+      (kind !== 'activate' && kind !== 'close' && kind !== 'ungroup' && kind !== 'ungroup_drag')
     ) {
       continue;
     }
@@ -732,6 +736,8 @@ export function parseTabActions(json: string): TabAction[] {
       stack_id: typeof e.stack_id === 'string' ? e.stack_id : '',
       member_id: e.member_id,
       kind,
+      x: typeof e.x === 'number' ? e.x : 0,
+      y: typeof e.y === 'number' ? e.y : 0,
     });
   }
   return out;

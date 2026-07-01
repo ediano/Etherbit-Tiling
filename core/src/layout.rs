@@ -987,12 +987,16 @@ fn geom_leaves_min(
             let xb = solve_tracks(rect.x, rect.w, cols, &col_mins, gap, &col_pri);
             let yb = solve_tracks(rect.y, rect.h, rows, &row_mins, gap, &row_pri);
             // ADR 0041: colapso físico num eixo (mesmo gatilho `tracks_overflow` do ramo impositivo do
-            // solve_tracks). Só sinaliza no grid MAIS ALTO que colapsa (`in_collapsed` suprime os
-            // aninhados); o esmagamento do solve_tracks segue valendo na geometria — a ponte é quem
-            // decide agrupar a partir deste sinal.
+            // solve_tracks). ADR 0042: além do eixo inteiro, também sinaliza quando UMA célula (folha/
+            // stack) ficou com o slot resolvido ABAIXO do seu mínimo (`child_below_min`) — a costura
+            // `Σ ≈ avail` com arredondamento —, para que a ponte funda a folha que estoura com os IRMÃOS
+            // desta célula (a região do grid absorve o mínimo → convergente, sem oscilação). Só sinaliza
+            // no grid MAIS ALTO que colapsa (`in_collapsed` suprime os aninhados); o esmagamento do
+            // solve_tracks segue valendo na geometria — a ponte é quem decide agrupar a partir do sinal.
             let collapsed = !in_collapsed
                 && (tracks_overflow(rect.w, &col_mins, gap)
-                    || tracks_overflow(rect.h, &row_mins, gap));
+                    || tracks_overflow(rect.h, &row_mins, gap)
+                    || cells.iter().any(|c| child_below_min(c, &xb, &yb, min)));
             if collapsed {
                 let mut ids = Vec::new();
                 for c in cells {
@@ -1280,6 +1284,27 @@ pub fn retain_tileable_when_maximized(
 }
 
 /// Ids de folha de um NÓ (ordem de varredura first→second). Um stack ocupa um slot identificado pela
+/// Detecção por CÉLULA da Regra I (ADR 0042): `true` se `c`, sendo uma folha ou stack (um grid-filho é
+/// ignorado — o próprio nível dele decide), tem o slot já resolvido (`xb`/`yb` vêm do `solve_tracks`)
+/// ABAIXO do seu mínimo em algum eixo (`round(slot) < min`, estrito). Complementa o gatilho de eixo
+/// inteiro (`tracks_overflow`): pega a folha que estoura sua célula na costura `Σ ≈ avail` (arredondamento)
+/// sem o eixo colapsar por completo. O mínimo do stack já vem agregado sob a âncora (ver `build_min_sizes`).
+fn child_below_min(c: &GridChild, xb: &[(f64, f64)], yb: &[(f64, f64)], min: &MinSizes) -> bool {
+    let id = match c.node.as_ref() {
+        Node::Leaf(id) => *id,
+        Node::Stack { members, .. } => match members.first() {
+            Some(anchor) => *anchor,
+            None => return false,
+        },
+        Node::Grid { .. } => return false,
+    };
+    let Some((mw, mh)) = min.get(&id).copied() else {
+        return false;
+    };
+    let r = cell_rect(xb, yb, c);
+    (round(r.w) as f64) < (mw.max(0) as f64) - 0.5 || (round(r.h) as f64) < (mh.max(0) as f64) - 0.5
+}
+
 /// sua âncora (primeiro membro), então contribui só com ela — não recursa nos demais membros.
 /// Reusado por `collect_leaf_ids` (árvore inteira) e pela detecção de colisão de `geom_leaves_min`.
 fn collect_node_leaf_ids(node: &Node, out: &mut Vec<u64>) {
@@ -1360,6 +1385,54 @@ fn collapse_leaf(tree: LayoutTree, id: u64) -> LayoutTree {
                     1 => Some(*kept.into_iter().next().unwrap().node),
                     // ≥2 sobreviventes (grids com >2 células, fora da construção binária) → preserva as
                     // tracks; as posições das células remanescentes seguem válidas.
+                    _ => Some(Node::Grid { cols, rows, cells: kept }),
+                }
+            }
+        }
+    }
+    LayoutTree { root: tree.root.and_then(|r| walk(r, id)) }
+}
+
+/// Como `collapse_leaf`, mas para o gesto de MOVER/EJETAR **uma** janela (drag-to-tile e drag-to-ungroup,
+/// ADR 0042): remove `id` de onde estiver, preservando as DEMAIS. Difere de `collapse_leaf` só no caso da
+/// ÂNCORA de um stack — aqui a âncora sai e o stack REancora nos membros restantes (o slot permanece), em
+/// vez de o slot inteiro sumir. Assim, arrastar uma aba (mesmo a visível) para fora ejeta só ela e mantém
+/// o grupo. Folhas soltas e membros não-âncora se comportam idêntico ao `collapse_leaf`.
+fn detach_window(tree: LayoutTree, id: u64) -> LayoutTree {
+    fn walk(node: Node, id: u64) -> Option<Node> {
+        match node {
+            Node::Leaf(lid) => (lid != id).then_some(Node::Leaf(lid)),
+            Node::Stack { members, active } => {
+                if !members.contains(&id) {
+                    return Some(Node::Stack { members, active });
+                }
+                let remaining: Vec<u64> = members.into_iter().filter(|m| *m != id).collect();
+                match remaining.len() {
+                    0 => None,
+                    1 => Some(Node::Leaf(remaining[0])),
+                    _ => {
+                        let active =
+                            if remaining.contains(&active) { active } else { remaining[0] };
+                        Some(Node::Stack { members: remaining, active })
+                    }
+                }
+            }
+            Node::Grid { cols, rows, cells } => {
+                let mut kept: Vec<GridChild> = Vec::new();
+                for c in cells {
+                    if let Some(n) = walk(*c.node, id) {
+                        kept.push(GridChild {
+                            node: Box::new(n),
+                            col: c.col,
+                            row: c.row,
+                            col_span: c.col_span,
+                            row_span: c.row_span,
+                        });
+                    }
+                }
+                match kept.len() {
+                    0 => None,
+                    1 => Some(*kept.into_iter().next().unwrap().node),
                     _ => Some(Node::Grid { cols, rows, cells: kept }),
                 }
             }
@@ -1593,8 +1666,9 @@ pub fn move_window(
             if !tree.root.as_ref().map(|r| node_contains(r, dragged)).unwrap_or(false) {
                 return tree.clone();
             }
-            // Remove a arrastada e a reinsere como bloco de 50% sobre TODO o resto do workspace.
-            let removed = collapse_leaf(tree.clone(), dragged);
+            // Remove a arrastada (destacando-a de um stack, se for o caso — ejeta só ela, mantém o grupo)
+            // e a reinsere como bloco de 50% sobre TODO o resto do workspace.
+            let removed = detach_window(tree.clone(), dragged);
             match removed.root {
                 None => LayoutTree { root: Some(Node::Leaf(dragged)) },
                 Some(rest) => LayoutTree {
@@ -1606,8 +1680,9 @@ pub fn move_window(
             if dragged == target {
                 return tree.clone();
             }
-            // Remove o arrastado; se o alvo não está nesta árvore, desfaz (mantém a original).
-            let removed = collapse_leaf(tree.clone(), dragged);
+            // Remove o arrastado (destaca de um stack, se for o caso); se o alvo não está nesta árvore,
+            // desfaz (mantém a original).
+            let removed = detach_window(tree.clone(), dragged);
             let root = match removed.root {
                 Some(r) if node_contains(&r, target) => r,
                 _ => return tree.clone(),
@@ -2828,6 +2903,78 @@ mod tests {
         assert_eq!(move_window(&tree, 2, 99, DropZone::Left, DropScope::Local), tree);
         // Center em escopo Global (tela vazia = maximizar) → no-op topológico (a janela já é a raiz).
         assert_eq!(move_window(&tree, 2, 1, DropZone::Center, DropScope::Global), tree);
+    }
+
+    #[test]
+    fn detach_window_ejeta_membro_ancora_e_mantem_o_resto_agrupado() {
+        // ADR 0042: arrastar a aba VISÍVEL (âncora) para fora ejeta só ela; o grupo sobrevive. Árvore:
+        // [ Stack{1,2,3} | Leaf(4) ]. Move 1 (âncora) para a direita de 4.
+        let tree = LayoutTree {
+            root: Some(Node::split_on(
+                Axis::Horizontal,
+                0.5,
+                Node::Stack { members: vec![1, 2, 3], active: 1 },
+                Node::Leaf(4),
+            )),
+        };
+        let moved = move_window(&tree, 1, 4, DropZone::Right, DropScope::Local);
+        let root = moved.root.as_ref().unwrap();
+        // 1 saiu do stack e voltou como folha; 2 e 3 continuam agrupados; 4 permanece.
+        for id in [1, 2, 3, 4] {
+            assert!(node_contains(root, id), "janela {id} deve continuar na árvore");
+        }
+        let mut stacks = HashMap::new();
+        collect_stack_nodes(root, &mut stacks);
+        assert_eq!(stacks.len(), 1, "resta um único stack");
+        let (members, _active) = stacks.get(&2).expect("stack reancorado em 2");
+        assert_eq!(members, &vec![2, 3], "o grupo mantém 2 e 3 após ejetar a âncora 1");
+    }
+
+    #[test]
+    fn detach_window_dissolve_stack_de_dois_ao_ejetar() {
+        // Stack de 2 membros: ejetar um dissolve o grupo (o remanescente vira folha solta).
+        let tree = LayoutTree {
+            root: Some(Node::split_on(
+                Axis::Horizontal,
+                0.5,
+                Node::Stack { members: vec![1, 2], active: 1 },
+                Node::Leaf(3),
+            )),
+        };
+        let moved = move_window(&tree, 1, 3, DropZone::Right, DropScope::Local);
+        let root = moved.root.as_ref().unwrap();
+        let mut stacks = HashMap::new();
+        collect_stack_nodes(root, &mut stacks);
+        assert!(stacks.is_empty(), "stack de 2 dissolve ao ejetar um membro");
+        for id in [1, 2, 3] {
+            assert!(node_contains(root, id), "janela {id} preservada");
+        }
+    }
+
+    #[test]
+    fn child_below_min_detecta_celula_abaixo_do_minimo() {
+        // ADR 0042: gatilho por CÉLULA — detecta a folha cujo slot resolvido ficou abaixo do seu mínimo.
+        // 2 colunas de 100px (gap 8) numa linha de 200px.
+        let xb = vec![(0.0, 100.0), (108.0, 100.0)];
+        let yb = vec![(0.0, 200.0)];
+        let child =
+            GridChild { node: Box::new(Node::Leaf(1)), col: 0, row: 0, col_span: 1, row_span: 1 };
+        let mut min = MinSizes::new();
+        // Precisa de 150px de largura, mas a célula tem 100 → abaixo do mínimo.
+        min.insert(1, (150, 0));
+        assert!(child_below_min(&child, &xb, &yb, &min), "célula 100px < min 150px → estoura");
+        // Com mínimo que cabe, não estoura.
+        min.insert(1, (80, 0));
+        assert!(!child_below_min(&child, &xb, &yb, &min), "célula 100px ≥ min 80px → cabe");
+        // Um grid-filho é ignorado (o próprio nível dele decide).
+        let grid_child = GridChild {
+            node: Box::new(Node::Grid { cols: vec![1.0], rows: vec![1.0], cells: vec![] }),
+            col: 0,
+            row: 0,
+            col_span: 1,
+            row_span: 1,
+        };
+        assert!(!child_below_min(&grid_child, &xb, &yb, &min), "grid-filho nunca dispara aqui");
     }
 
     #[test]
