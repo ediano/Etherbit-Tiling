@@ -28,6 +28,7 @@ import {
   serializeScope,
   isResizable,
   isFixedSize,
+  effectiveMinSize,
   geometryConverged,
   type Stack,
   type TreeNode,
@@ -130,6 +131,39 @@ describe('isResizable / isFixedSize (ADR 0037)', () => {
       true,
     );
     expect(isFixedSize({ minWidth: 500, minHeight: 400, maxWidth: 0, maxHeight: 0 })).toBe(false);
+  });
+});
+
+describe('effectiveMinSize (memoização do min degradado por minimização)', () => {
+  it('grava e devolve o min real quando a janela está visível e min>0', () => {
+    const cache = new Map<number, [number, number]>();
+    expect(effectiveMinSize(cache, 1, [700, 500], false)).toEqual([700, 500]);
+    expect(cache.get(1)).toEqual([700, 500]);
+  });
+
+  it('devolve o memoizado quando minimizada (get_min_size degrada para 0,0)', () => {
+    const cache = new Map<number, [number, number]>([[1, [700, 500]]]);
+    expect(effectiveMinSize(cache, 1, [0, 0], true)).toEqual([700, 500]);
+    // não sobrescreve o cache com o valor degradado.
+    expect(cache.get(1)).toEqual([700, 500]);
+  });
+
+  it('fallback [0,0] quando minimizada e sem histórico', () => {
+    const cache = new Map<number, [number, number]>();
+    expect(effectiveMinSize(cache, 9, [0, 0], true)).toEqual([0, 0]);
+    expect(cache.has(9)).toBe(false);
+  });
+
+  it('não grava min zerado de janela visível (não polui o cache)', () => {
+    const cache = new Map<number, [number, number]>();
+    expect(effectiveMinSize(cache, 2, [0, 0], false)).toEqual([0, 0]);
+    expect(cache.has(2)).toBe(false);
+  });
+
+  it('atualiza o cache quando a janela volta a ficar visível com novo min', () => {
+    const cache = new Map<number, [number, number]>([[1, [700, 500]]]);
+    expect(effectiveMinSize(cache, 1, [640, 480], false)).toEqual([640, 480]);
+    expect(cache.get(1)).toEqual([640, 480]);
   });
 });
 

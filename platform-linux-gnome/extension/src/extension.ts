@@ -37,6 +37,7 @@ import {
   collisionKey,
   shouldSuppressSpawnMaximize,
   isResizable,
+  effectiveMinSize,
   clampGeometry,
   geometryConverged,
   parseLayoutTrees,
@@ -176,6 +177,9 @@ export default class EtherbitTilingExtension extends Extension {
   private _disabledGroups = new Set<string>();
   private _groupTiled = new Map<string, number[]>();
   private _stackHidden = new Set<number>();
+  //  - `_lastMinSizes`: último min-size REAL por id — cobre o `get_min_size()` degradado (0,0) de
+  //    janelas minimizadas (abas inativas), para o core expandir a célula ao min do membro grande.
+  private _lastMinSizes = new Map<number, [number, number]>();
   // Agrupamento automático por colisão (ADR 0041): conjuntos já agrupados (chave ordem-insensível de
   // `collisionKey`), para não re-agrupar o mesmo conjunto a cada sync (idempotência/anti-oscilação).
   // Uma entrada é descartada quando seu conjunto deixa de aparecer no sinal `collisions` do core.
@@ -522,6 +526,7 @@ export default class EtherbitTilingExtension extends Extension {
         removeFromOrder(this._order, id);
         removeIdFromStacks(this._stacks, id);
         this._stackHidden.delete(id);
+        this._lastMinSizes.delete(id);
         this._everTiled.delete(id);
         this._scheduleRelayout();
       });
@@ -1893,16 +1898,22 @@ export default class EtherbitTilingExtension extends Extension {
   /// X11 (WM_NORMAL_HINTS) e Wayland (xdg_toplevel.set_min_size). Degrada para `[0, 0]` (sem
   /// restrição) se o método não existir ou lançar — nunca derruba o snapshot.
   private _minSize(window: Meta.Window): [number, number] {
+    let raw: [number, number] = [0, 0];
     try {
       const fn = (window as unknown as { get_min_size?: () => [number, number] }).get_min_size;
-      if (typeof fn !== 'function') {
-        return [0, 0];
+      if (typeof fn === 'function') {
+        const [w, h] = fn.call(window);
+        raw = [Number.isFinite(w) ? Math.max(0, w) : 0, Number.isFinite(h) ? Math.max(0, h) : 0];
       }
-      const [w, h] = fn.call(window);
-      return [Number.isFinite(w) ? Math.max(0, w) : 0, Number.isFinite(h) ? Math.max(0, h) : 0];
     } catch {
-      return [0, 0];
+      raw = [0, 0];
     }
+    // `get_min_size()` degrada para (0,0)/stale quando a janela está minimizada/não-mapeada (abas
+    // inativas do stack). Memoiza o último min real (janela visível) e devolve-o nesse caso, para o
+    // core agregar o `max` correto e a célula de abas expandir ao min do membro grande.
+    const minimized =
+      (window as unknown as { is_minimized?: () => boolean }).is_minimized?.() ?? false;
+    return effectiveMinSize(this._lastMinSizes, window.get_stable_sequence(), raw, minimized);
   }
 
   /// Tamanho MÁXIMO (px de frame) imposto pelo app via `Meta.Window.get_max_size()` — espelha o
