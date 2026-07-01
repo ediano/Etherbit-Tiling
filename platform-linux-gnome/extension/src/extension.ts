@@ -60,6 +60,7 @@ import {
   type WindowSnapshot,
   type MonitorSnapshot,
 } from './bridge.js';
+import { compensateRigidWindows, type RigidMin, type CompWorkArea } from './rigid-compensation.js';
 import { EtherbitIndicator } from './indicator.js';
 import { applyRoundedCorners, clearRoundedCorners } from './effects.js';
 import { initI18n } from './i18n.js';
@@ -186,6 +187,8 @@ export default class EtherbitTilingExtension extends Extension {
   // um relayout no meio do gesto destruiria (`get_parent()` viraria null e o gesto "não pegaria").
   private _tabBarRects = new Map<number, { x: number; y: number; width: number; height: number }>();
   private _settings: Gio.Settings | null = null;
+  // Handler do `changed::rigid-compensation` no GSettings (toggle GNOME-only da compensação, ADR 0048).
+  private _settingsChangedId = 0;
   // Menu de contexto da aba (clique direito → "Desagrupar Janela"). O manager faz o grab (fecha ao
   // clicar fora) a partir de um anchor ESTÁVEL — as barras de abas são efêmeras (recriadas no relayout).
   private _tabMenuManager: PopupMenu.PopupMenuManager | null = null;
@@ -310,6 +313,10 @@ export default class EtherbitTilingExtension extends Extension {
       // O raio é a única fonte de verdade do arredondamento: `> 0` liga, `0` desliga. Derivamos o
       // `rounded_corners` do contrato a partir disso (não há mais toggle separado).
       onCornerRadius: (radius) => this._call((p) => p.SetRoundedCornersSync(radius > 0, radius)),
+      // Toggle GNOME-only (ADR 0048): persiste NO GSETTINGS da extensão, não no daemon (que é
+      // compartilhado com o KDE) — é isso que mantém o daemon/KDE alheios a esta correção. O
+      // `changed::rigid-compensation` reflete o estado de volta no switch e re-tila.
+      onRigidCompensation: (enabled) => this._settings?.set_boolean('rigid-compensation', enabled),
     });
     Main.panel.addToStatusArea(this.uuid, this._indicator);
 
@@ -376,6 +383,13 @@ export default class EtherbitTilingExtension extends Extension {
         Shell.ActionMode.NORMAL,
         () => this._toggleTabbingShortcut(),
       );
+      // Toggle da compensação física de min-size (ADR 0048): reflete o estado no switch do indicador e
+      // re-tila ao alternar (via indicador, `gsettings` ou dconf). Chave GNOME-only — o daemon nem sabe.
+      this._indicator?.setRigidCompensation(this._rigidCompensationEnabled());
+      this._settingsChangedId = this._settings.connect('changed::rigid-compensation', () => {
+        this._indicator?.setRigidCompensation(this._rigidCompensationEnabled());
+        this._scheduleRelayout();
+      });
     } catch (error) {
       console.error(`Etherbit Tiling: falha ao registrar atalhos: ${error}`);
     }
@@ -420,6 +434,10 @@ export default class EtherbitTilingExtension extends Extension {
     if (this._settings) {
       Main.wm.removeKeybinding(KEY_TOGGLE_TILING);
       Main.wm.removeKeybinding(KEY_TOGGLE_TABBING);
+      if (this._settingsChangedId) {
+        this._settings.disconnect(this._settingsChangedId);
+        this._settingsChangedId = 0;
+      }
       this._settings = null;
     }
 
@@ -706,8 +724,37 @@ export default class EtherbitTilingExtension extends Extension {
     // Persiste as árvores reconciliadas pelo core para reenviar no próximo sync (estabilidade).
     this._trees = parseLayoutTrees(layoutJson);
 
-    const commands = parseLayout(layoutJson);
+    const rawCommands = parseLayout(layoutJson);
     const tabBars = parseTabBars(layoutJson);
+
+    // Compensação física de min-size (GNOME-only, ADR 0048): trava as janelas rígidas no seu mínimo e
+    // reabsorve o overflow do esmagamento impositivo do core (ADR 0040) comprimindo gaps/vizinhos —
+    // puramente na EXIBIÇÃO, recomputada a cada relayout e NUNCA persistida de volta ao core (a árvore
+    // lógica `_trees`, montada acima, permanece CRUA). Atrás do toggle GSettings `rigid-compensation`
+    // (válvula de segurança). A compensação é determinística, então o dedup (`layoutSig`) e a
+    // convergência abaixo seguem operando corretamente sobre a geometria já compensada.
+    let commands = rawCommands;
+    if (this._rigidCompensationEnabled()) {
+      const mins = new Map<number, RigidMin>();
+      const monitorOf = new Map<number, number>();
+      for (const snap of snapshots) {
+        if (snap.min_width > 0 || snap.min_height > 0) {
+          mins.set(snap.id, { minWidth: snap.min_width, minHeight: snap.min_height });
+        }
+        monitorOf.set(snap.id, snap.monitor);
+      }
+      const workAreas = new Map<number, CompWorkArea>();
+      for (const m of this._collectMonitors()) {
+        workAreas.set(m.index, { x: m.x, y: m.y, width: m.width, height: m.height });
+      }
+      commands = compensateRigidWindows({
+        commands: rawCommands,
+        mins,
+        monitorOf,
+        workAreas,
+        gap: this._config.gap,
+      });
+    }
     // Diagnóstico (ADR): janelas recebidas que o daemon NÃO tilou, com o motivo. Faz o log refletir
     // a tela — `total > aplicadas` deixa de parecer bug quando é só uma janela não-tileável (ex.:
     // desktop/DING) ou uma "nascida maximizada" ainda fora do grid (`excluded_maximized`).
@@ -1934,6 +1981,17 @@ export default class EtherbitTilingExtension extends Extension {
       });
     } catch {
       // Defensivo: na dúvida, tratar como redimensionável (o core ainda filtra por normal/maximizable).
+      return true;
+    }
+  }
+
+  /// `true` se a compensação física de min-size (ADR 0048) está ligada. Lê a chave GSettings
+  /// GNOME-only `rigid-compensation` (default ligado — válvula de segurança). Defensivo: sem
+  /// `_settings` (ou se a chave não existir num schema antigo), assume ligado.
+  private _rigidCompensationEnabled(): boolean {
+    try {
+      return this._settings?.get_boolean('rigid-compensation') ?? true;
+    } catch {
       return true;
     }
   }
