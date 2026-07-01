@@ -237,6 +237,12 @@ export default class EtherbitTilingExtension extends Extension {
     id: number;
     rect: { x: number; y: number; width: number; height: number };
   } | null = null;
+  // Id da janela cujo frame o usuário ACABOU de manipular (resize/move). O aprendizado do min
+  // observado (ADR 0048-D) o exclui por UM relayout pós-gesto: no relayout de settle o
+  // `_lastAppliedRects` (committed) ainda é o slot ANTIGO, enquanto o frame já cresceu pelo gesto —
+  // aprender aí gravaria o tamanho escolhido pelo usuário como mínimo e travaria o resize (ADR 0051).
+  // Consumido (zerado) na passada de aprendizado do primeiro `_relayout` seguinte.
+  private _lastGesturedId = 0;
 
   /// Garante um proxy vivo: cria (se ausente) e inscreve `ConfigChanged`. Devolve o proxy ou null.
   /// A criação é barata e dispara a ATIVAÇÃO D-Bus do daemon na primeira chamada (ver ADR 0020).
@@ -458,6 +464,7 @@ export default class EtherbitTilingExtension extends Extension {
     }
     this._suppressRelayout = false;
     this._relayoutPending = false;
+    this._lastGesturedId = 0;
     this._lastLayoutSig = '';
     this._lastAppliedRects.clear();
     this._observedMins.clear();
@@ -765,6 +772,7 @@ export default class EtherbitTilingExtension extends Extension {
       const learnable =
         snap.id !== this._resizeStart?.id &&
         snap.id !== this._draggedId &&
+        snap.id !== this._lastGesturedId && // recém-gesticulada: frame ≠ slot committado (ADR 0051)
         !snap.maximized &&
         !this._isFullscreen(window) &&
         !isMinimized;
@@ -777,6 +785,10 @@ export default class EtherbitTilingExtension extends Extension {
         RELAYOUT_CONVERGE_EPSILON_PX,
       );
     }
+    // One-shot: a exclusão da janela gesticulada vale só para ESTE relayout (o de settle). A supressão
+    // do grab garante que este é o primeiro relayout após o gesto; a partir do próximo, o `committed`
+    // já reflete o slot aplicado e o aprendizado genuíno (recusa real do cliente) volta a operar.
+    this._lastGesturedId = 0;
 
     const focus = global.display.focus_window;
     const focusedId = focus ? focus.get_stable_sequence() : 0;
@@ -1402,6 +1414,9 @@ export default class EtherbitTilingExtension extends Extension {
   /// MoveWindow `global` (bloco de 50% / maximizar no centro). O `_scheduleRelayout()` re-tila das árvores.
   private _onGrabEnd(window: Meta.Window | null): void {
     if (this._draggedId && window) {
+      // Exclui a janela arrastada do aprendizado do min observado no relayout de settle (ADR 0051):
+      // um move reancora/reslota a janela, e o `committed` do ciclo anterior ficaria stale.
+      this._lastGesturedId = this._draggedId;
       const [x, y] = global.get_pointer();
       const target = this._windowUnderPointObj(x, y, this._draggedId);
       const hot = this._lastHot;
@@ -1455,6 +1470,10 @@ export default class EtherbitTilingExtension extends Extension {
       window &&
       window.get_stable_sequence() === this._resizeStart.id
     ) {
+      // Exclui a janela redimensionada do aprendizado do min observado no relayout de settle (ADR
+      // 0051): o frame já cresceu pelo gesto, mas o `committed` ainda é o slot anterior — aprender aí
+      // gravaria o tamanho escolhido como mínimo (piso inflado) e travaria o próximo resize.
+      this._lastGesturedId = this._resizeStart.id;
       this._applyResize(window);
     }
     this._resizeStart = null;
@@ -1892,6 +1911,7 @@ export default class EtherbitTilingExtension extends Extension {
   private _releaseToFloating(): void {
     // Chave geral DESLIGADA libera as janelas: invalida a assinatura para que RELIGAR sempre reaplique
     // o grid, mesmo que o layout calculado coincida com o último de antes do desligamento.
+    this._lastGesturedId = 0;
     this._lastLayoutSig = '';
     this._lastAppliedRects.clear();
     this._restoreHiddenWindows();

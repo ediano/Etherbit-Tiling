@@ -723,6 +723,20 @@ describe('learnObservedMin', () => {
     ).toEqual([0, 0]);
     expect(cache.has(6)).toBe(false);
   });
+
+  it('HAZARD pós-gesto: slot que CRESCEU no mesmo anchor infla o piso (por isso a ponte não aprende no relayout de settle — ADR 0051)', () => {
+    // Uma flexível `A @ x=8 w=948` cujo usuário arrastou a borda direita +200 → o frame vira 1148 no
+    // MESMO x. Comparado ao `committed` ANTIGO (948), `learnObservedMin` (função pura, correta) grava
+    // 1148 como se fosse o mínimo — o size ESCOLHIDO pelo usuário, não uma recusa do cliente. Este é o
+    // caminho de inflação: como o piso só baixa com a compensação OFF, ele persistiria e travaria o
+    // resize. A correção NÃO altera esta função (o RAISE aqui é legítimo p/ uma recusa real); a ponte
+    // é que exclui a janela recém-gesticulada do aprendizado por um relayout (`_lastGesturedId`).
+    const cache = new Map<number, [number, number]>();
+    expect(
+      learnObservedMin(cache, 4, rect(8, 0, 948, 1040), rect(8, 0, 1148, 1040), true, EPS),
+    ).toEqual([1148, 0]);
+    expect(cache.get(4)).toEqual([1148, 0]);
+  });
 });
 
 describe('mergeMin', () => {
