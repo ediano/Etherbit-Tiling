@@ -30,7 +30,7 @@
   "systems.lead": "An OS-agnostic core in Rust, a thin native layer per system. Pick yours.",
   "card.gnomeTitle": "Linux · GNOME 45+",
   "card.gnomeDesc": "Unified <strong>.tar.gz</strong> package (Rust Daemon + GNOME Extension) for <strong>Wayland</strong>. Install with one command:",
-  "card.gnomeNote": "GNOME 45–50 · Wayland · <a class=\"card__link\" href=\"/desinstalar.html\">How to uninstall</a>",
+  "card.gnomeNote": "GNOME 45–50 · Wayland · <a class=\"card__link\" href=\"/desinstalar.html\">How to uninstall</a><br />Vanilla GNOME (e.g. Fedora) ✅<br />Modified GNOME (e.g. Ubuntu 24.04+) ⚠️ crappy",
   "card.kdeTitle": "Linux · KDE Plasma 6",
   "card.kdeDesc": "Unified <strong>.tar.gz</strong> package (Rust Daemon + KWin Script) for <strong>Wayland</strong>. Install with one command:",
   "card.kdeNote": "Plasma 6 · Wayland · <a class=\"card__link\" href=\"/desinstalar.html\">How to uninstall</a>",

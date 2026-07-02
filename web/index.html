@@ -228,52 +228,6 @@
             </article>
             -->
 
-            <!-- Linux -->
-            <article class="card">
-              <div class="card__icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" width="32" height="32">
-                  <path
-                    d="M12 2c-2 0-3 1.7-3 3.6 0 1.2.1 2.2-.6 3.4-.8 1.2-2.4 2.7-2.4 5.4 0 .9.3 1.6.3 2.3-.3.5-1.2 1-1.2 1.7 0 .9 1 1 2 1.3 1 .3 1.7.9 2.6.9.5 0 .9-.3 1.2-.7.4.1.9.1 1.3.1s.9 0 1.3-.1c.3.4.7.7 1.2.7.9 0 1.6-.6 2.6-.9 1-.3 2-.4 2-1.3 0-.7-.9-1.2-1.2-1.7 0-.7.3-1.4.3-2.3 0-2.7-1.6-4.2-2.4-5.4-.7-1.2-.6-2.2-.6-3.4C15 3.7 14 2 12 2zm-1.4 4.2c.4 0 .7.4.7.9s-.3.9-.7.9-.7-.4-.7-.9.3-.9.7-.9zm2.8 0c.4 0 .7.4.7.9s-.3.9-.7.9-.7-.4-.7-.9.3-.9.7-.9z"
-                  />
-                </svg>
-              </div>
-              <h3 class="card__title" data-i18n="card.gnomeTitle">Linux · GNOME 45+</h3>
-              <p class="card__desc" data-i18n="card.gnomeDesc">
-                Pacote unificado <strong>.tar.gz</strong> (Daemon Rust + Extensão GNOME) para
-                <strong>Wayland</strong>. Instale em um comando:
-              </p>
-              <div class="code" data-copy>
-                <code id="install-cmd"
-                  >curl -sSL
-                  https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/install-gnome.sh
-                  | bash</code
-                >
-                <button
-                  class="code__copy"
-                  type="button"
-                  data-copy-btn
-                  data-i18n="copy.btn"
-                  data-i18n-aria-label="copy.aria"
-                  aria-label="Copiar comando"
-                >
-                  Copiar
-                </button>
-              </div>
-              <a
-                class="btn btn--ghost card__cta"
-                href="https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/etherbit-tiling-gnome.tar.gz"
-                target="_blank"
-                rel="noopener noreferrer"
-                data-i18n="card.download"
-              >
-                Baixar .tar.gz
-              </a>
-              <p class="card__note" data-i18n="card.gnomeNote">
-                GNOME 45–50 · Wayland ·
-                <a class="card__link" href="/desinstalar.html">Como desinstalar</a>
-              </p>
-            </article>
-
             <!-- Linux · KDE -->
             <article class="card">
               <div class="card__icon" aria-hidden="true">
@@ -317,6 +271,54 @@
               <p class="card__note" data-i18n="card.kdeNote">
                 Plasma 6 · Wayland ·
                 <a class="card__link" href="/desinstalar.html">Como desinstalar</a>
+              </p>
+            </article>
+
+            <!-- Linux -->
+            <article class="card">
+              <div class="card__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="32" height="32">
+                  <path
+                    d="M12 2c-2 0-3 1.7-3 3.6 0 1.2.1 2.2-.6 3.4-.8 1.2-2.4 2.7-2.4 5.4 0 .9.3 1.6.3 2.3-.3.5-1.2 1-1.2 1.7 0 .9 1 1 2 1.3 1 .3 1.7.9 2.6.9.5 0 .9-.3 1.2-.7.4.1.9.1 1.3.1s.9 0 1.3-.1c.3.4.7.7 1.2.7.9 0 1.6-.6 2.6-.9 1-.3 2-.4 2-1.3 0-.7-.9-1.2-1.2-1.7 0-.7.3-1.4.3-2.3 0-2.7-1.6-4.2-2.4-5.4-.7-1.2-.6-2.2-.6-3.4C15 3.7 14 2 12 2zm-1.4 4.2c.4 0 .7.4.7.9s-.3.9-.7.9-.7-.4-.7-.9.3-.9.7-.9zm2.8 0c.4 0 .7.4.7.9s-.3.9-.7.9-.7-.4-.7-.9.3-.9.7-.9z"
+                  />
+                </svg>
+              </div>
+              <h3 class="card__title" data-i18n="card.gnomeTitle">Linux · GNOME 45+</h3>
+              <p class="card__desc" data-i18n="card.gnomeDesc">
+                Pacote unificado <strong>.tar.gz</strong> (Daemon Rust + Extensão GNOME) para
+                <strong>Wayland</strong>. Instale em um comando:
+              </p>
+              <div class="code" data-copy>
+                <code id="install-cmd"
+                  >curl -sSL
+                  https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/install-gnome.sh
+                  | bash</code
+                >
+                <button
+                  class="code__copy"
+                  type="button"
+                  data-copy-btn
+                  data-i18n="copy.btn"
+                  data-i18n-aria-label="copy.aria"
+                  aria-label="Copiar comando"
+                >
+                  Copiar
+                </button>
+              </div>
+              <a
+                class="btn btn--ghost card__cta"
+                href="https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/etherbit-tiling-gnome.tar.gz"
+                target="_blank"
+                rel="noopener noreferrer"
+                data-i18n="card.download"
+              >
+                Baixar .tar.gz
+              </a>
+              <p class="card__note" data-i18n="card.gnomeNote">
+                GNOME 45–50 · Wayland ·
+                <a class="card__link" href="/desinstalar.html">Como desinstalar</a><br />
+                GNOME Vanilla (ex.: Fedora) ✅<br />
+                GNOME modificado (ex.: Ubuntu 24.04+) ⚠️ cagado
               </p>
             </article>
 

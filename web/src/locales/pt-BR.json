@@ -30,7 +30,7 @@
   "systems.lead": "Um núcleo agnóstico em Rust, uma camada nativa fina por sistema. Escolha o seu.",
   "card.gnomeTitle": "Linux · GNOME 45+",
   "card.gnomeDesc": "Pacote unificado <strong>.tar.gz</strong> (Daemon Rust + Extensão GNOME) para <strong>Wayland</strong>. Instale em um comando:",
-  "card.gnomeNote": "GNOME 45–50 · Wayland · <a class=\"card__link\" href=\"/desinstalar.html\">Como desinstalar</a>",
+  "card.gnomeNote": "GNOME 45–50 · Wayland · <a class=\"card__link\" href=\"/desinstalar.html\">Como desinstalar</a><br />GNOME Vanilla (ex.: Fedora) ✅<br />GNOME modificado (ex.: Ubuntu 24.04+) ⚠️ cagado",
   "card.kdeTitle": "Linux · KDE Plasma 6",
   "card.kdeDesc": "Pacote unificado <strong>.tar.gz</strong> (Daemon Rust + KWin Script) para <strong>Wayland</strong>. Instale em um comando:",
   "card.kdeNote": "Plasma 6 · Wayland · <a class=\"card__link\" href=\"/desinstalar.html\">Como desinstalar</a>",
