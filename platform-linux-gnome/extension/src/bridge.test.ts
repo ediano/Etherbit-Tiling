@@ -28,8 +28,6 @@ import {
   isResizable,
   isFixedSize,
   effectiveMinSize,
-  learnRefusedMin,
-  applyRefusedFloor,
   geometryConverged,
   type Stack,
   type TreeNode,
@@ -165,86 +163,6 @@ describe('effectiveMinSize (memoização do min degradado por minimização)', (
     const cache = new Map<number, [number, number]>([[1, [700, 500]]]);
     expect(effectiveMinSize(cache, 1, [640, 480], false)).toEqual([640, 480]);
     expect(cache.get(1)).toEqual([640, 480]);
-  });
-});
-
-describe('learnRefusedMin (piso aprendido por recusa, ADR 0053)', () => {
-  const EPS = 2;
-  const CAP = { width: 1900, height: 1000 };
-
-  it('aprende o eixo recusado (actual > commanded + epsilon) e grava o piso', () => {
-    const cache = new Map<number, [number, number]>();
-    const changed = learnRefusedMin(
-      cache,
-      1,
-      { width: 250, height: 600 },
-      { width: 300, height: 600 },
-      EPS,
-      CAP,
-    );
-    expect(changed).toBe(true);
-    expect(cache.get(1)).toEqual([300, 0]);
-  });
-
-  it('NÃO aprende quando o frame obedeceu (actual ≤ commanded, dentro do epsilon)', () => {
-    const cache = new Map<number, [number, number]>();
-    const changed = learnRefusedMin(
-      cache,
-      1,
-      { width: 400, height: 300 },
-      { width: 401, height: 300 },
-      EPS,
-      CAP,
-    );
-    expect(changed).toBe(false);
-    expect(cache.has(1)).toBe(false);
-  });
-
-  it('limita o piso ao cap (área útil do monitor)', () => {
-    const cache = new Map<number, [number, number]>();
-    learnRefusedMin(cache, 1, { width: 100, height: 100 }, { width: 5000, height: 100 }, EPS, CAP);
-    expect(cache.get(1)).toEqual([1900, 0]);
-  });
-
-  it('só cresce: recusa menor não reduz um piso já aprendido (anti-inflação-reversa)', () => {
-    const cache = new Map<number, [number, number]>([[1, [800, 0]]]);
-    // recusou 500 (< 800 já aprendido) — mantém 800, sem mudança.
-    const changed = learnRefusedMin(
-      cache,
-      1,
-      { width: 400, height: 100 },
-      { width: 500, height: 100 },
-      EPS,
-      CAP,
-    );
-    expect(changed).toBe(false);
-    expect(cache.get(1)).toEqual([800, 0]);
-  });
-
-  it('não infla: a MESMA recusa repetida não muda o piso (ponto fixo)', () => {
-    const cache = new Map<number, [number, number]>();
-    const cmd = { width: 250, height: 250 };
-    const act = { width: 300, height: 320 };
-    expect(learnRefusedMin(cache, 1, cmd, act, EPS, CAP)).toBe(true);
-    expect(learnRefusedMin(cache, 1, cmd, act, EPS, CAP)).toBe(false);
-    expect(cache.get(1)).toEqual([300, 320]);
-  });
-
-  it('preserva o eixo não-recusado ao aprender só o outro', () => {
-    const cache = new Map<number, [number, number]>([[1, [300, 320]]]);
-    // agora só a altura é recusada; a largura obedeceu — mantém 300 na largura.
-    learnRefusedMin(cache, 1, { width: 400, height: 250 }, { width: 400, height: 400 }, EPS, CAP);
-    expect(cache.get(1)).toEqual([300, 400]);
-  });
-});
-
-describe('applyRefusedFloor (compõe piso sobre o min reportado, ADR 0053)', () => {
-  it('devolve o maior em cada eixo', () => {
-    expect(applyRefusedFloor([100, 500], [300, 200])).toEqual([300, 500]);
-  });
-
-  it('piso ausente → devolve o raw intacto', () => {
-    expect(applyRefusedFloor([100, 500], undefined)).toEqual([100, 500]);
   });
 });
 

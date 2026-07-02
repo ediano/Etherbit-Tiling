@@ -1,7 +1,11 @@
 # 0053 — Min-size observado por recusa (converge-safe, GNOME-only): encaixe de janelas rígidas que mentem `min≈0`
 
-**Status:** ✅ Aceita
-(emenda [0052](0052-rollback-compensacao-rigida-e-spawn-merge-gnome.md) — reintroduz, numa fatia
+**Status:** 🔄 Revogada por [0054](0054-rollback-min-observado-por-recusa-gnome.md)
+(o _feed_ do min observado por recusa **piorou o comportamento do grid em sessão real** e foi removido
+da extensão GNOME; volta-se ao esmagamento puro do core [0040](0040-esmagamento-impositivo-e-menu-de-contexto-kde.md).
+Histórico da decisão original abaixo, preservado pela regra de ouro.)
+
+(histórico — emenda [0052](0052-rollback-compensacao-rigida-e-spawn-merge-gnome.md) — reintroduzia, numa fatia
 **estreita e converge-safe**, apenas o _feed_ do min observado ao core, SEM a compensação de exibição,
 o spawn-merge, os gaps invioláveis nem o slot unificado que o 0052 removeu; emenda
 [0033](0033-min-size-real-e-merge-em-abas-sob-overflow.md) — compõe o piso aprendido sobre a memoização
