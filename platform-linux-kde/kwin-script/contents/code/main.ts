@@ -52,6 +52,8 @@ import {
   type WindowSnapshot,
   type MonitorSnapshot,
   type WinMin,
+  clampToWorkArea,
+  shouldPaintGlobalPreview,
 } from './bridge.js';
 
 const BUS_NAME = 'dev.ediano.etherbit.Tiling';
@@ -454,6 +456,34 @@ function monitorNameUnderCursor(): string {
   return outputs[0] ? outputNameOf(outputs[0]) : '#0';
 }
 
+/// Há OUTRA janela normal viva no mesmo grupo `(monitor sob o ponto, desktop atual)` além da arrastada?
+/// Base do gating do preview global (ADR 0064): num grupo POPULADO o bloco global (50%/monitor) do
+/// `resolveHotZone` — que pisca sobre os vizinhos quando o cursor cruza um gap — é suprimido. Agnóstico:
+/// usa a work-area viva do compositor (`clientArea`) e a identidade por nome do conector, sem hardcode.
+function groupPopulatedUnder(x: number, y: number): boolean {
+  const outputs = collectOutputs();
+  let targetName: string | null = null;
+  for (const o of outputs) {
+    const a = workspace.clientArea(KWin.MaximizeArea, o, workspace.currentDesktop);
+    if (x >= a.x && x < a.x + a.width && y >= a.y && y < a.y + a.height) {
+      targetName = outputNameOf(o);
+      break;
+    }
+  }
+  const curIdx = (workspace.desktops ?? []).indexOf(workspace.currentDesktop);
+  const targetKey = targetName !== null ? orderKey(targetName, curIdx) : null;
+  for (const win of workspace.windowList()) {
+    if (!isLiveWindow(win) || windowId(win) === draggedId || !win.normalWindow) {
+      continue;
+    }
+    const key = orderKey(outputNameOf(win.output), desktopIndexOf(win));
+    if (targetKey === null || key === targetKey) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// Chave `(monitor, desktop)` do grupo "ativo": monitor + desktop da janela ativa (ou desktop atual).
 function activeGroupKey(): string {
   const aw = workspace.activeWindow;
@@ -696,13 +726,16 @@ function retile(): void {
   const mySeq = syncSeq;
   debug('retile: enviando SyncWindows com', snapshots.length, 'janelas (seq', mySeq, ')');
 
+  // Snapshot de work-area por output — reusado na serialização E no clamp de borda do apply (ADR 0065).
+  const monitors = monitorsFrom(outputs);
+
   callDBus(
     BUS_NAME,
     OBJECT_PATH,
     IFACE,
     'SyncWindows',
     serializeWindows(snapshots),
-    serializeMonitors(monitorsFrom(outputs)),
+    serializeMonitors(monitors),
     serializeState(stacks, disabled, transportOf, trees, focusedStable, nameToIndex),
     (layoutJson: string) => {
       syncAckSeq = mySeq;
@@ -780,11 +813,18 @@ function retile(): void {
           // antigas do script), cai na inferência geométrica antiga para preservar o Unmaximize Recovery.
           const skip = win.maximizedChanged ? maximizedIds.has(wid) : isMaximized(win);
           if (!skip) {
+            // Clamp à work-area do monitor da janela (ADR 0065): contém o resíduo do esmagamento
+            // impositivo (ADR 0040) para a janela não vazar a borda útil no spawn saturado do primário.
+            // O KWin clampa à TELA nativamente, mas não à MaximizeArea; este é o conserto na ponte,
+            // paridade com o GNOME. Sem monitor resolvido (defensivo) aplica o comando cru.
+            const mi = win.output ? outputs.indexOf(win.output) : -1;
+            const area = mi >= 0 ? monitors[mi] : undefined;
+            const g = area ? clampToWorkArea(command, area) : command;
             win.frameGeometry = {
-              x: command.x,
-              y: command.y,
-              width: command.width,
-              height: command.height,
+              x: g.x,
+              y: g.y,
+              width: g.width,
+              height: g.height,
             };
           }
         }
@@ -965,11 +1005,12 @@ function ejectFromStack(draggedStable: string, draggedT: number): void {
 }
 
 /// Reposiciona a janela recém-ejetada `draggedStable` (transporte `draggedT`) na zona de drop resolvida
-/// em `(x, y)` — coordenadas GLOBAIS de tela (ADR 0042, "cai onde foi solta"). Espelha `onMoveFinish`:
-/// escopo global (gap vazio) = bloco de 50% / maximizar; escopo local (sobre uma janela) = split do slot
-/// do alvo. Emite `MoveWindow` (o core usa `detach_window` para tirar a aba do stack e reinseri-la) e
-/// re-tila na resposta. Devolve `true` se disparou o MoveWindow; `false` se não havia zona útil (o
-/// chamador cai no `ejectFromStack`, ADR 0045).
+/// em `(x, y)` — coordenadas GLOBAIS de tela (ADR 0042, "cai onde foi solta"). Escopo local (sobre uma
+/// janela) = split do slot do alvo. Escopo global (gap vazio) NÃO é tratado aqui (devolve `false`): o
+/// desagrupamento sobre gap não deve tomar 50% do workspace (ADR 0045) — o chamador cascata para
+/// `ejectFromStack` (reinserção cíclica proporcional). Emite `MoveWindow` (o core usa `detach_window`
+/// para tirar a aba do stack e reinseri-la) e re-tila na resposta. Devolve `true` se disparou o
+/// MoveWindow; `false` se não havia zona local útil (gap ou sem alvo).
 function dropEjectedAt(draggedStable: string, draggedT: number, x: number, y: number): boolean {
   const target = windowUnderPointObj(x, y, draggedStable);
   // Guarda contra corrida TOCTOU: a janela-alvo pode morrer ENTRE o lookup e a leitura da geometria
@@ -1007,8 +1048,12 @@ function dropEjectedAt(draggedStable: string, draggedT: number, x: number, y: nu
     );
   };
   if (hot.scope === 'global') {
-    emit(0, hot.dropZone, 'global');
-    return true;
+    // Desagrupar sobre um GAP NÃO deve tomar 50% do workspace (esmagaria as demais num grid denso, ADR
+    // 0045). Devolve `false` → `finishUngroup` cascata para `ejectFromStack` (zona `eject`), que reduz
+    // proporcionalmente via reinserção cíclica e ainda dá 50/50 no caso legítimo de 2 janelas. Simetria
+    // com o GNOME (`_ejectTabAt`). O bloco global de 50% segue só no MOVE de janela não-membro
+    // (`onMoveFinish`), não no desagrupamento.
+    return false;
   }
   if (target) {
     const targetT = lastTransportOf.get(windowId(target));
@@ -1263,9 +1308,14 @@ function onMoveStep(): void {
     hot.scope,
     hot.dropZone,
   );
-  // Preview via outline NATIVO do KWin (o daemon não desenha nada — é geometria pura). Contorno do
-  // retângulo-destino da zona quente; `none` esconde.
-  updateOutline(hot.dropZone === 'none' ? null : hot.outline);
+  // Preview do helper translúcido: contorno do retângulo-destino da zona quente; `none` esconde.
+  // Gating do bloco GLOBAL (ADR 0064): num grupo populado, o cursor cruzando um gap resolveria para o
+  // bloco global (50%/monitor) e o overlay saltaria sobre os vizinhos (a "drawdown expansiva" da
+  // diretiva). Aí suprimimos o preview (mostra só o quadrante-alvo local). Vazio → preview global legítimo.
+  const paint =
+    hot.dropZone !== 'none' &&
+    shouldPaintGlobalPreview(hot.scope, groupPopulatedUnder(cursor.x, cursor.y));
+  updateOutline(paint ? hot.outline : null);
   resolving = false;
 }
 

@@ -43,6 +43,25 @@ export interface LayoutCommand {
   height: number;
 }
 
+/// Contém `cmd` DENTRO da work-area do monitor-alvo — espelho do `clampToWorkArea` do GNOME (paridade
+/// KDE⇄GNOME, ADR 0065). Sob esmagamento impositivo (ADR 0040) o core deixa a última track TRANSBORDAR a
+/// borda útil (deslocamento compensatório); o clamp NATIVO do KWin contém à TELA, mas não à MaximizeArea
+/// (não desconta painéis), então no spawn saturado do monitor primário (escala fracionária) o resíduo
+/// vaza a borda direita útil e a janela fica invisível/inacessível. Estratégia **shrink-to-fit**: a
+/// origem sobe para ≥ origem útil e width/height ENCOLHEM para não cruzar a borda útil. Nunca empurra a
+/// origem "para trás" da borda (isso sobreporia a vizinha na over-subscrição — o pecado que a 0064
+/// rejeitou ao clampar no CORE; aqui, na ponte, a árvore/dedup usam o rect já clampado, sem busy-loop).
+/// Preserva o piso ≥1px. Agnóstico: a work-area vem viva do compositor (`clientArea`/`monitorsFrom`),
+/// sem hardcode de resolução/escala. Literais explícitos (NÃO spread): o QJSEngine do KWin rejeita
+/// `{ ...cmd }` (ADR 0013).
+export function clampToWorkArea(cmd: LayoutCommand, area: MonitorSnapshot): LayoutCommand {
+  const x = Math.max(area.x, cmd.x);
+  const y = Math.max(area.y, cmd.y);
+  const width = Math.max(1, Math.min(cmd.width, area.x + area.width - x));
+  const height = Math.max(1, Math.min(cmd.height, area.y + area.height - y));
+  return { id: cmd.id, x, y, width, height };
+}
+
 /// Espelha o `PreviewDto` do daemon: a zona resolvida + o retângulo do indicador de drop.
 export interface DropPreview {
   zone: string;
@@ -333,6 +352,16 @@ function globalHotZone(mfx: number, mfy: number, monitor: Rect): HotZone {
     block = { x: monitor.x, y: monitor.y + hh, width: monitor.width, height: hh };
   }
   return { scope: 'global', dropZone, outline: block };
+}
+
+/// Decide se o retângulo de PREVIEW do drop deve ser pintado (ADR 0064). O preview global (50% do
+/// monitor / monitor inteiro) só faz sentido num workspace VAZIO (primeira janela). Num workspace
+/// POPULADO, quando o cursor cruza um gap entre quadrantes, `resolveHotZone` cai no `globalHotZone` e
+/// devolveria um bloco enorme que pisca sobre os vizinhos — a "animação de drawdown expansiva" da
+/// diretiva. Aí suprimimos (retorna `false`): o helper esconde o overlay em vez de saltar para o bloco
+/// global. O preview LOCAL (quadrante do alvo) é sempre pintado. Puramente visual — o drop não muda.
+export function shouldPaintGlobalPreview(scope: 'local' | 'global', populated: boolean): boolean {
+  return !(scope === 'global' && populated);
 }
 
 /// Serializa o escopo do drop para o `MoveWindow` (ADR 0028): `"global"` (50%/maximizar) ou `"local"`
