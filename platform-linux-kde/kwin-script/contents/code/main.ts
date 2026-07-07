@@ -189,6 +189,13 @@ const disabled = new Set<string>();
 /// "nasceu maximizada" → spawn-unmaximize (entra na Distribuição Cíclica). Já uma janela tilada que o
 /// usuário maximiza é PRESERVADA (volta ao slot ao desmaximizar — Unmaximize Recovery).
 const everTiled = new Set<string>();
+/// internalIds que estão maximizados por AÇÃO EXPLÍCITA do usuário (transição capturada em
+/// `maximizedChanged`). É a fonte de verdade do skip do apply (Unmaximize Recovery), NO LUGAR de inferir
+/// maximização só pela geometria: um resize manual que estica a janela até a borda IGUALA a MaximizeArea
+/// (o KWin faz snap à borda) e `isMaximized` daria falso-positivo, deixando a janela FORA do grid até um
+/// arraste (a "inércia" relatada). Um resize NÃO dispara `maximizedChanged`, então a janela esticada não
+/// entra aqui e recebe seu slot normalmente. Limpo no `windowRemoved`. ADR 0063.
+const maximizedIds = new Set<string>();
 /// Instante (ms, `Date.now`) do nascimento de cada janela — base da janela de graça de spawn-unmaximize
 /// (ADR 0043). Dentro dela, QUALQUER maximização é tratada como spawn e desmaximizada, mesmo já tilada:
 /// apps de restore lento auto-maximizam depois do `windowAdded`. Limpo no `windowRemoved`.
@@ -309,6 +316,23 @@ function spawnUnmaximizeIfBorn(win: KWinWindow): void {
     win.setMaximize?.(false, false);
   } catch (e) {
     // referência morta / API ausente — ignora (a janela segue como está; o retile cuida do resto)
+  }
+}
+
+/// Reconcilia `maximizedIds` com o estado REAL da janela após uma transição de `maximizedChanged`:
+/// registra maximização EXPLÍCITA (add) e a desfaz (remove). É a fonte de verdade do skip do apply, no
+/// lugar da inferência puramente geométrica — que dá falso-positivo quando um resize manual estica a
+/// janela até igualar a MaximizeArea (ADR 0063). Defensivo: janela morta → limpa o id.
+function syncMaximizedState(win: KWinWindow): void {
+  try {
+    const id = windowId(win);
+    if (isLiveWindow(win) && isMaximized(win)) {
+      maximizedIds.add(id);
+    } else {
+      maximizedIds.delete(id);
+    }
+  } catch (e) {
+    // referência morta ao ler o id — ignora (o `windowRemoved` limpa o estado leve)
   }
 }
 
@@ -684,9 +708,9 @@ function retile(): void {
             w.minimized = true;
           }
         }
-        // Aplica a geometria das janelas tiladas. Pula janelas MAXIMIZADAS — sobrescrever a geometria
-        // as desmaximizaria. O compositor as mantém maximizadas por cima do slot reservado; ao
-        // desmaximizar, um novo relayout aplica o slot (Unmaximize Recovery).
+        // Aplica a geometria das janelas tiladas. Pula janelas maximizadas por AÇÃO EXPLÍCITA do
+        // usuário — sobrescrever a geometria as desmaximizaria. O compositor as mantém maximizadas por
+        // cima do slot reservado; ao desmaximizar, um novo relayout aplica o slot (Unmaximize Recovery).
         for (const command of commands) {
           const win = byId.get(command.id);
           if (!win) {
@@ -696,10 +720,27 @@ function retile(): void {
             sawDead = true;
             continue;
           }
+          const wid = windowId(win);
+          // Captura de spawn agressiva (ADR 0063): janela ainda na graça, com geometria igual à
+          // MaximizeArea, mas SEM maximização explícita (não está em `maximizedIds`) = app que
+          // auto-maximizou depois do `windowAdded` sem disparar `maximizedChanged`. Desmaximiza
+          // imperativamente para ela não "vazar" maximizada e ficar fora do grid.
+          if (withinSpawnGrace(wid) && !maximizedIds.has(wid) && isMaximized(win)) {
+            try {
+              win.setMaximize?.(false, false);
+            } catch (e) {
+              // referência morta / API ausente — segue; o apply abaixo encaixa a janela no slot
+            }
+          }
           // O core deu um slot a esta janela → ela já foi tilada. A partir daqui, maximizá-la é ação
           // MANUAL do usuário (preservada); só "nasceu maximizada" quem nunca apareceu aqui (spawn).
-          everTiled.add(windowId(win));
-          if (!isMaximized(win)) {
+          everTiled.add(wid);
+          // Pula SÓ quem está maximizado por ação explícita (estado real em `maximizedIds`, ADR 0063).
+          // Uma janela apenas ESTICADA até a borda (resize manual) NÃO está no conjunto → recebe seu
+          // slot com gaps, encerrando a "inércia". Fallback: sem o sinal `maximizedChanged` (versões
+          // antigas do script), cai na inferência geométrica antiga para preservar o Unmaximize Recovery.
+          const skip = win.maximizedChanged ? maximizedIds.has(wid) : isMaximized(win);
+          if (!skip) {
             win.frameGeometry = {
               x: command.x,
               y: command.y,
@@ -1362,6 +1403,9 @@ function trackWindow(win: KWinWindow): void {
   // Cíclica; uma janela já tilada que o usuário maximiza é preservada (só re-tila).
   if (win.maximizedChanged) {
     win.maximizedChanged.connect(() => {
+      // Rastreia o estado real de maximização SEMPRE (mesmo sob `applying`): é barato e não re-tila.
+      // Alimenta o skip do apply por estado explícito (ADR 0063), evitando o falso-positivo geométrico.
+      syncMaximizedState(win);
       if (!applying) {
         spawnUnmaximizeIfBorn(win);
         retile();
@@ -1392,6 +1436,7 @@ workspace.windowRemoved.connect((win) => {
     removeIdFromStacks(stacks, id);
     stackHidden.delete(id);
     everTiled.delete(id);
+    maximizedIds.delete(id);
     spawnAt.delete(id);
   } catch (e) {
     // referência morta — segue direto para o retile

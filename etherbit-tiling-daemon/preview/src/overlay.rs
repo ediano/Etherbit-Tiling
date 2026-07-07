@@ -99,6 +99,12 @@ struct TabSurface {
     layer: LayerSurface,
     view: TabBarView,
     slots: Vec<TabSlot>,
+    /// Origem lógica `(ox, oy)` do output ao qual esta `LayerSurface` está fixada (ADR 0063). `None` =
+    /// fallback global (nenhum output conhecido continha a barra). Serve para (a) rebaixar as margens
+    /// GLOBAIS do core para LOCAIS ao output (uma `LayerSurface` ancorada TOP|LEFT mede as margens da
+    /// origem do SEU output) e (b) detectar troca de output (barra arrastada para outro monitor): como
+    /// o output de uma `LayerSurface` é IMUTÁVEL após criada, a troca exige RECRIAR a superfície.
+    origin: Option<(i32, i32)>,
 }
 
 /// A superfície do menu de contexto da guia (ADR 0040): a `LayerSurface`, o modelo (para qual
@@ -141,6 +147,9 @@ struct App {
     /// Superfície do PREVIEW (None = preview escondido).
     layer: Option<LayerSurface>,
     rect: Option<PreviewRect>,
+    /// Origem lógica do output ao qual a superfície de PREVIEW está fixada (ver `TabSurface::origin`).
+    /// `None` = escondida ou fallback global. Detecta drag do preview entre monitores → recriar.
+    layer_origin: Option<(i32, i32)>,
     /// Superfícies das BARRAS DE ABAS (uma por grupo).
     tab_surfaces: Vec<TabSurface>,
     /// Menu de contexto aberto (no máximo um por vez). `None` = nenhum menu aberto. ADR 0040.
@@ -156,19 +165,48 @@ struct App {
 }
 
 impl App {
+    /// Output cuja área lógica contém o ponto GLOBAL `(x, y)`, com sua origem lógica `(ox, oy)` (ADR
+    /// 0063). O core devolve a geometria das barras/preview em coordenadas GLOBAIS do compositor, mas
+    /// uma `LayerSurface` ancorada TOP|LEFT interpreta as margens relativas à origem do output ao qual
+    /// está fixada. Fixamos cada superfície ao output que a contém e rebaixamos as margens para a origem
+    /// dele — sem isto, uma barra num monitor fora da origem global `(0,0)` cai FORA da tela (era a causa
+    /// das "abas invisíveis" no monitor secundário). `None` = nenhum output conhecido contém o ponto (o
+    /// chamador cai no fallback: `output = None` + margens globais, o comportamento antigo).
+    fn output_at(&self, x: i32, y: i32) -> Option<(wl_output::WlOutput, i32, i32, i32, i32)> {
+        for output in self.output_state.outputs() {
+            if let Some(info) = self.output_state.info(&output) {
+                if let (Some((lx, ly)), Some((sw, sh))) = (info.logical_position, info.logical_size)
+                {
+                    if output_contains(lx, ly, sw, sh, x, y) {
+                        return Some((output, lx, ly, sw, sh));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     // ---- PREVIEW (papel 1) -------------------------------------------------------------------
 
     /// Cria/reposiciona (Some) ou esconde (None) a superfície translúcida do preview.
     fn apply_preview(&mut self, next: Option<PreviewRect>) {
         match next {
             Some(r) if r.width > 0 && r.height > 0 => {
+                // Fixa ao output que contém o retângulo e rebaixa as margens para a origem dele (ADR
+                // 0063). Sem output conhecido → fallback global (output=None, margens globais).
+                let target = self.output_at(r.x, r.y);
+                let origin = target.as_ref().map(|(_, ox, oy, _, _)| (*ox, *oy));
+                let (mx, my) = origin.unwrap_or((0, 0));
+                // Output de uma `LayerSurface` é IMUTÁVEL: se o preview migrou de monitor (drag entre
+                // telas), descarta a superfície antiga para recriá-la fixada ao novo output.
+                if self.layer.is_some() && self.layer_origin != origin {
+                    self.layer = None;
+                }
                 self.rect = Some(r);
-                if self.layer.is_some() {
-                    if let Some(layer) = self.layer.as_ref() {
-                        layer.set_size(r.width as u32, r.height as u32);
-                        layer.set_margin(r.y, 0, 0, r.x);
-                        layer.commit();
-                    }
+                if let Some(layer) = self.layer.as_ref() {
+                    layer.set_size(r.width as u32, r.height as u32);
+                    layer.set_margin(r.y - my, 0, 0, r.x - mx);
+                    layer.commit();
                     self.draw_preview(r.width as u32, r.height as u32);
                 } else {
                     let surface = self.compositor.create_surface(&self.qh);
@@ -177,11 +215,11 @@ impl App {
                         surface,
                         Layer::Overlay,
                         Some("etherbit-preview"),
-                        None,
+                        target.as_ref().map(|(o, _, _, _, _)| o),
                     );
                     layer.set_anchor(Anchor::TOP | Anchor::LEFT);
                     layer.set_size(r.width as u32, r.height as u32);
-                    layer.set_margin(r.y, 0, 0, r.x);
+                    layer.set_margin(r.y - my, 0, 0, r.x - mx);
                     layer.set_keyboard_interactivity(KeyboardInteractivity::None);
                     layer.set_exclusive_zone(-1);
                     // Input region VAZIA: o preview é click-through (nunca rouba o ponteiro do drag).
@@ -190,10 +228,12 @@ impl App {
                     }
                     layer.commit();
                     self.layer = Some(layer);
+                    self.layer_origin = origin;
                 }
             }
             _ => {
                 self.layer = None;
+                self.layer_origin = None;
                 self.rect = None;
             }
         }
@@ -265,13 +305,25 @@ impl App {
                 continue;
             }
             let slots = layout_slots(b);
+            // Output que contém a barra e sua origem lógica (ADR 0063): margens do core são GLOBAIS;
+            // rebaixamos para LOCAIS ao output ao qual a superfície é fixada. Sem output → fallback global.
+            let target = self.output_at(b.x, b.y);
+            let origin = target.as_ref().map(|(_, ox, oy, _, _)| (*ox, *oy));
+            let (mx, my) = origin.unwrap_or((0, 0));
+            // Barra existente cujo output MUDOU (grupo arrastado para outro monitor): o output de uma
+            // `LayerSurface` é imutável, então descarta a superfície para recriá-la fixada ao novo output.
+            if let Some(i) = self.tab_surfaces.iter().position(|ts| ts.stack_id == b.stack_id) {
+                if self.tab_surfaces[i].origin != origin {
+                    self.tab_surfaces.remove(i);
+                }
+            }
             if let Some(i) = self.tab_surfaces.iter().position(|ts| ts.stack_id == b.stack_id) {
                 let size_changed =
                     self.tab_surfaces[i].view.w != b.w || self.tab_surfaces[i].view.h != b.h;
                 self.tab_surfaces[i].view = b.clone();
                 self.tab_surfaces[i].slots = slots;
                 self.tab_surfaces[i].layer.set_size(b.w as u32, b.h as u32);
-                self.tab_surfaces[i].layer.set_margin(b.y, 0, 0, b.x);
+                self.tab_surfaces[i].layer.set_margin(b.y - my, 0, 0, b.x - mx);
                 self.tab_surfaces[i].layer.commit();
                 // Tamanho MUDOU → o compositor manda `configure` e desenhamos lá (o buffer casa o tamanho
                 // já "acked", sem erro de protocolo). Tamanho igual (só conteúdo/título/ativa ou reposição)
@@ -286,11 +338,11 @@ impl App {
                     surface,
                     Layer::Overlay,
                     Some("etherbit-tabs"),
-                    None,
+                    target.as_ref().map(|(o, _, _, _, _)| o),
                 );
                 layer.set_anchor(Anchor::TOP | Anchor::LEFT);
                 layer.set_size(b.w as u32, b.h as u32);
-                layer.set_margin(b.y, 0, 0, b.x);
+                layer.set_margin(b.y - my, 0, 0, b.x - mx);
                 layer.set_keyboard_interactivity(KeyboardInteractivity::None);
                 layer.set_exclusive_zone(-1);
                 // Input region PADRÃO (toda a superfície) → recebe os cliques. Primeiro draw no configure.
@@ -300,6 +352,7 @@ impl App {
                     layer,
                     view: b.clone(),
                     slots,
+                    origin,
                 });
             }
         }
@@ -443,22 +496,32 @@ impl App {
         if w <= 0 || h <= 0 {
             return;
         }
-        let (mut ax, mut ay) = (anchor_x.max(0), anchor_y.max(0));
-        if let Some((bx, by)) = self.output_bounds() {
-            ax = ax.min((bx - w).max(0));
-            ay = ay.min((by - h).max(0));
-        }
+        // Fixa o menu ao output que contém o ponto de âncora e clampa/rebaixa as margens DENTRO dele
+        // (ADR 0063): o clamp por união de outputs (antigo) só funcionava com todos na origem — num
+        // monitor deslocado o menu vazava ou caía fora. Sem output conhecido → fallback global.
+        let target = self.output_at(anchor_x, anchor_y);
+        let (out, ox, oy, ow, oh) = match &target {
+            Some((o, ox, oy, ow, oh)) => (Some(o), *ox, *oy, *ow, *oh),
+            None => match self.output_bounds() {
+                // Fallback: clamp à união e margens globais (comportamento antigo).
+                Some((bx, by)) => (None, 0, 0, bx, by),
+                None => (None, 0, 0, i32::MAX, i32::MAX),
+            },
+        };
+        // Ponto de âncora local ao output, clampado para o menu caber inteiro nele.
+        let lx = (anchor_x - ox).clamp(0, (ow - w).max(0));
+        let ly = (anchor_y - oy).clamp(0, (oh - h).max(0));
         let surface = self.compositor.create_surface(&self.qh);
         let layer = self.layer_shell.create_layer_surface(
             &self.qh,
             surface,
             Layer::Overlay,
             Some("etherbit-tab-menu"),
-            None,
+            out,
         );
         layer.set_anchor(Anchor::TOP | Anchor::LEFT);
         layer.set_size(w as u32, h as u32);
-        layer.set_margin(ay, 0, 0, ax);
+        layer.set_margin(ly, 0, 0, lx);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer.set_exclusive_zone(-1);
         // Input region PADRÃO (toda a superfície) → recebe os cliques. Primeiro draw no configure.
@@ -845,6 +908,25 @@ impl ProvidesRegistryState for App {
     registry_handlers![OutputState, SeatState];
 }
 
+/// `true` se o ponto GLOBAL `(x, y)` cai dentro do retângulo lógico de um output `(ox, oy, ow, oh)`.
+/// Semiaberto no canto inferior/direito (`< ox+ow`) para que outputs adjacentes não se sobreponham na
+/// fronteira. Puro e testável (base de `output_at`/`local_origin_for`).
+fn output_contains(ox: i32, oy: i32, ow: i32, oh: i32, x: i32, y: i32) -> bool {
+    x >= ox && x < ox + ow && y >= oy && y < oy + oh
+}
+
+/// Origem lógica `(ox, oy)` do output que contém o ponto GLOBAL `(x, y)` numa lista de retângulos
+/// `(ox, oy, ow, oh)` — ou `None` se nenhum o contém. Núcleo PURO da conversão global→local do ADR
+/// 0063 (rebaixar as margens do core para a origem do output ao qual a `LayerSurface` é fixada);
+/// testável sem sessão Wayland. `output_at` faz o mesmo casando o `wl_output` real.
+#[cfg_attr(not(test), allow(dead_code))]
+fn local_origin_for(outputs: &[(i32, i32, i32, i32)], x: i32, y: i32) -> Option<(i32, i32)> {
+    outputs
+        .iter()
+        .find(|&&(ox, oy, ow, oh)| output_contains(ox, oy, ow, oh, x, y))
+        .map(|&(ox, oy, _, _)| (ox, oy))
+}
+
 /// Sobe o event loop Wayland do overlay. Fora de uma sessão com `wlr-layer-shell`, encerra GRACIOSO.
 pub fn run(
     mut rx: watch::Receiver<OverlayState>,
@@ -905,6 +987,7 @@ pub fn run(
         font: text::load_font(),
         layer: None,
         rect: None,
+        layer_origin: None,
         tab_surfaces: Vec::new(),
         menu: None,
         pointer: None,
@@ -958,4 +1041,58 @@ pub fn run(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{local_origin_for, output_contains};
+
+    // Setup assimétrico do relato de hardware: principal 4K na origem (0,0) e secundário Full HD à
+    // direita, começando em x=3840. As margens do core são GLOBAIS; o teste trava a conversão para a
+    // origem do output que contém cada barra (ADR 0063).
+    const OUTPUTS_4K_FHD: &[(i32, i32, i32, i32)] = &[(0, 0, 3840, 2160), (3840, 0, 1920, 1080)];
+
+    #[test]
+    fn origin_para_barra_no_monitor_da_origem_global() {
+        // Barra numa janela do 4K (origem global): margens já são locais → origem (0,0).
+        assert_eq!(local_origin_for(OUTPUTS_4K_FHD, 100, 28), Some((0, 0)));
+        assert_eq!(local_origin_for(OUTPUTS_4K_FHD, 3839, 2159), Some((0, 0)));
+    }
+
+    #[test]
+    fn origin_rebaixa_barra_no_monitor_deslocado() {
+        // Barra numa janela do Full HD (x global ≥ 3840): a origem (3840,0) rebaixa a margem para
+        // dentro do output — sem isto, `set_margin(.., 3840)` a jogaria para fora da tela (bug 4K).
+        assert_eq!(local_origin_for(OUTPUTS_4K_FHD, 3840, 28), Some((3840, 0)));
+        assert_eq!(local_origin_for(OUTPUTS_4K_FHD, 5000, 500), Some((3840, 0)));
+        // Margem local resultante: x global 3900 − origem 3840 = 60 (dentro do Full HD).
+        let (ox, _) = local_origin_for(OUTPUTS_4K_FHD, 3900, 28).unwrap();
+        assert_eq!(3900 - ox, 60);
+    }
+
+    #[test]
+    fn origin_para_monitor_deslocado_verticalmente() {
+        // Arranjo empilhado: secundário abaixo do principal.
+        let stacked = &[(0, 0, 1920, 1080), (0, 1080, 1920, 1080)];
+        assert_eq!(local_origin_for(stacked, 500, 1200), Some((0, 1080)));
+        let (_, oy) = local_origin_for(stacked, 500, 1200).unwrap();
+        assert_eq!(1200 - oy, 120);
+    }
+
+    #[test]
+    fn origin_none_para_ponto_fora_de_todos_os_outputs() {
+        // Fora de qualquer output conhecido → None (chamador cai no fallback global).
+        assert_eq!(local_origin_for(OUTPUTS_4K_FHD, -10, -10), None);
+        assert_eq!(local_origin_for(OUTPUTS_4K_FHD, 6000, 2000), None);
+        assert_eq!(local_origin_for(&[], 0, 0), None);
+    }
+
+    #[test]
+    fn contains_e_semiaberto_na_fronteira() {
+        assert!(output_contains(0, 0, 3840, 2160, 0, 0));
+        // Borda direita/inferior é exclusiva: o pixel 3840 já pertence ao próximo output.
+        assert!(!output_contains(0, 0, 3840, 2160, 3840, 0));
+        assert!(!output_contains(0, 0, 3840, 2160, 0, 2160));
+        assert!(output_contains(3840, 0, 1920, 1080, 3840, 0));
+    }
 }
