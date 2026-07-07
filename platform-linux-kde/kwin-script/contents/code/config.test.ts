@@ -31,6 +31,12 @@ describe('DEFAULT_CONFIG', () => {
       autostart: false,
       rounded_corners: true,
       corner_radius: 12,
+      disabled_groups: [],
     });
+  });
+
+  it('preserva disabled_groups vindos do daemon (ADR 0057)', () => {
+    const cfg = parseConfig('{"disabled_groups":[{"monitor":"DP-1","workspace":0}]}');
+    expect(cfg.disabled_groups).toEqual([{ monitor: 'DP-1', workspace: 0 }]);
   });
 });

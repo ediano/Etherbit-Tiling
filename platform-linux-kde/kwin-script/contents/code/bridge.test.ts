@@ -14,6 +14,7 @@ import {
   serializeState,
   serializeTarget,
   toggleGroupDisabled,
+  toggleAxisDisabled,
   treeToTransport,
   treeFromTransport,
   resizeDeltaFrom,
@@ -146,6 +147,35 @@ describe('estado de tiling por grupo e árvores (ids string)', () => {
     expect(disabled.has(orderKey(0, 1))).toBe(false);
   });
 
+  it('toggleAxisDisabled desliga o eixo inteiro quando algum está ligado', () => {
+    const disabled = new Set<string>();
+    const keys = [orderKey('DP-1', 0), orderKey('DP-1', 1), orderKey('DP-1', 2)];
+    // Nenhum desligado → desliga todos (retorna true = eixo ficou DESLIGADO).
+    expect(toggleAxisDisabled(disabled, keys)).toBe(true);
+    expect(keys.every((k) => disabled.has(k))).toBe(true);
+  });
+
+  it('toggleAxisDisabled religa o eixo inteiro só quando TODOS estão desligados', () => {
+    const keys = [orderKey('DP-1', 0), orderKey('DP-1', 1)];
+    const disabled = new Set<string>(keys);
+    // Todos desligados → religa todos (retorna false = eixo ficou LIGADO).
+    expect(toggleAxisDisabled(disabled, keys)).toBe(false);
+    expect(keys.some((k) => disabled.has(k))).toBe(false);
+  });
+
+  it('toggleAxisDisabled com eixo parcial desliga o restante (não religa)', () => {
+    const keys = [orderKey('DP-1', 0), orderKey('DP-1', 1)];
+    const disabled = new Set<string>([orderKey('DP-1', 0)]); // só um desligado
+    expect(toggleAxisDisabled(disabled, keys)).toBe(true);
+    expect(keys.every((k) => disabled.has(k))).toBe(true);
+  });
+
+  it('toggleAxisDisabled com keys vazio é no-op', () => {
+    const disabled = new Set<string>([orderKey('DP-1', 0)]);
+    expect(toggleAxisDisabled(disabled, [])).toBe(false);
+    expect(disabled.has(orderKey('DP-1', 0))).toBe(true);
+  });
+
   it('serializeState traduz as folhas das árvores, os stacks reais e os grupos desligados', () => {
     const disabled = new Set<string>([orderKey(1, 2)]);
     const transportOf = new Map<string, number>([
@@ -157,7 +187,15 @@ describe('estado de tiling por grupo e árvores (ids string)', () => {
       [orderKey(0, 0), [{ members: ['a', 'b'], active: 'b' }]],
     ]);
     // ADR 0033: os stacks reais (≥ 2 membros traduzíveis) viajam para o core materializar; foco 'b' → 2.
-    expect(JSON.parse(serializeState(stacks, disabled, transportOf, trees, 'b'))).toEqual({
+    // ADR 0056: as chaves usam o token de monitor (aqui "0"/"1"); `nameToIndex` traduz para o índice do
+    // contrato do core. Com "0"→0 e "1"→1 os DTOs saem idênticos ao contrato anterior por índice.
+    const nameToIndex = new Map<string, number>([
+      ['0', 0],
+      ['1', 1],
+    ]);
+    expect(
+      JSON.parse(serializeState(stacks, disabled, transportOf, trees, 'b', nameToIndex)),
+    ).toEqual({
       stacks: [{ monitor: 0, workspace: 0, members: [1, 2], active: 2 }],
       disabled_groups: [[1, 2]],
       trees: [{ monitor: 0, workspace: 0, root: { win: 1 } }],
@@ -166,12 +204,57 @@ describe('estado de tiling por grupo e árvores (ids string)', () => {
   });
 
   it('serializeState com estado vazio → JSON mínimo', () => {
-    expect(JSON.parse(serializeState(new Map(), new Set(), new Map(), new Map(), ''))).toEqual({
+    expect(
+      JSON.parse(serializeState(new Map(), new Set(), new Map(), new Map(), '', new Map())),
+    ).toEqual({
       stacks: [],
       disabled_groups: [],
       trees: [],
       focused_id: 0,
     });
+  });
+
+  it('serializeState OMITE grupos de monitor DESCONECTADO (nome ausente no mapa) — ADR 0056', () => {
+    // Estado da ponte tem árvores em dois monitores por NOME; só "DP-1" está conectado agora.
+    const trees = new Map<string, TreeNode | null>([
+      [orderKey('DP-1', 0), { win: 'a' }],
+      [orderKey('HDMI-1', 0), { win: 'b' }],
+    ]);
+    const transportOf = new Map<string, number>([
+      ['a', 1],
+      ['b', 2],
+    ]);
+    const nameToIndex = new Map<string, number>([['DP-1', 0]]); // HDMI-1 desconectado
+    const out = JSON.parse(
+      serializeState(new Map(), new Set(), transportOf, trees, '', nameToIndex),
+    );
+    // Só o grupo do monitor conectado viaja; o de "HDMI-1" fica preservado na ponte (não some).
+    expect(out.trees).toEqual([{ monitor: 0, workspace: 0, root: { win: 1 } }]);
+  });
+
+  it('estado por NOME sobrevive à REORDENAÇÃO de índice do monitor (hotplug) — ADR 0056', () => {
+    // Árvore ancorada em "DP-1". Numa 1ª ordem, DP-1=índice 0; depois de reordenar, DP-1=índice 1.
+    const trees = new Map<string, TreeNode | null>([[orderKey('DP-1', 0), { win: 'a' }]]);
+    const transportOf = new Map<string, number>([['a', 1]]);
+    const before = JSON.parse(
+      serializeState(new Map(), new Set(), transportOf, trees, '', new Map([['DP-1', 0]])),
+    );
+    const after = JSON.parse(
+      serializeState(
+        new Map(),
+        new Set(),
+        transportOf,
+        trees,
+        '',
+        new Map([
+          ['HDMI-1', 0],
+          ['DP-1', 1],
+        ]),
+      ),
+    );
+    // A MESMA árvore de DP-1 é enviada ao índice 0 antes e ao índice 1 depois — sem trocar de tela.
+    expect(before.trees).toEqual([{ monitor: 0, workspace: 0, root: { win: 1 } }]);
+    expect(after.trees).toEqual([{ monitor: 1, workspace: 0, root: { win: 1 } }]);
   });
 
   it('árvore: nó `stack` é PRESERVADO na tradução; poda membros sem transporte (ADR 0033)', () => {
@@ -232,14 +315,58 @@ describe('estado de tiling por grupo e árvores (ids string)', () => {
     expect(partial).toEqual({ win: 1 });
   });
 
-  it('parseLayoutTrees traduz transporte → internalId por grupo', () => {
+  it('parseLayoutTrees traduz transporte → internalId e o índice do core → chave por NOME (ADR 0056)', () => {
     const toStable = new Map<number, string>([[1, 'a']]);
+    // O core devolve o índice numérico do monitor (0); `indexToName` o traduz para "DP-1".
+    const indexToName = new Map<number, string>([[0, 'DP-1']]);
     const json = JSON.stringify({
       rects: [],
       trees: [{ monitor: 0, workspace: 0, root: { win: 1 } }],
     });
-    const trees = parseLayoutTrees(json, toStable);
-    expect(trees.get(orderKey(0, 0))).toEqual({ win: 'a' });
+    const trees = parseLayoutTrees(json, toStable, indexToName);
+    expect(trees.get(orderKey('DP-1', 0))).toEqual({ win: 'a' });
+  });
+
+  it('round-trip serialize→core→parse mantém a árvore presa ao NOME após reordenar (ADR 0056)', () => {
+    // DP-1 começa no índice 0; a árvore é serializada, o "core" devolve o mesmo índice, e o parse a
+    // reancora em "DP-1". Depois de um hotplug (DP-1 vira índice 1), o parse do retorno do core (índice
+    // 1 → "DP-1") mantém a chave "DP-1:0" — a árvore nunca migra de tela.
+    const transportOf = new Map<string, number>([['a', 1]]);
+    const toStable = new Map<number, string>([[1, 'a']]);
+    const treesByName = new Map<string, TreeNode | null>([[orderKey('DP-1', 0), { win: 'a' }]]);
+
+    const sent0 = JSON.parse(
+      serializeState(new Map(), new Set(), transportOf, treesByName, '', new Map([['DP-1', 0]])),
+    );
+    const back0 = parseLayoutTrees(
+      JSON.stringify({ trees: sent0.trees }),
+      toStable,
+      new Map([[0, 'DP-1']]),
+    );
+    expect(back0.get(orderKey('DP-1', 0))).toEqual({ win: 'a' });
+
+    const sent1 = JSON.parse(
+      serializeState(
+        new Map(),
+        new Set(),
+        transportOf,
+        treesByName,
+        '',
+        new Map([
+          ['HDMI-1', 0],
+          ['DP-1', 1],
+        ]),
+      ),
+    );
+    const back1 = parseLayoutTrees(
+      JSON.stringify({ trees: sent1.trees }),
+      toStable,
+      new Map([
+        [0, 'HDMI-1'],
+        [1, 'DP-1'],
+      ]),
+    );
+    expect(back1.get(orderKey('DP-1', 0))).toEqual({ win: 'a' });
   });
 
   it('resizeDeltaFrom infere bordas e canto', () => {

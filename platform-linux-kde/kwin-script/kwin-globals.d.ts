@@ -22,8 +22,15 @@ interface QSize {
   height: number;
 }
 
-/** Saída/monitor. Tratado como opaco — só repassado a `clientArea`. */
-type KWinOutput = unknown;
+/**
+ * Saída/monitor. Repassado opaco a `clientArea`; expõe `name` (nome do conector, ex. "DP-1") — a
+ * IDENTIDADE ESTÁVEL usada para chavear o estado persistente por monitor (ADR 0056), imune à
+ * reordenação de índice no hotplug. API real do KWin (Plasma 6): `Output::name`. Defensivo: pode ser
+ * ausente em versões antigas do script — o consumidor cai no índice posicional quando falta.
+ */
+interface KWinOutput {
+  readonly name?: string;
+}
 
 /** Desktop virtual do KWin (Plasma 6). Tratado como opaco — só comparado por identidade/índice. */
 type KWinVirtualDesktop = unknown;

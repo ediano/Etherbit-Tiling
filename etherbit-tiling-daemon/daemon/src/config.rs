@@ -10,6 +10,17 @@ use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
+/// Um grupo `(monitor, workspace)` com o tiling DESLIGADO pelo usuário (Meta+Y). O monitor é o NOME
+/// ESTÁVEL do output (conector, ex. "DP-1"), não o índice posicional — ADR 0056: o índice muda com
+/// hotplug/reordenação e religaria o tiling no monitor errado. Persistido em `Config::disabled_groups`
+/// (ADR 0057) para sobreviver ao reinício do KWin. Struct nomeada (não tupla) para serializar como
+/// tabela TOML válida — TOML não aceita array heterogêneo `["DP-1", 0]`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DisabledGroup {
+    pub monitor: String,
+    pub workspace: u32,
+}
+
 /// Configuração do motor de tiling, espelhada 1:1 com os controles da extensão.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -42,6 +53,11 @@ pub struct Config {
     pub rounded_corners: bool,
     /// Raio (px) dos cantos arredondados.
     pub corner_radius: u32,
+    /// Grupos `(monitor, workspace)` com o tiling DESLIGADO pelo usuário (Meta+Y no KDE). Preferência
+    /// PERSISTIDA (ADR 0057) — como `gap`/`ignore_list` —, não estado transitório de layout: sobrevive
+    /// ao reinício do KWin. A ponte hidrata o set em memória a partir daqui na carga e o reescreve via
+    /// `SetDisabledGroups` a cada toggle. Vazio por padrão.
+    pub disabled_groups: Vec<DisabledGroup>,
 }
 
 impl Default for Config {
@@ -57,6 +73,7 @@ impl Default for Config {
             group_header_px: 28,
             rounded_corners: true,
             corner_radius: 12,
+            disabled_groups: Vec::new(),
         }
     }
 }
@@ -115,6 +132,7 @@ mod tests {
         assert_eq!(cfg.group_header_px, 28);
         assert!(cfg.rounded_corners);
         assert_eq!(cfg.corner_radius, 12);
+        assert!(cfg.disabled_groups.is_empty());
     }
 
     #[test]
@@ -132,6 +150,7 @@ mod tests {
             "group_header_px",
             "rounded_corners",
             "corner_radius",
+            "disabled_groups",
         ] {
             assert!(value.get(field).is_some(), "campo ausente: {field}");
         }
@@ -150,6 +169,10 @@ mod tests {
             group_header_px: 32,
             rounded_corners: false,
             corner_radius: 20,
+            disabled_groups: vec![
+                DisabledGroup { monitor: "DP-1".to_string(), workspace: 0 },
+                DisabledGroup { monitor: "HDMI-A-1".to_string(), workspace: 2 },
+            ],
         };
         let raw = toml::to_string_pretty(&cfg).expect("serializa TOML");
         let back: Config = toml::from_str(&raw).expect("desserializa TOML");
@@ -163,6 +186,8 @@ mod tests {
         assert_eq!(back.ignore_list, cfg.ignore_list);
         assert_eq!(back.autostart, cfg.autostart);
         assert_eq!(back.group_header_px, cfg.group_header_px);
+        // ADR 0057: os grupos desligados (nome do output + workspace) sobrevivem ao round-trip TOML.
+        assert_eq!(back.disabled_groups, cfg.disabled_groups);
     }
 
     #[test]

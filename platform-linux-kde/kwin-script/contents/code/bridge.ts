@@ -303,8 +303,11 @@ export function serializeScope(scope: 'local' | 'global'): string {
 // entrada; manter uma ordem estável por `(monitor, workspace)` evita reshuffle no foco e torna o
 // rearranjo do drop persistente sem que o daemon guarde estado. Helpers puros (testáveis sem KWin).
 
-/// Chave do grupo de ordenação.
-export function orderKey(monitor: number, workspace: number): string {
+/// Chave do grupo de ordenação. O `monitor` é um TOKEN ESTÁVEL do output — o NOME do conector (ex.
+/// "DP-1"), não o índice posicional (ADR 0056): o índice muda com hotplug/reordenação e remapearia o
+/// estado persistente (árvores/stacks/disabled) para o monitor físico errado. O nome não colide com o
+/// separador `:` (conectores KWin não têm `:`). Aceita `number` só por retrocompat de chamadas legadas.
+export function orderKey(monitor: string | number, workspace: number): string {
   return `${monitor}:${workspace}`;
 }
 
@@ -475,10 +478,17 @@ export function treeFromTransport(
   return { grid: { cols: node.grid.cols, rows: node.grid.rows, cells } };
 }
 
-/// Reverte `orderKey`: `"monitor:workspace"` → `[monitor, workspace]`.
-export function parseOrderKey(key: string): [number, number] {
-  const [m, w] = key.split(':');
-  return [Number(m) || 0, Number(w) || 0];
+/// Reverte `orderKey`: `"monitor:workspace"` → `[monitorToken, workspace]`. O `monitorToken` é o NOME
+/// do output (string), preservado como está (ADR 0056); só o `workspace` é numérico. Divide no ÚLTIMO
+/// `:` para tolerar qualquer separador futuro no nome (hoje conectores não têm `:`).
+export function parseOrderKey(key: string): [string, number] {
+  const sep = key.lastIndexOf(':');
+  if (sep < 0) {
+    return [key, 0];
+  }
+  const m = key.slice(0, sep);
+  const w = key.slice(sep + 1);
+  return [m, Number(w) || 0];
 }
 
 /// Um stack: membros na ordem das abas + a aba ativa (visível). Estado leve da ponte (internalId string).
@@ -510,7 +520,12 @@ export function serializeState(
   transportOf: Map<string, number>,
   trees: Map<string, TreeNode | null>,
   focusedStable: string,
+  nameToIndex: Map<string, number>,
 ): string {
+  // O estado da ponte é chaveado pelo NOME do output (ADR 0056); o contrato do daemon/core usa o ÍNDICE
+  // numérico atual (WorkArea.index). Traduz nome→índice aqui. Grupo cujo monitor está DESCONECTADO
+  // (nome ausente no mapa atual) é OMITIDO do sync — o estado nome-keyed sobrevive na ponte e reancora
+  // quando o monitor volta.
   const stackDtos: Array<{
     monitor: number;
     workspace: number;
@@ -518,7 +533,11 @@ export function serializeState(
     active: number;
   }> = [];
   for (const [key, list] of stacks) {
-    const [monitor, workspace] = parseOrderKey(key);
+    const [name, workspace] = parseOrderKey(key);
+    const monitor = nameToIndex.get(name);
+    if (monitor === undefined) {
+      continue;
+    }
     for (const s of list) {
       const members: number[] = [];
       for (const m of s.members) {
@@ -536,12 +555,21 @@ export function serializeState(
   }
   const disabledDtos: Array<[number, number]> = [];
   for (const key of disabled) {
-    disabledDtos.push(parseOrderKey(key));
+    const [name, workspace] = parseOrderKey(key);
+    const monitor = nameToIndex.get(name);
+    if (monitor === undefined) {
+      continue;
+    }
+    disabledDtos.push([monitor, workspace]);
   }
   // Árvores por grupo, traduzidas para ids de transporte (o core reconcilia e devolve a versão nova).
   const treeDtos: Array<{ monitor: number; workspace: number; root: TransportNode | null }> = [];
   for (const [key, root] of trees) {
-    const [monitor, workspace] = parseOrderKey(key);
+    const [name, workspace] = parseOrderKey(key);
+    const monitor = nameToIndex.get(name);
+    if (monitor === undefined) {
+      continue;
+    }
     treeDtos.push({ monitor, workspace, root: root ? treeToTransport(root, transportOf) : null });
   }
   const focused_id = transportOf.get(focusedStable) ?? 0;
@@ -719,6 +747,7 @@ export function parseTabActions(json: string): TabAction[] {
 export function parseLayoutTrees(
   json: string,
   toStable: Map<number, string>,
+  indexToName: Map<number, string>,
 ): Map<string, TreeNode | null> {
   const out = new Map<string, TreeNode | null>();
   let parsed: unknown;
@@ -742,8 +771,12 @@ export function parseLayoutTrees(
     if (!isFiniteNumber(e.monitor) || !isFiniteNumber(e.workspace)) {
       continue;
     }
+    // O core devolve o ÍNDICE numérico do monitor; a ponte persiste por NOME (ADR 0056). Traduz de
+    // volta via `indexToName` (mesmo mapa do serialize deste ciclo). Sem nome (índice inesperado),
+    // cai num token sintético `#idx` — só ocorre se o KWin não expuser `output.name` (fallback legado).
+    const name = indexToName.get(e.monitor) ?? `#${e.monitor}`;
     const root = e.root == null ? null : treeFromTransport(e.root as TransportNode, toStable);
-    out.set(orderKey(e.monitor, e.workspace), root);
+    out.set(orderKey(name, e.workspace), root);
   }
   return out;
 }
@@ -794,6 +827,30 @@ export function toggleGroupDisabled(disabled: Set<string>, key: string): boolean
     disabled.delete(key);
   } else {
     disabled.add(key);
+  }
+  return true;
+}
+
+/// Liga/desliga o tiling de um EIXO inteiro (todas as `keys` de um monitor, ou todas de um workspace) —
+/// usado pelo System Tray Applet via as ações `EtherbitToggleMonitor`/`EtherbitToggleWorkspace` (ADR
+/// 0059). Regra intuitiva de toggle coletivo: se TODAS as chaves já estão desligadas → religa o eixo
+/// inteiro (remove todas); caso contrário → desliga o eixo inteiro (adiciona todas). Assim um monitor/
+/// workspace parcialmente ligado vira "tudo desligado" no primeiro clique, e "tudo ligado" no seguinte.
+/// Retorna `true` se o eixo passou a ficar DESLIGADO, `false` se passou a ficar LIGADO. `keys` vazio é
+/// no-op (retorna `false`): nada a alternar. Helper puro (testável sem KWin).
+export function toggleAxisDisabled(disabled: Set<string>, keys: string[]): boolean {
+  if (keys.length === 0) {
+    return false;
+  }
+  const allDisabled = keys.every((k) => disabled.has(k));
+  if (allDisabled) {
+    for (const k of keys) {
+      disabled.delete(k);
+    }
+    return false;
+  }
+  for (const k of keys) {
+    disabled.add(k);
   }
   return true;
 }

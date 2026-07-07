@@ -17,7 +17,9 @@ echo ">> Limpando staging"
 rm -rf "$ROOT/dist-release" "$ROOT/$STAGE_NAME.tar.gz"
 mkdir -p "$STAGE/bin" "$STAGE/kwin-script/contents/code" \
          "$STAGE/kwin-script/contents/config" "$STAGE/kwin-script/contents/ui" \
-         "$STAGE/kwin-script/contents/locale/pt_BR/LC_MESSAGES"
+         "$STAGE/kwin-script/contents/locale/pt_BR/LC_MESSAGES" \
+         "$STAGE/plasmoid/contents/ui" \
+         "$STAGE/plasmoid/contents/locale/pt_BR/LC_MESSAGES"
 
 # --- Daemon + helper de preview (workspace compartilhado) ----------------------
 # O daemon é PURO geometria (sem framework visual, ADR 0029). A camada visual do preview do KDE vive
@@ -55,6 +57,21 @@ if command -v msgfmt >/dev/null; then
     -o "$STAGE/kwin-script/contents/locale/pt_BR/LC_MESSAGES/etherbit-tiling.mo"
 else
   echo "aviso: msgfmt ausente — pacote sem tradução pt-BR (UI ficará em inglês)."
+fi
+
+# --- System Tray Applet (Plasma/Applet, QML puro — ADR 0059) -------------------
+# Sem build step: só copia o KPackage (metadata.json + contents/ui/*.qml) e compila o .mo pt-BR (o
+# domínio DEVE ser plasma_applet_<id> para o i18n() do QML resolver). O applet dá acesso rápido na
+# bandeja (toggles por monitor/workspace + abrir config), disparando as ações do KWin Script.
+echo ">> Estagiando Plasma Applet"
+PL="$ROOT/platform-linux-kde/plasmoid"
+PL_ID="dev.ediano.etherbit.tiling"
+install -m 644 "$PL/metadata.json"              "$STAGE/plasmoid/metadata.json"
+install -m 644 "$PL/contents/ui/main.qml"       "$STAGE/plasmoid/contents/ui/main.qml"
+install -m 644 "$PL/contents/ui/EtherbitDBus.qml" "$STAGE/plasmoid/contents/ui/EtherbitDBus.qml"
+if command -v msgfmt >/dev/null; then
+  msgfmt "$PL/contents/po/pt_BR.po" \
+    -o "$STAGE/plasmoid/contents/locale/pt_BR/LC_MESSAGES/plasma_applet_${PL_ID}.mo"
 fi
 
 # --- Installer / uninstaller / VERSION -----------------------------------------

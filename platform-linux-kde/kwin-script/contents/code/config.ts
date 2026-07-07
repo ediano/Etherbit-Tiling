@@ -15,6 +15,10 @@ export interface TilingConfig {
   autostart: boolean;
   rounded_corners: boolean;
   corner_radius: number;
+  /// Grupos `(monitor, workspace)` com o tiling desligado, persistidos pelo daemon (ADR 0057). O
+  /// `monitor` é o NOME estável do output (ADR 0056). Só trafega do daemon → ponte (hidratação na carga);
+  /// a ponte reescreve via `SetDisabledGroups`. Não é uma chave do kwinrc.
+  disabled_groups: Array<{ monitor: string; workspace: number }>;
 }
 
 /// Deve casar 1:1 com `impl Default for Config` em daemon/src/config.rs.
@@ -28,6 +32,7 @@ export const DEFAULT_CONFIG: TilingConfig = {
   autostart: false,
   rounded_corners: true,
   corner_radius: 12,
+  disabled_groups: [],
 };
 
 /// Faz parse defensivo do JSON do daemon, completando campos ausentes com o padrão.

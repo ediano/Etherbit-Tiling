@@ -22,6 +22,8 @@ t() {
                      pt='>> Desabilitando KWin Script %s no kwinrc\n' ;;
     removing_kwin)   en='>> Removing KWin Script %s\n'
                      pt='>> Removendo KWin Script %s\n' ;;
+    removing_applet) en='>> Removing System Tray applet %s\n'
+                     pt='>> Removendo applet da bandeja %s\n' ;;
     stopping_service) en='>> Stopping and disabling service %s\n'
                      pt='>> Parando e desabilitando serviço %s\n' ;;
     removing_files)  en='>> Removing daemon, preview helper and unit\n'
@@ -39,6 +41,7 @@ t() {
 }
 
 ID="etherbit-tiling"
+APPLET_ID="dev.ediano.etherbit.tiling"
 BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
 SYSTEMD_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 SERVICE="etherbit-tiling-daemon.service"
@@ -53,6 +56,9 @@ fi
 if command -v kpackagetool6 >/dev/null; then
   t removing_kwin "$ID"
   kpackagetool6 --type=KWin/Script -r "$ID" 2>/dev/null || true
+  # System Tray Applet (ADR 0059) — idempotente; ausência tolerada (instalações antigas não o tinham).
+  t removing_applet "$APPLET_ID"
+  kpackagetool6 --type=Plasma/Applet -r "$APPLET_ID" 2>/dev/null || true
 fi
 QDBUS="$(command -v qdbus6 || command -v qdbus-qt6 || command -v qdbus || true)"
 if [ -n "$QDBUS" ]; then
