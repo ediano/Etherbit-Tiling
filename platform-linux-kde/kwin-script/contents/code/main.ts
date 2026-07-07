@@ -305,7 +305,11 @@ function spawnUnmaximizeIfBorn(win: KWinWindow): void {
   }
 }
 
-/// Saídas (monitores) presentes, na ordem de descoberta pelas janelas atuais.
+/// Saídas (monitores) conhecidas. Ordem: primeiro as descobertas pelas janelas atuais (preserva os
+/// índices já em uso para não remapear árvores em pleno ciclo), depois QUALQUER monitor conectado ainda
+/// sem janelas via `workspace.screens` (ADR 0056/0059: isolamento por Output completo — antes um monitor
+/// vazio não era enumerado, e o toggle por monitor/atalho mirava o grupo errado na 2ª tela). A identidade
+/// estável continua sendo `output.name`; aqui só garantimos que todo monitor entre no `monitorsFrom`/eixos.
 function collectOutputs(): KWinOutput[] {
   const outputs: KWinOutput[] = [];
   for (const win of workspace.windowList()) {
@@ -316,6 +320,15 @@ function collectOutputs(): KWinOutput[] {
     }
     if (outputs.indexOf(win.output) === -1) {
       outputs.push(win.output);
+    }
+  }
+  // Completa com monitores conectados sem janelas (defensivo: `screens` pode faltar em KWin antigo).
+  const screens = workspace.screens;
+  if (screens) {
+    for (const output of screens) {
+      if (output && outputs.indexOf(output) === -1) {
+        outputs.push(output);
+      }
     }
   }
   return outputs;
@@ -355,6 +368,22 @@ function desktopIndexOf(win: KWinWindow): number {
   return cur >= 0 ? cur : 0;
 }
 
+/// Nome do monitor SOB O CURSOR (fallback quando não há janela ativa viva). Percorre os outputs
+/// conhecidos e escolhe aquele cuja área útil contém o cursor; cai no primeiro conhecido. Mais robusto
+/// que "primeiro monitor" — o toggle por monitor mira a tela onde o usuário está, mesmo sem janela ativa
+/// (ex.: monitor recém-conectado ainda vazio).
+function monitorNameUnderCursor(): string {
+  const outputs = collectOutputs();
+  const c = workspace.cursorPos;
+  for (const o of outputs) {
+    const a = workspace.clientArea(KWin.MaximizeArea, o, workspace.currentDesktop);
+    if (c.x >= a.x && c.x < a.x + a.width && c.y >= a.y && c.y < a.y + a.height) {
+      return outputNameOf(o);
+    }
+  }
+  return outputs[0] ? outputNameOf(outputs[0]) : '#0';
+}
+
 /// Chave `(monitor, desktop)` do grupo "ativo": monitor + desktop da janela ativa (ou desktop atual).
 function activeGroupKey(): string {
   const aw = workspace.activeWindow;
@@ -362,21 +391,18 @@ function activeGroupKey(): string {
     return orderKey(outputNameOf(aw.output), desktopIndexOf(aw));
   }
   const cur = (workspace.desktops ?? []).indexOf(workspace.currentDesktop);
-  // Sem janela ativa: usa o primeiro monitor conhecido (nome), ou o token sintético do índice 0.
-  const firstOutput = collectOutputs()[0];
-  const name = firstOutput ? outputNameOf(firstOutput) : '#0';
-  return orderKey(name, cur < 0 ? 0 : cur);
+  // Sem janela ativa: mira o monitor sob o cursor (não mais o primeiro), + desktop atual.
+  return orderKey(monitorNameUnderCursor(), cur < 0 ? 0 : cur);
 }
 
 /// Nome do monitor ATIVO (mesma regra de `activeGroupKey`, sem o workspace): output da janela ativa,
-/// ou o primeiro monitor conhecido. Usado pela ação `EtherbitToggleMonitor` do applet (ADR 0059).
+/// ou o monitor sob o cursor. Usado pela ação `EtherbitToggleMonitor` do applet (ADR 0059).
 function activeMonitorName(): string {
   const aw = workspace.activeWindow;
   if (aw && isLiveWindow(aw)) {
     return outputNameOf(aw.output);
   }
-  const firstOutput = collectOutputs()[0];
-  return firstOutput ? outputNameOf(firstOutput) : '#0';
+  return monitorNameUnderCursor();
 }
 
 /// Índice do workspace (desktop virtual) ATUAL, ou 0 se desconhecido.
@@ -795,15 +821,8 @@ function applyTabActions(json: string): void {
       // alvo); sem zona útil, ejeta reancorando o grupo NO LUGAR (zona `eject`, ADR 0045) em vez de cair
       // no reconcile que teleportava; sem transporte conhecido, reinsere no grid cíclico no sync.
       const draggedT = lastTransportOf.get(action.member_id);
-      const ejected = removeIdFromStacks(stacks, action.member_id);
-      const placed =
-        draggedT !== undefined && dropEjectedAt(action.member_id, draggedT, action.x, action.y);
-      if (!placed && ejected) {
-        if (draggedT !== undefined) {
-          ejectFromStack(action.member_id, draggedT);
-        } else {
-          needRetile = true;
-        }
+      if (removeIdFromStacks(stacks, action.member_id)) {
+        finishUngroup(action.member_id, draggedT, action.x, action.y);
       }
     } else {
       // ungroup (menu "Desagrupar") → ejeta reancorando o grupo NO LUGAR via core (zona `eject`, ADR
@@ -856,14 +875,18 @@ function ejectFromStack(draggedStable: string, draggedT: number): void {
 /// chamador cai no `ejectFromStack`, ADR 0045).
 function dropEjectedAt(draggedStable: string, draggedT: number, x: number, y: number): boolean {
   const target = windowUnderPointObj(x, y, draggedStable);
-  const targetRect = target
-    ? {
-        x: target.frameGeometry.x,
-        y: target.frameGeometry.y,
-        width: target.frameGeometry.width,
-        height: target.frameGeometry.height,
-      }
-    : null;
+  // Guarda contra corrida TOCTOU: a janela-alvo pode morrer ENTRE o lookup e a leitura da geometria
+  // (arraste em hardware real). Um throw aqui abortaria o handler e deixaria a ejetada flutuando — então
+  // tratamos a referência morta como "sem alvo" (cai no ramo GLOBAL, que não exige alvo).
+  let targetRect: { x: number; y: number; width: number; height: number } | null = null;
+  if (target) {
+    try {
+      const g = target.frameGeometry;
+      targetRect = { x: g.x, y: g.y, width: g.width, height: g.height };
+    } catch (e) {
+      targetRect = null;
+    }
+  }
   const monitor = monitorRectUnder(x, y);
   const hot = resolveHotZone({ x, y }, targetRect, monitor, draggedMinSize(draggedStable));
   if (hot.dropZone === 'none') {
@@ -898,6 +921,32 @@ function dropEjectedAt(draggedStable: string, draggedT: number, x: number, y: nu
     }
   }
   return false;
+}
+
+/// Finaliza um desagrupar-por-arraste GARANTINDO que a janela ejetada volte ao layout — ela nunca fica
+/// flutuante (o sintoma de "ejetada de forma caótica para um estado flutuante permanente"). O chamador
+/// já removeu do stack (`removeIdFromStacks`). Cascata determinística, única para os dois gestos (aba do
+/// overlay e barra de título nativa, ADR 0047):
+///   1) "cai onde foi solta": `dropEjectedAt` resolve a zona no cursor e reinsere via `MoveWindow`;
+///   2) senão, ejeta reancorando o grupo NO LUGAR (`ejectFromStack`, zona `eject`, ADR 0045);
+///   3) sem transporte conhecido (janela fora do último retile), um `retile` reencaixa pela distribuição
+///      cíclica no próximo sync — restaurado agora que o `SyncWindows` não morre mais por coordenada
+///      fracionária (de_px/roundPx).
+/// Cada ramo termina com um retile (síncrono no caso 3, ou no callback do `MoveWindow` nos casos 1/2).
+function finishUngroup(
+  draggedStable: string,
+  draggedT: number | undefined,
+  x: number,
+  y: number,
+): void {
+  if (draggedT !== undefined && dropEjectedAt(draggedStable, draggedT, x, y)) {
+    return;
+  }
+  if (draggedT !== undefined) {
+    ejectFromStack(draggedStable, draggedT);
+    return;
+  }
+  retile();
 }
 
 // ---- Atalhos globais (Meta+Shift+Y geral / Meta+Y por workspace / Meta+S abas) ----
@@ -1171,16 +1220,10 @@ function onMoveFinish(win: KWinWindow): void {
       target !== null &&
       windowId(target) !== dragged;
     if (!reGroupCenter) {
-      const ejected = removeIdFromStacks(stacks, dragged);
-      // `dropEjectedAt` recomputa a zona pelo cursor e devolve `false` se não houver zona útil
-      // ('none') — fonte única da verdade, igual ao ramo `ungroup_drag` do overlay.
-      const placed = draggedT !== undefined && dropEjectedAt(dragged, draggedT, cursor.x, cursor.y);
-      if (!placed && ejected) {
-        if (draggedT !== undefined) {
-          ejectFromStack(dragged, draggedT);
-        } else {
-          retile();
-        }
+      // Mesmo caminho do ramo `ungroup_drag` do overlay: `finishUngroup` garante que a ejetada volte
+      // ao layout (cai onde foi solta → eject no lugar → reencaixe cíclico), nunca flutuando.
+      if (removeIdFromStacks(stacks, dragged)) {
+        finishUngroup(dragged, draggedT, cursor.x, cursor.y);
       }
       return;
     }

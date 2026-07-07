@@ -146,6 +146,13 @@ interface KWinWorkspace {
   readonly currentDesktop: KWinVirtualDesktop;
   /** Todos os desktops virtuais, na ordem; usado para indexar `win.desktops`. */
   readonly desktops: KWinVirtualDesktop[];
+  /**
+   * TODAS as saídas (monitores) conectadas, INCLUSIVE as sem janelas. API real do KWin (Plasma 6):
+   * `Workspace::screens`. Usado para enumerar monitores por completo (um monitor vazio não aparece em
+   * `windowList()`); defensivo: pode ser `undefined` em versões antigas do script → o consumidor cai na
+   * descoberta por janelas.
+   */
+  readonly screens?: KWinOutput[];
 
   /** Posição atual do cursor (QPoint), em coordenadas absolutas do stage. */
   readonly cursorPos: QPoint;
