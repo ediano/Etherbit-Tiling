@@ -1,0 +1,23 @@
+{
+  "KPlugin": {
+    "Id": "dev.ediano.etherbit.tiling",
+    "Name": "Etherbit Tiling",
+    "Name[pt_BR]": "Etherbit Tiling",
+    "Description": "Quick access to Etherbit Tiling: toggle tiling per monitor and per workspace, and open the settings.",
+    "Description[pt_BR]": "Acesso rápido ao Etherbit Tiling: liga/desliga o tiling por monitor e por workspace, e abre as configurações.",
+    "Icon": "view-grid-symbolic",
+    "Category": "System Information",
+    "License": "MIT",
+    "Version": "1",
+    "Website": "https://github.com/ediano/etherbit-tiling-releases",
+    "Authors": [
+      {
+        "Name": "Ediano Silva Santos",
+        "Email": "silva.ediano.santos@gmail.com"
+      }
+    ]
+  },
+  "KPackageStructure": "Plasma/Applet",
+  "X-Plasma-API-Minimum-Version": "6.0",
+  "X-Plasma-NotificationArea": "true"
+}

@@ -1,0 +1,42 @@
+# Etherbit Tiling — tradução pt-BR do System Tray Applet (Plasma). ADR 0032/0059.
+# msgid = inglês (default global); msgstr = português do Brasil.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: plasma_applet_dev.ediano.etherbit.tiling\n"
+"Report-Msgid-Bugs-To: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: pt_BR\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+#. main.qml — tooltip subtext (tiling on)
+msgid "Tiling enabled"
+msgstr "Tiling ativado"
+
+#. main.qml — tooltip subtext (tiling off)
+msgid "Tiling disabled"
+msgstr "Tiling desativado"
+
+#. main.qml — master switch label
+msgid "Enable tiling"
+msgstr "Ativar tiling"
+
+#. main.qml — per-monitor toggle button
+msgid "Toggle tiling on this monitor"
+msgstr "Tiling neste monitor"
+
+#. main.qml — per-workspace toggle button
+msgid "Toggle tiling on this workspace"
+msgstr "Tiling neste workspace"
+
+#. main.qml — count of groups with tiling off (plural)
+msgid "%1 group with tiling off"
+msgid_plural "%1 groups with tiling off"
+msgstr[0] "%1 grupo com o tiling desligado"
+msgstr[1] "%1 grupos com o tiling desligado"
+
+#. main.qml — open settings button
+msgid "Open settings…"
+msgstr "Abrir configurações…"

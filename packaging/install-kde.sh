@@ -68,6 +68,8 @@ t() {
                      pt='aviso: bin/etherbit-tiling-preview ausente — preview ficará só com o outline nativo (sem alpha).\n' ;;
     kwin_install)    en='>> Installing KWin Script %s\n'
                      pt='>> Instalando KWin Script %s\n' ;;
+    applet_install)  en='>> Installing System Tray applet %s\n'
+                     pt='>> Instalando applet da bandeja %s\n' ;;
     warn_no_qdbus)   en='warning: qdbus6/qdbus-qt6 not found — reload KWin manually (requires Plasma 6/Qt 6).\n'
                      pt='aviso: qdbus6/qdbus-qt6 não encontrado — recarregue o KWin manualmente (requer Plasma 6/Qt 6).\n' ;;
     service_install) en='>> Installing systemd --user service (%s)\n'
@@ -88,6 +90,8 @@ t() {
                      pt='  • Preview:     %s/etherbit-tiling-preview (translúcido, ativado por D-Bus no drag)\n' ;;
     done_kwin)       en='  • KWin Script: %s (enabled in kwinrc)\n'
                      pt='  • KWin Script: %s (habilitado no kwinrc)\n' ;;
+    done_applet)     en='  • Tray applet: %s (System Tray → Entries → show it)\n'
+                     pt='  • Applet:      %s (Bandeja do Sistema → Entradas → mostrar)\n' ;;
     done_service)    en='  • Service:     %s\n'
                      pt='  • Serviço:     %s\n' ;;
     done_config)     en='\nConfig: System Settings → KWin Scripts → Etherbit Tiling (⚙).\nIf tiling does not start, check in KWin Scripts that it is enabled.\n'
@@ -258,6 +262,20 @@ if command -v kwriteconfig6 >/dev/null; then
   kwriteconfig6 --file kwinrc --group Plugins --key "${ID}Enabled" true
 fi
 
+# --- System Tray Applet (Plasma/Applet, QML — ADR 0059) ------------------------
+# Acesso rápido na bandeja (toggles por monitor/workspace + abrir config), disparando as ações do KWin
+# Script via kglobalaccel. Opcional: bundles antigos não trazem a pasta `plasmoid/` — só instala se
+# presente. Não é forçado no painel; com X-Plasma-NotificationArea=true fica elegível na System Tray.
+APPLET_ID="dev.ediano.etherbit.tiling"
+if [ -f "$HERE/plasmoid/metadata.json" ] && [ -f "$HERE/plasmoid/contents/ui/main.qml" ]; then
+  t applet_install "$APPLET_ID"
+  if kpackagetool6 --type=Plasma/Applet -s "$APPLET_ID" >/dev/null 2>&1; then
+    kpackagetool6 --type=Plasma/Applet -u "$HERE/plasmoid"
+  else
+    kpackagetool6 --type=Plasma/Applet -i "$HERE/plasmoid"
+  fi
+fi
+
 # Linha de corte Qt6/Plasma6: só qdbus6/qdbus-qt6 (o `qdbus` puro pode ser o do Qt5). Ver ADR 0013.
 QDBUS="$(command -v qdbus6 || command -v qdbus-qt6 || true)"
 if [ -n "$QDBUS" ]; then
@@ -320,5 +338,8 @@ if [ -f "$BIN_DIR/etherbit-tiling-preview" ]; then
   t done_preview "$BIN_DIR"
 fi
 t done_kwin "$ID"
+if [ -f "$HERE/plasmoid/metadata.json" ]; then
+  t done_applet "$APPLET_ID"
+fi
 t done_service "$SYSTEMD_DIR/$SERVICE"
 t done_config

@@ -14,6 +14,7 @@ import {
   serializeState,
   serializeTarget,
   toggleGroupDisabled,
+  toggleAxisDisabled,
   treeToTransport,
   treeFromTransport,
   resizeDeltaFrom,
@@ -144,6 +145,35 @@ describe('estado de tiling por grupo e árvores (ids string)', () => {
     expect(disabled.has(orderKey(0, 1))).toBe(true);
     toggleGroupDisabled(disabled, orderKey(0, 1));
     expect(disabled.has(orderKey(0, 1))).toBe(false);
+  });
+
+  it('toggleAxisDisabled desliga o eixo inteiro quando algum está ligado', () => {
+    const disabled = new Set<string>();
+    const keys = [orderKey('DP-1', 0), orderKey('DP-1', 1), orderKey('DP-1', 2)];
+    // Nenhum desligado → desliga todos (retorna true = eixo ficou DESLIGADO).
+    expect(toggleAxisDisabled(disabled, keys)).toBe(true);
+    expect(keys.every((k) => disabled.has(k))).toBe(true);
+  });
+
+  it('toggleAxisDisabled religa o eixo inteiro só quando TODOS estão desligados', () => {
+    const keys = [orderKey('DP-1', 0), orderKey('DP-1', 1)];
+    const disabled = new Set<string>(keys);
+    // Todos desligados → religa todos (retorna false = eixo ficou LIGADO).
+    expect(toggleAxisDisabled(disabled, keys)).toBe(false);
+    expect(keys.some((k) => disabled.has(k))).toBe(false);
+  });
+
+  it('toggleAxisDisabled com eixo parcial desliga o restante (não religa)', () => {
+    const keys = [orderKey('DP-1', 0), orderKey('DP-1', 1)];
+    const disabled = new Set<string>([orderKey('DP-1', 0)]); // só um desligado
+    expect(toggleAxisDisabled(disabled, keys)).toBe(true);
+    expect(keys.every((k) => disabled.has(k))).toBe(true);
+  });
+
+  it('toggleAxisDisabled com keys vazio é no-op', () => {
+    const disabled = new Set<string>([orderKey('DP-1', 0)]);
+    expect(toggleAxisDisabled(disabled, [])).toBe(false);
+    expect(disabled.has(orderKey('DP-1', 0))).toBe(true);
   });
 
   it('serializeState traduz as folhas das árvores, os stacks reais e os grupos desligados', () => {

@@ -831,6 +831,30 @@ export function toggleGroupDisabled(disabled: Set<string>, key: string): boolean
   return true;
 }
 
+/// Liga/desliga o tiling de um EIXO inteiro (todas as `keys` de um monitor, ou todas de um workspace) —
+/// usado pelo System Tray Applet via as ações `EtherbitToggleMonitor`/`EtherbitToggleWorkspace` (ADR
+/// 0059). Regra intuitiva de toggle coletivo: se TODAS as chaves já estão desligadas → religa o eixo
+/// inteiro (remove todas); caso contrário → desliga o eixo inteiro (adiciona todas). Assim um monitor/
+/// workspace parcialmente ligado vira "tudo desligado" no primeiro clique, e "tudo ligado" no seguinte.
+/// Retorna `true` se o eixo passou a ficar DESLIGADO, `false` se passou a ficar LIGADO. `keys` vazio é
+/// no-op (retorna `false`): nada a alternar. Helper puro (testável sem KWin).
+export function toggleAxisDisabled(disabled: Set<string>, keys: string[]): boolean {
+  if (keys.length === 0) {
+    return false;
+  }
+  const allDisabled = keys.every((k) => disabled.has(k));
+  if (allDisabled) {
+    for (const k of keys) {
+      disabled.delete(k);
+    }
+    return false;
+  }
+  for (const k of keys) {
+    disabled.add(k);
+  }
+  return true;
+}
+
 // ---- Abas / stacks manuais (ADR 0040, paridade com GNOME) ----
 //
 // O agrupamento em abas é só MANUAL (drag-to-group na zona `center`; Meta+S). O esmagamento impositivo

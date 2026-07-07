@@ -34,6 +34,7 @@ import {
   sortByOrder,
   parseOrderKey,
   toggleGroupDisabled,
+  toggleAxisDisabled,
   removeIdFromStacks,
   isStackMember,
   addToStack,
@@ -365,6 +366,39 @@ function activeGroupKey(): string {
   const firstOutput = collectOutputs()[0];
   const name = firstOutput ? outputNameOf(firstOutput) : '#0';
   return orderKey(name, cur < 0 ? 0 : cur);
+}
+
+/// Nome do monitor ATIVO (mesma regra de `activeGroupKey`, sem o workspace): output da janela ativa,
+/// ou o primeiro monitor conhecido. Usado pela ação `EtherbitToggleMonitor` do applet (ADR 0059).
+function activeMonitorName(): string {
+  const aw = workspace.activeWindow;
+  if (aw && isLiveWindow(aw)) {
+    return outputNameOf(aw.output);
+  }
+  const firstOutput = collectOutputs()[0];
+  return firstOutput ? outputNameOf(firstOutput) : '#0';
+}
+
+/// Índice do workspace (desktop virtual) ATUAL, ou 0 se desconhecido.
+function currentWorkspaceIndex(): number {
+  const cur = (workspace.desktops ?? []).indexOf(workspace.currentDesktop);
+  return cur < 0 ? 0 : cur;
+}
+
+/// Chaves `(monitor, workspace)` de um EIXO inteiro para o toggle coletivo do applet (ADR 0059):
+///  - eixo "monitor": um `monitor` fixo × TODOS os desktops virtuais;
+///  - eixo "workspace": um `workspace` fixo × TODOS os monitores conhecidos (`collectOutputs`).
+/// Um monitor sem janelas não é enumerado por `collectOutputs` (limitação herdada, ADR 0059).
+function monitorAxisKeys(monitor: string): string[] {
+  const desktopCount = (workspace.desktops ?? []).length || 1;
+  const keys: string[] = [];
+  for (let ws = 0; ws < desktopCount; ws++) {
+    keys.push(orderKey(monitor, ws));
+  }
+  return keys;
+}
+function workspaceAxisKeys(workspace_: number): string[] {
+  return collectOutputs().map((o) => orderKey(outputNameOf(o), workspace_));
 }
 
 /// Janela NORMAL cujo frame contém `(x, y)`, excluindo `excludeId` (a arrastada).
@@ -909,6 +943,31 @@ registerShortcut(
   () => {
     toggleGroupDisabled(disabled, activeGroupKey());
     // Persiste no daemon (ADR 0057): o grupo desligado sobrevive ao reinício do KWin.
+    persistDisabledGroups();
+    retile();
+  },
+);
+
+// Ações do System Tray Applet (ADR 0059). SEM tecla (accel '') — o applet as dispara por NOME via
+// kglobalaccel `invokeShortcut`, o mesmo canal do helper de preview (ADR 0039). Mantêm a lógica KDE no
+// KDE: identidade estável de monitor (ADR 0056) e persistência (ADR 0057) vivem aqui, não no daemon.
+// Alternam um EIXO inteiro (todos os workspaces de um monitor / todos os monitores de um workspace).
+registerShortcut(
+  'EtherbitToggleMonitor',
+  'Etherbit: liga/desliga o tiling no monitor ativo (todos os workspaces)',
+  '',
+  () => {
+    toggleAxisDisabled(disabled, monitorAxisKeys(activeMonitorName()));
+    persistDisabledGroups();
+    retile();
+  },
+);
+registerShortcut(
+  'EtherbitToggleWorkspace',
+  'Etherbit: liga/desliga o tiling no workspace atual (todos os monitores)',
+  '',
+  () => {
+    toggleAxisDisabled(disabled, workspaceAxisKeys(currentWorkspaceIndex()));
     persistDisabledGroups();
     retile();
   },
