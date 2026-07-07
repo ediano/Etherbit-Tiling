@@ -63,6 +63,33 @@ describe('serializeWindows / serializeMonitors', () => {
     const mons: MonitorSnapshot[] = [{ index: 0, x: 0, y: 0, width: 2560, height: 1440 }];
     expect(JSON.parse(serializeMonitors(mons))).toEqual(mons);
   });
+
+  it('arredonda coordenadas fracionárias de janela (escala HiDPI) para inteiros', () => {
+    // Regressão real do log KDE: `frameGeometry` fracionário faria o daemon recusar o array inteiro.
+    const frac: WindowSnapshot = {
+      ...win,
+      x: 2649.063230904885,
+      y: 40.5,
+      width: 1708.4,
+      height: 1392.0,
+      min_width: 300.9,
+      min_height: 0,
+    };
+    const out = JSON.parse(serializeWindows([frac]))[0];
+    expect([out.x, out.y, out.width, out.height, out.min_width]).toEqual([
+      2649, 41, 1708, 1392, 301,
+    ]);
+    // Nenhum campo de pixel permanece fracionário.
+    for (const v of [out.x, out.y, out.width, out.height, out.min_width, out.min_height]) {
+      expect(Number.isInteger(v)).toBe(true);
+    }
+  });
+
+  it('arredonda coordenadas fracionárias de monitor (clientArea sob escala) para inteiros', () => {
+    const mons: MonitorSnapshot[] = [{ index: 0, x: 0, y: 0, width: 3440.9, height: 1439.6 }];
+    const out = JSON.parse(serializeMonitors(mons))[0];
+    expect([out.x, out.y, out.width, out.height]).toEqual([0, 0, 3441, 1440]);
+  });
 });
 
 describe('parseLayout', () => {
@@ -385,6 +412,19 @@ describe('estado de tiling por grupo e árvores (ids string)', () => {
       { edge: 'right', deltaPx: 40 },
       { edge: 'bottom', deltaPx: 30 },
     ]);
+  });
+
+  it('resizeDeltaFrom arredonda deltas fracionários (escala HiDPI) para inteiros', () => {
+    // Sob escala fracionária os diffs de frameGeometry seriam fracionários; deltaPx deve sair inteiro
+    // (o daemon espera i32). E um diff que arredonda a 0 não gera aresta.
+    const out = resizeDeltaFrom(
+      { x: 0, y: 0, width: 100.0, height: 100.0 },
+      { x: 0, y: 0, width: 140.4, height: 100.2 },
+    );
+    expect(out).toEqual([{ edge: 'right', deltaPx: 40 }]);
+    for (const d of out) {
+      expect(Number.isInteger(d.deltaPx)).toBe(true);
+    }
   });
 
   it('serializeTarget devolve "" sem alvo e JSON com alvo', () => {

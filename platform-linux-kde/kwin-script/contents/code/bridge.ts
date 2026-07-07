@@ -52,14 +52,50 @@ export interface DropPreview {
   height: number;
 }
 
-/// Serializa as janelas para o `windows_json` do contrato D-Bus.
-export function serializeWindows(windows: WindowSnapshot[]): string {
-  return JSON.stringify(windows);
+/// Arredonda uma coordenada/dimensão de pixel na fronteira de serialização. Em saídas com escala
+/// fracionária (HiDPI) o KWin devolve geometria FRACIONÁRIA (`frameGeometry`/`clientArea`); o daemon
+/// espera `i32` e — sem tolerância — recusaria o array INTEIRO de janelas/monitores, matando o
+/// `SyncWindows` no monitor afetado (era a causa da inércia multi-monitor/arraste no KDE em hardware
+/// real). Mantém "a lógica do KDE no KDE": a ponte envia inteiros limpos. O `de_px` do daemon é a rede
+/// de segurança; este é o conserto na origem.
+export function roundPx(v: number): number {
+  return Math.round(v);
 }
 
-/// Serializa os monitores para o `monitors_json` do contrato D-Bus.
+/// Serializa as janelas para o `windows_json` do contrato D-Bus. Literais explícitos (NÃO spread): o
+/// QJSEngine do KWin rejeita `{ ...w }` (ADR 0013).
+export function serializeWindows(windows: WindowSnapshot[]): string {
+  return JSON.stringify(
+    windows.map((w) => ({
+      id: w.id,
+      app_id: w.app_id,
+      x: roundPx(w.x),
+      y: roundPx(w.y),
+      width: roundPx(w.width),
+      height: roundPx(w.height),
+      normal: w.normal,
+      resizable: w.resizable,
+      maximizable: w.maximizable,
+      monitor: w.monitor,
+      workspace: w.workspace,
+      min_width: roundPx(w.min_width),
+      min_height: roundPx(w.min_height),
+      maximized: w.maximized,
+    })),
+  );
+}
+
+/// Serializa os monitores para o `monitors_json` do contrato D-Bus (coordenadas arredondadas).
 export function serializeMonitors(monitors: MonitorSnapshot[]): string {
-  return JSON.stringify(monitors);
+  return JSON.stringify(
+    monitors.map((m) => ({
+      index: m.index,
+      x: roundPx(m.x),
+      y: roundPx(m.y),
+      width: roundPx(m.width),
+      height: roundPx(m.height),
+    })),
+  );
 }
 
 /// Parse defensivo do `layout_json` do daemon — devolve os retângulos a aplicar. Aceita o formato
@@ -794,10 +830,13 @@ export function resizeDeltaFrom(
   after: { x: number; y: number; width: number; height: number },
 ): ResizeDelta[] {
   const out: ResizeDelta[] = [];
-  const leftGrow = before.x - after.x;
-  const rightGrow = after.x + after.width - (before.x + before.width);
-  const topGrow = before.y - after.y;
-  const bottomGrow = after.y + after.height - (before.y + before.height);
+  // Deltas arredondados a inteiro: o `ResizeWindow` do daemon espera `delta_px: i32`; sob escala
+  // fracionária os diffs de `frameGeometry` seriam fracionários e o `callDBus` os empacotaria como
+  // double, quebrando o casamento de assinatura (ver `roundPx`).
+  const leftGrow = roundPx(before.x - after.x);
+  const rightGrow = roundPx(after.x + after.width - (before.x + before.width));
+  const topGrow = roundPx(before.y - after.y);
+  const bottomGrow = roundPx(after.y + after.height - (before.y + before.height));
   if (leftGrow !== 0) {
     out.push({ edge: 'left', deltaPx: leftGrow });
   }

@@ -27,15 +27,33 @@ where
     Ok(raw.max(0) as u32)
 }
 
+/// Desserializa uma coordenada/dimensão em PIXEL de forma TOLERANTE: aceita inteiro OU ponto flutuante
+/// e ARREDONDA para `i32`. Uma ponte pode enviar coordenadas fracionárias em saídas com escala
+/// fracionária/HiDPI (ex.: `frameGeometry` do KWin devolve `2649.06...`); sem isto o serde rejeitaria o
+/// ARRAY INTEIRO de janelas/monitores e TODO o `SyncWindows` falharia → tiling inerte no monitor
+/// afetado (era a causa da regressão multi-monitor/arraste no KDE, mesma classe de falha que `de_index`
+/// já blindou para índices). O core segue operando só com inteiros.
+fn de_px<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = f64::deserialize(deserializer)?;
+    Ok(if raw.is_finite() { raw.round() as i32 } else { 0 })
+}
+
 /// Janela vinda da ponte. Espelha `windows_json` do contrato D-Bus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowDto {
     pub id: u64,
     #[serde(default)]
     pub app_id: String,
+    #[serde(deserialize_with = "de_px")]
     pub x: i32,
+    #[serde(deserialize_with = "de_px")]
     pub y: i32,
+    #[serde(deserialize_with = "de_px")]
     pub width: i32,
+    #[serde(deserialize_with = "de_px")]
     pub height: i32,
     #[serde(default)]
     pub normal: bool,
@@ -48,10 +66,10 @@ pub struct WindowDto {
     #[serde(default, deserialize_with = "de_index")]
     pub workspace: u32,
     /// Largura mínima (px) do app (geometry hint). Ausente/0 = sem restrição (retrocompat).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_px")]
     pub min_width: i32,
     /// Altura mínima (px) do app (geometry hint). Ausente/0 = sem restrição (retrocompat).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_px")]
     pub min_height: i32,
     /// Janela maximizada no momento (estado). Ausente = `false` (retrocompat). Dispara o tratamento
     /// de unmaximize no core (`retain_tileable_when_maximized`).
@@ -64,9 +82,13 @@ pub struct WindowDto {
 pub struct MonitorDto {
     #[serde(deserialize_with = "de_index")]
     pub index: u32,
+    #[serde(deserialize_with = "de_px")]
     pub x: i32,
+    #[serde(deserialize_with = "de_px")]
     pub y: i32,
+    #[serde(deserialize_with = "de_px")]
     pub width: i32,
+    #[serde(deserialize_with = "de_px")]
     pub height: i32,
 }
 
@@ -92,11 +114,16 @@ pub struct PreviewDto {
 }
 
 /// Retângulo simples (sem id). Usado pelo `content` de uma barra de abas e pelo `target_json` do drag.
+/// O `target_json` vem da ponte e pode chegar fracionário (escala HiDPI) → `de_px` tolera e arredonda.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 pub struct GeomDto {
+    #[serde(deserialize_with = "de_px")]
     pub x: i32,
+    #[serde(deserialize_with = "de_px")]
     pub y: i32,
+    #[serde(deserialize_with = "de_px")]
     pub width: i32,
+    #[serde(deserialize_with = "de_px")]
     pub height: i32,
 }
 
@@ -1032,6 +1059,36 @@ mod tests {
         let dto: WindowDto = serde_json::from_str(json).expect("parse tolerante");
         assert_eq!(dto.monitor, 0);
         assert_eq!(dto.workspace, 0);
+    }
+
+    #[test]
+    fn window_dto_tolerates_fractional_pixels() {
+        // Reproduz a linha real do log KDE (`floating point 2649.06... expected i32`): coordenadas
+        // fracionárias de saída com escala HiDPI. `de_px` deve aceitar e arredondar em vez de rejeitar.
+        let json = r#"{"id":1,"app_id":"a","x":2649.063230904885,"y":40.5,"width":1708.4,"height":1392.0,"normal":true,"resizable":true,"maximizable":true,"monitor":0,"workspace":0}"#;
+        let dto: WindowDto = serde_json::from_str(json).expect("frações toleradas");
+        assert_eq!((dto.x, dto.y, dto.width, dto.height), (2649, 41, 1708, 1392));
+    }
+
+    #[test]
+    fn sync_tolerates_fractional_coords_in_array() {
+        // A regressão do log: um único `x` fracionário rejeitava o windows_json INTEIRO → 0 rects →
+        // tiling inerte no monitor. Agora o array desserializa e o layout é computado normalmente.
+        let frac = r#"{"id":1,"app_id":"a","x":8.0,"y":40.5,"width":2649.063230904885,"height":1392.0,"normal":true,"resizable":true,"maximizable":true,"monitor":0,"workspace":0}"#;
+        let out = sync_windows(&format!("[{frac}]"), AREAS, "", &[], OPTS)
+            .expect("não deve falhar com coordenada fracionária");
+        let res = layout_of(&out);
+        assert_eq!(res.rects.len(), 1, "a janela é tilada apesar da coordenada fracionária");
+        assert_eq!(res.rects[0].id, 1);
+    }
+
+    #[test]
+    fn monitor_dto_tolerates_fractional_pixels() {
+        // Área de monitor também pode vir fracionária (clientArea sob escala) — não pode derrubar o sync.
+        let areas = r#"[{"index":0,"x":0.0,"y":0.0,"width":3440.9,"height":1439.6}]"#;
+        let out = sync_windows(&format!("[{}]", win_json(1, "a")), areas, "", &[], OPTS)
+            .expect("área fracionária tolerada");
+        assert_eq!(layout_of(&out).rects.len(), 1);
     }
 
     #[test]

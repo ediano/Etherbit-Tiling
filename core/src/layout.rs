@@ -404,13 +404,7 @@ pub fn compute_layout_with(
         let slot_rects = bsp_rects(inner, slots.len(), opts.inner_gap as f64);
         for (slot, srect) in slots.iter().zip(slot_rects) {
             match slot {
-                Slot::Single(id) => rects.push(WindowRect {
-                    id: *id,
-                    x: round(srect.x),
-                    y: round(srect.y),
-                    width: round(srect.w),
-                    height: round(srect.h),
-                }),
+                Slot::Single(id) => rects.push(snap_rect(*id, srect)),
                 Slot::Stack(desc) => {
                     render_stack(desc, srect, &ids, opts, &mut rects, &mut tab_bars)
                 }
@@ -575,7 +569,7 @@ fn zone_rect(area: &WorkArea, zone: DropZone, opts: &LayoutOptions) -> PreviewRe
         DropZone::Stack | DropZone::None | DropZone::Eject => (0.0, 0.0, 0.0, 0.0),
     };
 
-    PreviewRect { x: round(x), y: round(y), width: round(w), height: round(h) }
+    snap_preview(x, y, w, h)
 }
 
 /// Detecta o destino de um drop CONSIDERANDO a janela sob o cursor. Quando há janela-alvo e o cursor
@@ -650,38 +644,16 @@ fn sub_rect_of_target(
 
     if nearest == left {
         let dw = dragged_extent(tw, min_dw);
-        (
-            DropZone::Left,
-            PreviewRect { x: round(tx), y: round(ty), width: round(dw), height: round(th) },
-        )
+        (DropZone::Left, snap_preview(tx, ty, dw, th))
     } else if nearest == right {
         let dw = dragged_extent(tw, min_dw);
-        (
-            DropZone::Right,
-            PreviewRect {
-                x: round(tx + tw - dw),
-                y: round(ty),
-                width: round(dw),
-                height: round(th),
-            },
-        )
+        (DropZone::Right, snap_preview(tx + tw - dw, ty, dw, th))
     } else if nearest == top {
         let dh = dragged_extent(th, min_dh);
-        (
-            DropZone::Top,
-            PreviewRect { x: round(tx), y: round(ty), width: round(tw), height: round(dh) },
-        )
+        (DropZone::Top, snap_preview(tx, ty, tw, dh))
     } else {
         let dh = dragged_extent(th, min_dh);
-        (
-            DropZone::Bottom,
-            PreviewRect {
-                x: round(tx),
-                y: round(ty + th - dh),
-                width: round(tw),
-                height: round(dh),
-            },
-        )
+        (DropZone::Bottom, snap_preview(tx, ty + th - dh, tw, dh))
     }
 }
 
@@ -992,13 +964,7 @@ fn render_stack(
     if present.is_empty() {
         return;
     }
-    let bar_h = (opts.group_header_px as f64).min(srect.h.max(0.0));
-    let content = PreviewRect {
-        x: round(srect.x),
-        y: round(srect.y + bar_h),
-        width: round(srect.w),
-        height: round((srect.h - bar_h).max(0.0)),
-    };
+    let (bar, content) = snap_stack_slot(srect, opts);
     let active = if present.contains(&desc.active_id) { desc.active_id } else { present[0] };
     rects.push(WindowRect {
         id: active,
@@ -1009,10 +975,10 @@ fn render_stack(
     });
     tab_bars.push(TabBarRect {
         stack_id: present[0],
-        x: round(srect.x),
-        y: round(srect.y),
-        width: round(srect.w),
-        height: round(bar_h),
+        x: bar.x,
+        y: bar.y,
+        width: bar.width,
+        height: bar.height,
         content,
         member_ids: present,
         active_id: active,
@@ -1033,13 +999,7 @@ fn render_stack_node(
     if members.is_empty() {
         return;
     }
-    let bar_h = (opts.group_header_px as f64).min(srect.h.max(0.0));
-    let content = PreviewRect {
-        x: round(srect.x),
-        y: round(srect.y + bar_h),
-        width: round(srect.w),
-        height: round((srect.h - bar_h).max(0.0)),
-    };
+    let (bar, content) = snap_stack_slot(srect, opts);
     let active = if members.contains(&active) { active } else { members[0] };
     rects.push(WindowRect {
         id: active,
@@ -1050,10 +1010,10 @@ fn render_stack_node(
     });
     tab_bars.push(TabBarRect {
         stack_id: members[0],
-        x: round(srect.x),
-        y: round(srect.y),
-        width: round(srect.w),
-        height: round(bar_h),
+        x: bar.x,
+        y: bar.y,
+        width: bar.width,
+        height: bar.height,
         content,
         member_ids: members.to_vec(),
         active_id: active,
@@ -1123,13 +1083,7 @@ fn geometry_from_tree(
         if let Some((members, active)) = stack_nodes.get(&id) {
             render_stack_node(members, *active, r, opts, &mut rects, &mut tab_bars);
         } else {
-            rects.push(WindowRect {
-                id,
-                x: round(r.x),
-                y: round(r.y),
-                width: round(r.w),
-                height: round(r.h),
-            });
+            rects.push(snap_rect(id, r));
         }
     }
     LayoutResult { rects, tab_bars, floating }
@@ -1984,6 +1938,51 @@ fn round(v: f64) -> i32 {
     v.round() as i32
 }
 
+/// Snap por ARESTA de um retângulo em f64 para inteiros: a largura/altura são derivadas da DIFERENÇA
+/// entre bordas arredondadas (`round(x+w) − round(x)`), não do arredondamento independente de posição e
+/// tamanho. Assim, dois ladrilhos adjacentes que compartilham a MESMA fronteira f64 (o cursor de tracks
+/// em `track_bounds`/`solve_tracks`) aterrissam no MESMO pixel inteiro — eliminando a invasão de eixo
+/// (overlap ±1px) e a assimetria de gaps (linhas não retilíneas) descritas na diretiva. Como o `gap` é
+/// inteiro, a costura entre tracks vizinhas preserva exatamente `gap` px. Em coordenadas já inteiras o
+/// resultado é idêntico ao arredondamento por campo (retrocompat dos testes/`WindowRect` existentes).
+fn snap(x: f64, y: f64, w: f64, h: f64) -> (i32, i32, i32, i32) {
+    let x0 = round(x);
+    let y0 = round(y);
+    let w0 = (round(x + w) - x0).max(0);
+    let h0 = (round(y + h) - y0).max(0);
+    (x0, y0, w0, h0)
+}
+
+/// `snap` aplicado a um `Rectf`, montando um `WindowRect` para a folha `id`.
+fn snap_rect(id: u64, r: Rectf) -> WindowRect {
+    let (x, y, width, height) = snap(r.x, r.y, r.w, r.h);
+    WindowRect { id, x, y, width, height }
+}
+
+/// `snap` de uma caixa em f64 num `PreviewRect` (drop/preview). Mantém o preview coerente, no mesmo
+/// lattice inteiro do layout real (a metade/quadrante mostrado casa pixel-a-pixel com o destino).
+fn snap_preview(x: f64, y: f64, w: f64, h: f64) -> PreviewRect {
+    let (x, y, width, height) = snap(x, y, w, h);
+    PreviewRect { x, y, width, height }
+}
+
+/// Geometria snapada (por aresta) de um slot de stack: devolve `(barra, conteúdo)` no lattice inteiro.
+/// As bordas externas do slot (`x0/x1`, `y0/y1`) casam com os vizinhos (mesma regra do `snap`), e a
+/// costura barra↔conteúdo é um ÚNICO inteiro `ys` — a barra termina exatamente onde o conteúdo começa,
+/// sem gap/overlap de ±1px entre elas.
+fn snap_stack_slot(srect: Rectf, opts: &LayoutOptions) -> (PreviewRect, PreviewRect) {
+    let bar_h = (opts.group_header_px as f64).min(srect.h.max(0.0));
+    let x0 = round(srect.x);
+    let y0 = round(srect.y);
+    let x1 = round(srect.x + srect.w);
+    let y1 = round(srect.y + srect.h);
+    let ys = round(srect.y + bar_h).clamp(y0, y1);
+    let w = (x1 - x0).max(0);
+    let bar = PreviewRect { x: x0, y: y0, width: w, height: (ys - y0).max(0) };
+    let content = PreviewRect { x: x0, y: ys, width: w, height: (y1 - ys).max(0) };
+    (bar, content)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2167,6 +2166,59 @@ mod tests {
                     // E todas dentro da área interna (12..988 x 12..788).
                     assert!(rects[i].x >= 12 && rects[i].x + rects[i].width <= 988);
                     assert!(rects[i].y >= 12 && rects[i].y + rects[i].height <= 788);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn edge_snap_keeps_seams_exactly_inner_gap_on_fractional_area() {
+        // Regressão da diretiva (GNOME): invasão de eixo / gaps assimétricos em alta densidade. Numa
+        // área que NÃO divide exato (1001×803), o snap por ARESTA deve garantir que toda costura entre
+        // ladrilhos vizinhos tenha EXATAMENTE `inner_gap` px — sem o ±1px do arredondamento por campo
+        // (que produzia overlap "invadindo" o vizinho ou gap irregular). Cobre até 16 janelas (grid
+        // denso com aninhamento horizontal+vertical).
+        let opts = LayoutOptions { inner_gap: 8, outer_gap: 12, group_header_px: 28 };
+        let area = WorkArea { index: 0, x: 0, y: 0, width: 1001, height: 803 };
+        let gap = opts.inner_gap as i32;
+        for count in 2..=16u64 {
+            let windows: Vec<WindowInfo> = (1..=count).map(|id| win(id, 0)).collect();
+            let rects = compute_layout(&windows, std::slice::from_ref(&area), &opts);
+            assert_eq!(rects.len() as u64, count, "todas as {count} janelas posicionadas");
+            for a in &rects {
+                for b in &rects {
+                    if a.id == b.id {
+                        continue;
+                    }
+                    // Costura vertical: A à esquerda de B, com sobreposição no eixo Y.
+                    let y_overlap = a.y < b.y + b.height
+                        && b.y < a.y + a.height
+                        && a.y.max(b.y) < (a.y + a.height).min(b.y + b.height);
+                    if y_overlap {
+                        let seam = b.x - (a.x + a.width);
+                        // Só costuras "adjacentes" (dentro de uma faixa plausível de gap); ignora tiles distantes.
+                        if seam > 0 && seam <= gap + 2 {
+                            assert_eq!(
+                                seam, gap,
+                                "costura vertical {}→{} = {seam}px (esperado {gap}) com {count} janelas",
+                                a.id, b.id
+                            );
+                        }
+                    }
+                    // Costura horizontal: A acima de B, com sobreposição no eixo X.
+                    let x_overlap = a.x < b.x + b.width
+                        && b.x < a.x + a.width
+                        && a.x.max(b.x) < (a.x + a.width).min(b.x + b.width);
+                    if x_overlap {
+                        let seam = b.y - (a.y + a.height);
+                        if seam > 0 && seam <= gap + 2 {
+                            assert_eq!(
+                                seam, gap,
+                                "costura horizontal {}→{} = {seam}px (esperado {gap}) com {count} janelas",
+                                a.id, b.id
+                            );
+                        }
+                    }
                 }
             }
         }
