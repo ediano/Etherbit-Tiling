@@ -37,6 +37,7 @@ import {
   isResizable,
   effectiveMinSize,
   clampGeometry,
+  clampToWorkArea,
   geometryConverged,
   parseLayoutTrees,
   resolveHotZone,
@@ -714,10 +715,16 @@ export default class EtherbitTilingExtension extends Extension {
     const focus = global.display.focus_window;
     const focusedId = focus ? focus.get_stable_sequence() : 0;
 
+    // Coletado UMA vez: serve tanto ao sync quanto ao clamp de apply à work-area (ADR 0065). A árvore
+    // por grupo é `(monitor, workspace)`, então o monitor-alvo de cada janela é o do seu snapshot.
+    const monitors = this._collectMonitors();
+    const monitorByIndex = new Map(monitors.map((m) => [m.index, m]));
+    const monitorForWin = new Map(snapshots.map((s) => [s.id, monitorByIndex.get(s.monitor)]));
+
     const res = this._call((p) =>
       p.SyncWindowsSync(
         serializeWindows(snapshots),
-        serializeMonitors(this._collectMonitors()),
+        serializeMonitors(monitors),
         serializeState(this._stacks, this._disabledGroups, this._trees, focusedId),
       ),
     );
@@ -845,8 +852,11 @@ export default class EtherbitTilingExtension extends Extension {
         // abortar o relayout inteiro e paralisar o grid — loga e segue para as demais.
         try {
           // user_op=false: reposicionamento programático, instantâneo e puramente geométrico.
-          // Clamp ≥ 1px: rect inválido (width/height ≤ 0) quebraria o framebuffer do Cogl.
-          const g = clampGeometry(command);
+          // Clamp à work-area do monitor-alvo (paridade KWin): trava a janela na borda interna e mata a
+          // ejeção/transbordo entre monitores do esmagamento impositivo (ADR 0065). Fallback ao clamp
+          // ≥1px se o monitor não for resolvido (defensivo — rect inválido quebraria o framebuffer do Cogl).
+          const target = monitorForWin.get(command.id);
+          const g = target ? clampToWorkArea(command, target) : clampGeometry(command);
           window.move_resize_frame(false, g.x, g.y, g.width, g.height);
           // Registra o slot committado: o próximo dedup só curto-circuita se o frame chegar nele.
           this._lastAppliedRects.set(command.id, {

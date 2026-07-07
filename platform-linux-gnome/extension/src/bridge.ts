@@ -107,6 +107,23 @@ export function clampGeometry(cmd: LayoutCommand): LayoutCommand {
   return { ...cmd, width: Math.max(1, cmd.width), height: Math.max(1, cmd.height) };
 }
 
+/// Contém `cmd` DENTRO da work-area do monitor-alvo — paridade com o clamp de frame que o KWin faz
+/// nativamente e o Mutter NÃO faz. Sob esmagamento impositivo (ADR 0040) o core deixa a última track
+/// TRANSBORDAR a borda (deslocamento compensatório); no GNOME esse frame é aplicado como está e um
+/// `get_monitor()` seguinte pode REATRIBUIR a janela ao display vizinho (ejeção — diretiva/ADR 0065).
+/// Estratégia **shrink-to-fit**: a origem sobe para ≥ origem útil e width/height ENCOLHEM para não
+/// cruzar a borda útil. Nunca empurra a origem "para trás" da borda direita/inferior — isso sobreporia
+/// a vizinha no caso de over-subscrição (o pecado que a 0064 rejeitou ao clampar no CORE; aqui, na
+/// ponte, a árvore/dedup usam o rect já clampado, então não há busy-loop). Preserva o piso ≥1px.
+/// Agnóstico: a `WorkArea` vem viva do compositor (`getWorkAreaForMonitor`), sem hardcode de resolução.
+export function clampToWorkArea(cmd: LayoutCommand, area: MonitorSnapshot): LayoutCommand {
+  const x = Math.max(area.x, cmd.x);
+  const y = Math.max(area.y, cmd.y);
+  const width = Math.max(1, Math.min(cmd.width, area.x + area.width - x));
+  const height = Math.max(1, Math.min(cmd.height, area.y + area.height - y));
+  return { id: cmd.id, x, y, width, height };
+}
+
 /// Espelha o `PreviewDto` do daemon: a zona resolvida + o retângulo do overlay de preview.
 export interface DropPreview {
   zone: string;

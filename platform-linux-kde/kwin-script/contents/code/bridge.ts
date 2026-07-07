@@ -146,6 +146,17 @@ export function shouldSuppressSpawnMaximize(p: {
   return p.withinSpawnGrace || !p.everTiled;
 }
 
+/// Tolerância (px LÓGICOS) para classificar uma janela como maximizada comparando `frameGeometry` à
+/// `MaximizeArea`. Sob escala FRACIONÁRIA (monitor 4K HiDPI) o KWin arredonda as coordenadas lógicas ao
+/// grid de pixels FÍSICOS, então um quadro "cheio" pode divergir da `MaximizeArea` por mais de 1px lógico:
+/// a tolerância fixa de ±1px dava FALSO-NEGATIVO e a janela nascida maximizada escapava do grid SÓ no
+/// primário 4K (ADR 0065). A folga escala com o fator do output (agnóstico, sem hardcode de resolução) e
+/// fica bem abaixo do menor gap do tiling (≥ 8px), então não reintroduz falso-POSITIVO em janela tilada.
+export function maximizeEpsilonForScale(scale: number): number {
+  const s = Number.isFinite(scale) && scale > 0 ? scale : 1;
+  return Math.max(2, Math.ceil(s));
+}
+
 function isLayoutCommand(value: unknown): value is LayoutCommand {
   if (typeof value !== 'object' || value === null) {
     return false;

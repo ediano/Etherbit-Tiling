@@ -7,6 +7,7 @@ import {
   parseTabBars,
   shouldSuppressSpawnMaximize,
   clampGeometry,
+  clampToWorkArea,
   parseLayoutTrees,
   parsePreview,
   resizeDeltaFrom,
@@ -530,6 +531,55 @@ describe('clampGeometry', () => {
   it('não altera dimensões válidas', () => {
     const ok = { id: 1, x: -3, y: 4, width: 800, height: 600 };
     expect(clampGeometry(ok)).toEqual(ok);
+  });
+});
+
+describe('clampToWorkArea', () => {
+  // Monitor primário na origem e secundário deslocado à direita (arranjo assimétrico típico).
+  const PRIMARY = { index: 0, x: 0, y: 0, width: 1000, height: 800 };
+  const RIGHT = { index: 1, x: 1000, y: 0, width: 1920, height: 1080 };
+
+  it('não altera rect já contido na work-area', () => {
+    const ok = { id: 1, x: 12, y: 12, width: 400, height: 300 };
+    expect(clampToWorkArea(ok, PRIMARY)).toEqual(ok);
+  });
+
+  it('encolhe (shrink-to-fit) quando estoura a borda direita — não empurra a origem', () => {
+    // Transbordo impositivo (0040): x=420, w=808 → direita 1228 > 1000. Trava na borda, encolhendo.
+    expect(clampToWorkArea({ id: 12, x: 420, y: 12, width: 808, height: 300 }, PRIMARY)).toEqual({
+      id: 12,
+      x: 420,
+      y: 12,
+      width: 580, // 1000 - 420
+      height: 300,
+    });
+  });
+
+  it('encolhe quando estoura a borda inferior', () => {
+    expect(clampToWorkArea({ id: 3, x: 12, y: 600, width: 400, height: 500 }, PRIMARY)).toEqual({
+      id: 3,
+      x: 12,
+      y: 600,
+      width: 400,
+      height: 200, // 800 - 600
+    });
+  });
+
+  it('sobe a origem para a origem útil de um monitor deslocado (sem vazar para o vizinho)', () => {
+    // Janela cuja origem caiu à esquerda da work-area do monitor secundário: contém dentro dele.
+    expect(clampToWorkArea({ id: 5, x: 980, y: 10, width: 500, height: 400 }, RIGHT)).toEqual({
+      id: 5,
+      x: 1000,
+      y: 10,
+      width: 500,
+      height: 400,
+    });
+  });
+
+  it('garante piso ≥ 1px mesmo com rect degenerado fora da borda', () => {
+    const g = clampToWorkArea({ id: 9, x: 2000, y: 2000, width: 100, height: 100 }, PRIMARY);
+    expect(g.width).toBeGreaterThanOrEqual(1);
+    expect(g.height).toBeGreaterThanOrEqual(1);
   });
 
   // ---- HUD de "eixos limpos" (resolveHotZone — ADR 0028: merge/split 50-50/maximizar) ----

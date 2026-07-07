@@ -1,0 +1,57 @@
+Started etherbit-tiling-daemon.service - Etherbit Tiling Daemon.
+Etherbit daemon — core 0.1.0 — servindo dev.ediano.etherbit.Tiling em /dev/ediano/etherbit/Tiling
+Etherbit daemon — monitor de energia (login1) ativo.
+Etherbit daemon — encerrando.
+Stopping etherbit-tiling-daemon.service - Etherbit Tiling Daemon...
+Stopped etherbit-tiling-daemon.service - Etherbit Tiling Daemon.
+Started etherbit-tiling-daemon.service - Etherbit Tiling Daemon.
+Etherbit daemon — core 0.1.0 — servindo dev.ediano.etherbit.Tiling em /dev/ediano/etherbit/Tiling
+Etherbit daemon — monitor de energia (login1) ativo.
+Stopping etherbit-tiling-daemon.service - Etherbit Tiling Daemon...
+Etherbit daemon — encerrando.
+Stopped etherbit-tiling-daemon.service - Etherbit Tiling Daemon.
+Started etherbit-tiling-daemon.service - Etherbit Tiling Daemon.
+Etherbit daemon — core 0.1.0 — servindo dev.ediano.etherbit.Tiling em /dev/ediano/etherbit/Tiling
+Etherbit daemon — monitor de energia (login1) ativo.
+Stopping etherbit-tiling-daemon.service - Etherbit Tiling Daemon...
+Etherbit daemon — encerrando.
+Stopped etherbit-tiling-daemon.service - Etherbit Tiling Daemon.
+Started etherbit-tiling-daemon.service - Etherbit Tiling Daemon.
+Etherbit daemon — core 0.1.0 — servindo dev.ediano.etherbit.Tiling em /dev/ediano/etherbit/Tiling
+Etherbit daemon — monitor de energia (login1) ativo.
+Stopping etherbit-tiling-daemon.service - Etherbit Tiling Daemon...
+Etherbit daemon — encerrando.
+Stopped etherbit-tiling-daemon.service - Etherbit Tiling Daemon.
+Started etherbit-tiling-daemon.service - Etherbit Tiling Daemon.
+Etherbit daemon — core 0.1.0 — servindo dev.ediano.etherbit.Tiling em /dev/ediano/etherbit/Tiling
+Etherbit daemon — monitor de energia (login1) ativo.
+Etherbit daemon — encerrando.
+Stopping etherbit-tiling-daemon.service - Etherbit Tiling Daemon...
+Stopped etherbit-tiling-daemon.service - Etherbit Tiling Daemon.
+Started etherbit-tiling-daemon.service - Etherbit Tiling Daemon.
+Etherbit daemon — core 0.1.0 — servindo dev.ediano.etherbit.Tiling em /dev/ediano/etherbit/Tiling
+Etherbit daemon — monitor de energia (login1) ativo.
+Etherbit daemon — encerrando.
+Stopping etherbit-tiling-daemon.service - Etherbit Tiling Daemon...
+Stopped etherbit-tiling-daemon.service - Etherbit Tiling Daemon.
+Started etherbit-tiling-daemon.service - Etherbit Tiling Daemon.
+Etherbit daemon — core 0.1.0 — servindo dev.ediano.etherbit.Tiling em /dev/ediano/etherbit/Tiling
+Etherbit daemon — monitor de energia (login1) ativo.
+Stopping etherbit-tiling-daemon.service - Etherbit Tiling Daemon...
+Etherbit daemon — encerrando.
+Stopped etherbit-tiling-daemon.service - Etherbit Tiling Daemon.
+Started etherbit-tiling-daemon.service - Etherbit Tiling Daemon.
+Etherbit daemon — core 0.1.0 — servindo dev.ediano.etherbit.Tiling em /dev/ediano/etherbit/Tiling
+Etherbit daemon — monitor de energia (login1) ativo.
+Stopping etherbit-tiling-daemon.service - Etherbit Tiling Daemon...
+Etherbit daemon — encerrando.
+Stopped etherbit-tiling-daemon.service - Etherbit Tiling Daemon.
+Started etherbit-tiling-daemon.service - Etherbit Tiling Daemon.
+Etherbit daemon — core 0.1.0 — servindo dev.ediano.etherbit.Tiling em /dev/ediano/etherbit/Tiling
+Etherbit daemon — monitor de energia (login1) ativo.
+Stopping etherbit-tiling-daemon.service - Etherbit Tiling Daemon...
+Etherbit daemon — encerrando.
+Stopped etherbit-tiling-daemon.service - Etherbit Tiling Daemon.
+Started etherbit-tiling-daemon.service - Etherbit Tiling Daemon.
+Etherbit daemon — core 0.1.0 — servindo dev.ediano.etherbit.Tiling em /dev/ediano/etherbit/Tiling
+Etherbit daemon — monitor de energia (login1) ativo.
