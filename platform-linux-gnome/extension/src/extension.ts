@@ -216,6 +216,12 @@ export default class EtherbitTilingExtension extends Extension {
     rect: { x: number; y: number; width: number; height: number };
     monitor: number;
   } | null = null;
+  // Janelas em fechamento (unmanage disparado) a EXCLUIR do próximo snapshot — barreira atômica do
+  // descarte (ADR 0062). `_isWindowLive` depende da destruição do ator, que pode não ter ocorrido ainda
+  // no instante do `unmanaged`; sem esta exclusão explícita a janela morta entra no snapshot, o core
+  // calcula a grade com N células (topologia antiga) e a sobrevivente inferior de uma pilha vertical é
+  // selada sobreposta. O id é consumido no fim do `_relayout` (ou já no handler, na passada síncrona).
+  private _closingIds = new Set<number>();
 
   /// Garante um proxy vivo: cria (se ausente) e inscreve `ConfigChanged`. Devolve o proxy ou null.
   /// A criação é barata e dispara a ATIVAÇÃO D-Bus do daemon na primeira chamada (ver ADR 0020).
@@ -521,11 +527,17 @@ export default class EtherbitTilingExtension extends Extension {
         // reaplicar. Sem isso, uma sobrevivente que já "convergiu" (epsilon 2px) para o slot antigo
         // poderia curto-circuitar o early-return e ficar sobreposta à vizinha (ADR 0062).
         this._lastLayoutSig = '';
+        // Exclusão EXPLÍCITA da janela em fechamento (ADR 0062): não confiar só em `_isWindowLive`, que
+        // depende da destruição do ator — no instante do `unmanaged` o ator pode ainda estar vivo, e a
+        // janela morta entraria no snapshot, selando a sobrevivente inferior de uma pilha vertical em
+        // sobreposição. O id persiste em `_closingIds` até ser consumido por um `_relayout` efetivo
+        // (cobre também o caminho adiado sob supressão).
+        this._closingIds.add(id);
         // Barreira SÍNCRONA pós-descarte (ADR 0064): reaplica AGORA, não no debounce de 80ms. Numa pilha
         // assimétrica (ex.: coluna de 3 empilhadas ao lado de 2), o atraso deixava a janela central
-        // sobreposta à inferior por alguns frames (z-index overlap). O `_relayout` já filtra a janela em
-        // unmanage (`_isWindowLive`), então a passada síncrona vê só as sobreviventes e as encaixa no
-        // mesmo frame. Se estamos NO MEIO de um apply (supressão), cai no caminho pendente (o settle honra).
+        // sobreposta à inferior por alguns frames (z-index overlap). Com `_closingIds` + `_isWindowLive`,
+        // a passada síncrona vê só as sobreviventes e as encaixa no mesmo frame. Se estamos NO MEIO de um
+        // apply (supressão), cai no caminho pendente (o settle honra, ainda excluindo o id).
         if (this._suppressRelayout) {
           this._relayoutPending = true;
         } else {
@@ -599,6 +611,17 @@ export default class EtherbitTilingExtension extends Extension {
 
   /// Coalesce rajadas de eventos (ex.: vários `window-created` no login) num único relayout.
   private _scheduleRelayout(): void {
+    // Trava de borda RÍGIDA durante o resize interativo (ADR 0064, paridade com o KDE que só re-tila em
+    // `interactiveMoveResizeFinished`): enquanto um grab de resize está ativo (`_resizeStart` != null), o
+    // `size-changed` do arraste da borda NÃO pode reagendar um relayout — senão ele reaplicaria a
+    // geometria antiga, puxaria a janela de volta ao slot e o layout "deformaria/oscilaria" contra o
+    // cursor. O único relayout do resize é o pós-`_applyResize` (grab-op-end zera `_resizeStart` ANTES de
+    // liberar a supressão). Complementa `_suppressRelayout`: torna a invariante explícita e imune a uma
+    // liberação de supressão em corrida durante o grab.
+    if (this._resizeStart) {
+      this._relayoutPending = true;
+      return;
+    }
     // Durante a supressão (aplicação + restacks adiados + settle), NÃO relayoutar — mas registrar
     // que houve um trigger, para disparar UM relayout coalescido ao liberar (não perde mudanças reais).
     if (this._suppressRelayout) {
@@ -679,8 +702,10 @@ export default class EtherbitTilingExtension extends Extension {
       // Janela em destruição (unmanage em curso) ainda pode aparecer em `list_windows()`. Incluí-la
       // faria o core calcular uma grade de N células e selar uma sobrevivente num slot da topologia
       // ANTIGA, sobrepondo a vizinha (o overlap residual pós-descarte, ADR 0062). Descarta antes de
-      // serializar — paridade com o filtro `isLiveWindow` do KDE (main.ts, snapshot).
-      if (!this._isWindowLive(window)) {
+      // serializar — paridade com o filtro `isLiveWindow` do KDE (main.ts, snapshot). O `_closingIds`
+      // é a barreira determinística: exclui a janela cujo `unmanaged` já disparou mesmo que o ator ainda
+      // não tenha sido destruído (`_isWindowLive` sozinho a deixaria passar).
+      if (this._closingIds.has(window.get_stable_sequence()) || !this._isWindowLive(window)) {
         continue;
       }
       const snapshot = this._snapshot(window);
@@ -694,6 +719,9 @@ export default class EtherbitTilingExtension extends Extension {
         groups.set(key, [snapshot]);
       }
     }
+    // Consome a barreira: as janelas em fechamento já foram excluídas deste snapshot (topologia só das
+    // sobreviventes). Ao próximo relayout elas nem estarão mais em `list_windows()` — o set pode zerar.
+    this._closingIds.clear();
 
     // Reordena cada grupo pela ordem estável; o BSP do core é função dessa ordem.
     const snapshots: WindowSnapshot[] = [];
@@ -1595,8 +1623,9 @@ export default class EtherbitTilingExtension extends Extension {
   }
 
   /// Ejeta a janela `memberId` do stack e a reposiciona na zona de drop resolvida em `(x, y)` — o gesto
-  /// drag-to-ungroup "cai onde foi solta" (ADR 0042). Espelha `_onGrabEnd`: escopo global (gap vazio) =
-  /// bloco de 50% / maximizar; local (sobre uma janela) = split do slot do alvo. `removeIdFromStacks`
+  /// drag-to-ungroup "cai onde foi solta" (ADR 0042/0045). Sobre uma janela (escopo local) = split do
+  /// slot do alvo; sobre um GAP (escopo global) ou sem alvo = reinserção cíclica proporcional
+  /// (`_ejectFromStack`), NUNCA os 50% do bloco global (que esmagariam um grid denso). `removeIdFromStacks`
   /// tira a aba do estado leve; o `MoveWindow` (core `detach_window`) a destaca da árvore e a reinsere.
   private _ejectTabAt(memberId: number, x: number, y: number): void {
     const target = this._windowUnderPointObj(x, y, memberId);
@@ -1612,20 +1641,28 @@ export default class EtherbitTilingExtension extends Extension {
       this._ejectFromStack(memberId); // solto no vazio: reancora no lugar + reinsere ciclicamente (ADR 0045)
       return;
     }
-    const targetId = target ? target.get_stable_sequence() : 0;
-    const scope: 'local' | 'global' = hot.scope === 'global' ? 'global' : 'local';
-    // Escopo local exige um alvo real; sem alvo, cai para o reencaixe cíclico (só ejeta).
-    if (scope === 'local' && !target) {
+    // Desagrupar sobre um GAP (escopo global) NÃO deve tomar 50% do workspace (`make_split` 0.5 do core),
+    // que esmagaria as demais num grid denso (ADR 0045). Roteia para a reinserção CÍCLICA (zona `eject`),
+    // que reduz proporcionalmente e ainda dá 50/50 no caso legítimo de 2 janelas. O bloco global de 50%
+    // segue válido só para MOVER uma janela não-membro ao gap (`_onGrabEnd`), não para desagrupar.
+    if (hot.scope === 'global') {
+      this._ejectFromStack(memberId);
+      return;
+    }
+    // Chegamos aqui só com escopo LOCAL (global já roteado acima). Ele exige um alvo real; sem alvo,
+    // cai para o reencaixe cíclico (só ejeta).
+    if (!target) {
       this._ejectFromStack(memberId); // reancora no lugar + reinsere ciclicamente (ADR 0045)
       return;
     }
+    const targetId = target.get_stable_sequence();
     const res = this._call((p) =>
       p.MoveWindowSync(
         serializeState(this._stacks, this._disabledGroups, this._trees, memberId),
         String(memberId),
         String(targetId),
         hot.dropZone,
-        serializeScope(scope),
+        serializeScope('local'),
       ),
     );
     if (res) {
