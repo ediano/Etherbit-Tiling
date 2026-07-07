@@ -513,6 +513,10 @@ export default class EtherbitTilingExtension extends Extension {
         this._stackHidden.delete(id);
         this._lastMinSizes.delete(id);
         this._everTiled.delete(id);
+        // A topologia mudou (uma janela saiu): invalida o dedup para o relayout pós-fechamento SEMPRE
+        // reaplicar. Sem isso, uma sobrevivente que já "convergiu" (epsilon 2px) para o slot antigo
+        // poderia curto-circuitar o early-return e ficar sobreposta à vizinha (ADR 0062).
+        this._lastLayoutSig = '';
         this._scheduleRelayout();
       });
       // (Des)maximizar/fullscreen muda quais janelas entram no grid (Recovery): re-tila. Os sinais só
@@ -659,6 +663,13 @@ export default class EtherbitTilingExtension extends Extension {
     // Agrupa por `(monitor, workspace)` e registra a ordem estável de cada grupo.
     const groups = new Map<string, WindowSnapshot[]>();
     for (const window of windows) {
+      // Janela em destruição (unmanage em curso) ainda pode aparecer em `list_windows()`. Incluí-la
+      // faria o core calcular uma grade de N células e selar uma sobrevivente num slot da topologia
+      // ANTIGA, sobrepondo a vizinha (o overlap residual pós-descarte, ADR 0062). Descarta antes de
+      // serializar — paridade com o filtro `isLiveWindow` do KDE (main.ts, snapshot).
+      if (!this._isWindowLive(window)) {
+        continue;
+      }
       const snapshot = this._snapshot(window);
       byId.set(snapshot.id, window);
       const key = orderKey(snapshot.monitor, snapshot.workspace);
@@ -785,6 +796,11 @@ export default class EtherbitTilingExtension extends Extension {
     // Reinicia o registro do que committamos neste ciclo (base da verificação de convergência do
     // próximo dedup, ADR 0038). Só recebe janelas visíveis e não-maximizadas, gravadas pós-apply.
     this._lastAppliedRects.clear();
+    // Uma janela pode morrer ENTRE o snapshot e a aplicação (unmanage assíncrono). Se isso ocorrer,
+    // o layout que estamos aplicando é da topologia antiga (N células) — as sobreviventes cairiam em
+    // slots errados, sobrepondo-se. Marca e força uma passada corretiva sobre o conjunto sobrevivente
+    // ao final (paridade com o `sawDead → retile` do KDE, ADR 0062).
+    let sawDead = false;
     try {
       // Restaura quem deixou de estar oculto (ex.: virou a aba ativa, ou o stack foi desfeito).
       for (const id of this._stackHidden) {
@@ -796,6 +812,12 @@ export default class EtherbitTilingExtension extends Extension {
       for (const command of commands) {
         const window = byId.get(command.id);
         if (!window) {
+          continue;
+        }
+        // Morreu entre o snapshot e a aplicação: pula e sinaliza a passada corretiva. Sem isso, as
+        // demais sobreviventes ficam nos slots da topologia antiga (overlap residual, ADR 0062).
+        if (!this._isWindowLive(window)) {
+          sawDead = true;
           continue;
         }
         // O core deu um slot a esta janela → ela já foi tilada. A partir daqui, maximizá-la é ação
@@ -866,6 +888,15 @@ export default class EtherbitTilingExtension extends Extension {
 
     // Desenha as barras de abas a partir da geometria devolvida pelo core.
     this._rebuildTabBars(tabBars, byId);
+
+    // Janela morreu durante o apply: o layout aplicado é da topologia antiga. Invalida o dedup (para a
+    // próxima passada não ser engolida por uma assinatura/convergência "no slot errado") e agenda um
+    // relayout corretivo sobre o conjunto sobrevivente. Durante a supressão, `_scheduleRelayout` apenas
+    // marca `_relayoutPending`, honrado no fim do settle (ADR 0062).
+    if (sawDead) {
+      this._lastLayoutSig = '';
+      this._scheduleRelayout();
+    }
   }
 
   /// Confronta a geometria que committamos no último ciclo (`_lastAppliedRects`) com o

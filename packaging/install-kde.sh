@@ -70,6 +70,8 @@ t() {
                      pt='>> Instalando KWin Script %s\n' ;;
     applet_install)  en='>> Installing System Tray applet %s\n'
                      pt='>> Instalando applet da bandeja %s\n' ;;
+    warn_no_applet)  en='warning: plasmoid/ missing from this bundle — System Tray icon will be ABSENT. Rebuild with packaging/build-kde-release.sh to include it.\n'
+                     pt='aviso: plasmoid/ ausente neste bundle — o ícone da Bandeja do Sistema ficará AUSENTE. Reconstrua com packaging/build-kde-release.sh para incluí-lo.\n' ;;
     warn_no_qdbus)   en='warning: qdbus6/qdbus-qt6 not found — reload KWin manually (requires Plasma 6/Qt 6).\n'
                      pt='aviso: qdbus6/qdbus-qt6 não encontrado — recarregue o KWin manualmente (requer Plasma 6/Qt 6).\n' ;;
     service_install) en='>> Installing systemd --user service (%s)\n'
@@ -274,6 +276,10 @@ if [ -f "$HERE/plasmoid/metadata.json" ] && [ -f "$HERE/plasmoid/contents/ui/mai
   else
     kpackagetool6 --type=Plasma/Applet -i "$HERE/plasmoid"
   fi
+else
+  # Bundle antigo (pré-ADR 0059) sem a pasta `plasmoid/`: AVISA em vez de omitir o applet em silêncio —
+  # senão o "ícone ausente na bandeja" vira um mistério (a fonte atual já estagia o applet, ADR 0061).
+  t warn_no_applet
 fi
 
 # Linha de corte Qt6/Plasma6: só qdbus6/qdbus-qt6 (o `qdbus` puro pode ser o do Qt5). Ver ADR 0013.

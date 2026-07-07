@@ -247,6 +247,14 @@ impl App {
         if self.drag.is_some() {
             return;
         }
+        // Diagnóstico de hardware (ADR 0039): confirma no journal que o helper RECEBEU as barras. Um
+        // `ShowTabs` chegando aqui com N>0 e nenhuma barra visível na tela isola o defeito no desenho
+        // (draw/configure); a ausência desta linha isola no transporte (D-Bus/ativação do helper).
+        eprintln!(
+            "Etherbit tabs — apply_bars: {} barra(s) recebida(s), {} superfície(s) atual(is)",
+            bars.len(),
+            self.tab_surfaces.len(),
+        );
         // Remove superfícies de stacks ausentes/degenerados (o drop desmonta a surface no compositor).
         self.tab_surfaces.retain(|ts| {
             bars.iter()
@@ -491,6 +499,13 @@ impl App {
         if let Some(i) =
             self.tab_surfaces.iter().position(|ts| ts.layer.wl_surface() == layer.wl_surface())
         {
+            // Diagnóstico (ADR 0039): confirma o PRIMEIRO desenho (pós-`configure`) da barra na tela.
+            eprintln!(
+                "Etherbit tabs — desenhando barra stack={} ({}x{})",
+                self.tab_surfaces[i].view.stack_id,
+                self.tab_surfaces[i].view.w,
+                self.tab_surfaces[i].view.h,
+            );
             draw_bar(&mut self.pool, self.font.as_ref(), &self.tab_surfaces[i]);
         }
     }
@@ -909,6 +924,13 @@ pub fn run(
     WaylandSource::new(conn, event_queue)
         .insert(event_loop.handle())
         .map_err(|e| anyhow!("inserir WaylandSource no calloop: {e:?}"))?;
+
+    // Resync no startup (ADR 0039): acabamos de bindar `wlr-layer-shell` nesta sessão, mas o KWin Script
+    // pode já ter barras publicadas que o dedup (`lastTabsKey`) não reemitirá para um helper recém-subido
+    // — deixando o overlay em branco (só a janela ativa do grupo visível). Um único wake faz o script cair
+    // no ramo de resync do `drainTabActions` (drain VAZIO, sem ação de clique) e reemitir as barras atuais.
+    // Reusa o MESMO canal de wake dos cliques (kglobalaccel `invokeShortcut`), já validado em hardware.
+    let _ = app.wake_tx.send(());
 
     let mut last = OverlayState::default();
     loop {
