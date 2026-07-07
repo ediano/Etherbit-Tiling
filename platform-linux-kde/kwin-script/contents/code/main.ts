@@ -168,6 +168,13 @@ callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'Ping', (status: string) => {
   log('Ping OK — daemon respondeu:', status);
 });
 
+// Ativação PROATIVA do helper de overlay (ADR 0039): um `HideTabs` fire-and-forget AUTO-ATIVA o processo
+// `etherbit-tiling-preview` via D-Bus (`.service`) já na carga do script — sem depender de um drag prévio
+// (`ShowPreview`). Grupos criados por Meta+S nunca disparam preview; sem este toque o helper poderia nunca
+// subir e as barras de aba ficariam invisíveis (só a última janela do grupo visível). Ao subir, o helper
+// envia um wake de resync (ver `drainTabActions`) que reemite as barras atuais.
+callDBus(PREVIEW_BUS, PREVIEW_PATH, TABS_IFACE, 'HideTabs');
+
 // Hidrata os grupos com tiling desligado a partir da config persistida do daemon (ADR 0057): o toggle
 // Meta+Y por monitor/workspace sobrevive ao reinício do KWin. Best-effort (no-op se o daemon não responder).
 hydrateDisabledGroups();
@@ -779,17 +786,26 @@ function groupWindowIds(key: string): string[] {
 /// atalho oculto que o helper invoca via kglobalaccel após cada clique (o KWin Script não assina sinais).
 function drainTabActions(): void {
   callDBus(PREVIEW_BUS, PREVIEW_PATH, TABS_IFACE, 'DrainTabActions', (json: string) => {
-    applyTabActions(json);
+    if (applyTabActions(json)) {
+      return;
+    }
+    // Drain VAZIO = wake sem clique: o helper acabou de (re)iniciar e está sem barras (envia um wake de
+    // resync no startup, ADR 0039). Invalida o dedup e re-tila para REEMITIR as barras atuais mesmo com
+    // geometria idêntica — sem isso, um helper reiniciado ficaria em branco até a próxima mudança de
+    // layout (só a janela ativa do grupo visível). Cliques reais nunca caem aqui (drenam ≥1 ação).
+    lastTabsKey = '';
+    retile();
   });
 }
 
 /// Aplica as ações resolvidas pelo helper. `activate` muda a aba ativa e foca a janela; `close` fecha a
 /// janela (→ `windowRemoved` → retile); `ungroup` tira a janela do stack (o core a reinsere no grid
-/// cíclico via `insert_cyclic` no próximo sync). Re-tila quando o estado leve muda.
-function applyTabActions(json: string): void {
+/// cíclico via `insert_cyclic` no próximo sync). Re-tila quando o estado leve muda. Retorna `true` se
+/// havia ações (o chamador usa `false` = drain vazio como sinal de resync do helper, ADR 0039).
+function applyTabActions(json: string): boolean {
   const actions = parseTabActions(json);
   if (actions.length === 0) {
-    return;
+    return false;
   }
   let needRetile = false;
   for (const action of actions) {
@@ -842,6 +858,7 @@ function applyTabActions(json: string): void {
   if (needRetile) {
     retile();
   }
+  return true;
 }
 
 /// Ejeta `draggedStable` (transporte `draggedT`) do stack SEM alvo — menu "Desagrupar" e fallback do

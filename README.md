@@ -69,6 +69,10 @@ cd platform-linux-gnome/extension && pnpm install && pnpm run install:ext
 cd platform-linux-kde/kwin-script && pnpm install && pnpm run install:script
 ```
 
+> **Ícone na bandeja (KDE):** o applet da System Tray vem no release
+> (`packaging/build-kde-release.sh` + `install-kde.sh`). Ele fica _elegível_, não é forçado no painel —
+> habilite em **Config. da Bandeja do Sistema → Entradas → Etherbit Tiling → Mostrar** ([ADR 0059](rules/0059-system-tray-applet-kde-via-kglobalaccel.md)).
+
 > Guia completo em [docs/DESENVOLVIMENTO.md](docs/DESENVOLVIMENTO.md).
 
 ---

@@ -35,8 +35,8 @@
 #
 # SÓ install-kde.sh:
 #   err_kwin_incomplete, err_no_kpackagetool, preview_install, warn_no_preview,
-#   kwin_install, warn_no_qdbus, ping_ok, warn_ping_fail, done_preview, done_kwin,
-#   done_config
+#   kwin_install, applet_install, warn_no_applet, warn_no_qdbus, ping_ok, warn_ping_fail,
+#   done_preview, done_kwin, done_applet, done_config
 #
 # COMPARTILHADAS (uninstall-gnome.sh + uninstall-kde.sh):
 #   stopping_service, removing_files (texto difere), purge_config, config_kept,
