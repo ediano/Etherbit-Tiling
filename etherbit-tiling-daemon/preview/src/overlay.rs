@@ -150,6 +150,11 @@ struct App {
     /// Origem lógica do output ao qual a superfície de PREVIEW está fixada (ver `TabSurface::origin`).
     /// `None` = escondida ou fallback global. Detecta drag do preview entre monitores → recriar.
     layer_origin: Option<(i32, i32)>,
+    /// Fator de escala (buffer scale) do output do PREVIEW (ADR 0065). O buffer SHM é alocado em pixels
+    /// FÍSICOS (`w*scale × h*scale`) e a superfície declara `set_buffer_scale`, para o retângulo casar
+    /// pixel a pixel com o quadrante no 4K HiDPI — sem borrão/aparência expandida. `set_size` segue em px
+    /// lógicos, então a EXTENSÃO do indicador não muda (nunca invade o quadrante vizinho). Default 1.
+    preview_scale: i32,
     /// Superfícies das BARRAS DE ABAS (uma por grupo).
     tab_surfaces: Vec<TabSurface>,
     /// Menu de contexto aberto (no máximo um por vez). `None` = nenhum menu aberto. ADR 0040.
@@ -197,13 +202,23 @@ impl App {
                 let target = self.output_at(r.x, r.y);
                 let origin = target.as_ref().map(|(_, ox, oy, _, _)| (*ox, *oy));
                 let (mx, my) = origin.unwrap_or((0, 0));
+                // Escala inteira (buffer scale) do output-alvo — para o buffer bater pixel a pixel no
+                // HiDPI (ADR 0065). Sem output conhecido → 1 (retrocompat). Só afeta a NITIDEZ do buffer;
+                // a extensão (set_size em px lógicos) permanece contida no quadrante.
+                let scale = target
+                    .as_ref()
+                    .and_then(|(o, _, _, _, _)| self.output_state.info(o))
+                    .map(|i| i.scale_factor.max(1))
+                    .unwrap_or(1);
                 // Output de uma `LayerSurface` é IMUTÁVEL: se o preview migrou de monitor (drag entre
                 // telas), descarta a superfície antiga para recriá-la fixada ao novo output.
                 if self.layer.is_some() && self.layer_origin != origin {
                     self.layer = None;
                 }
                 self.rect = Some(r);
+                self.preview_scale = scale;
                 if let Some(layer) = self.layer.as_ref() {
+                    layer.wl_surface().set_buffer_scale(scale);
                     layer.set_size(r.width as u32, r.height as u32);
                     layer.set_margin(r.y - my, 0, 0, r.x - mx);
                     layer.commit();
@@ -218,6 +233,7 @@ impl App {
                         target.as_ref().map(|(o, _, _, _, _)| o),
                     );
                     layer.set_anchor(Anchor::TOP | Anchor::LEFT);
+                    layer.wl_surface().set_buffer_scale(scale);
                     layer.set_size(r.width as u32, r.height as u32);
                     layer.set_margin(r.y - my, 0, 0, r.x - mx);
                     layer.set_keyboard_interactivity(KeyboardInteractivity::None);
@@ -239,14 +255,19 @@ impl App {
         }
     }
 
-    /// Preenche o preview com o retângulo translúcido (SHM, alfa pré-multiplicado).
+    /// Preenche o preview com o retângulo translúcido (SHM, alfa pré-multiplicado). `w`/`h` são px
+    /// LÓGICOS; o buffer é alocado em px FÍSICOS (`w*scale × h*scale`) casando com o `set_buffer_scale`
+    /// da superfície (ADR 0065) — nítido no HiDPI, sem alterar a extensão do indicador (contido no quadrante).
     fn draw_preview(&mut self, w: u32, h: u32) {
         if w == 0 || h == 0 || self.layer.is_none() {
             return;
         }
-        let stride = w as i32 * 4;
+        let scale = self.preview_scale.max(1) as u32;
+        let pw = w * scale;
+        let ph = h * scale;
+        let stride = pw as i32 * 4;
         let (buffer, canvas) =
-            match self.pool.create_buffer(w as i32, h as i32, stride, wl_shm::Format::Argb8888) {
+            match self.pool.create_buffer(pw as i32, ph as i32, stride, wl_shm::Format::Argb8888) {
                 Ok(pair) => pair,
                 Err(err) => {
                     eprintln!("Etherbit preview — create_buffer falhou: {err}");
@@ -270,7 +291,8 @@ impl App {
                 eprintln!("Etherbit preview — attach buffer falhou: {err}");
                 return;
             }
-            surface.damage_buffer(0, 0, w as i32, h as i32);
+            // `damage_buffer` usa coordenadas do BUFFER (px físicos).
+            surface.damage_buffer(0, 0, pw as i32, ph as i32);
             surface.commit();
         }
     }
@@ -988,6 +1010,7 @@ pub fn run(
         layer: None,
         rect: None,
         layer_origin: None,
+        preview_scale: 1,
         tab_surfaces: Vec::new(),
         menu: None,
         pointer: None,

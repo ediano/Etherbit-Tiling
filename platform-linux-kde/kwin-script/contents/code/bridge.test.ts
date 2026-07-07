@@ -5,6 +5,7 @@ import {
   serializeMonitors,
   parseLayout,
   shouldSuppressSpawnMaximize,
+  maximizeEpsilonForScale,
   parseLayoutTrees,
   parsePreview,
   orderKey,
@@ -162,6 +163,27 @@ describe('shouldSuppressSpawnMaximize', () => {
         withinSpawnGrace: false,
       }),
     ).toBe(false);
+  });
+});
+
+describe('maximizeEpsilonForScale', () => {
+  it('escala 1.0 (integer-exact) → folga mínima de 2px', () => {
+    expect(maximizeEpsilonForScale(1)).toBe(2);
+  });
+
+  it('escalas fracionárias arredondam para cima (mas < menor gap do tiling)', () => {
+    expect(maximizeEpsilonForScale(1.5)).toBe(2);
+    expect(maximizeEpsilonForScale(1.75)).toBe(2);
+    expect(maximizeEpsilonForScale(2)).toBe(2);
+    expect(maximizeEpsilonForScale(2.5)).toBe(3);
+    expect(maximizeEpsilonForScale(3)).toBe(3);
+  });
+
+  it('valores inválidos/ausentes caem em escala 1 (retrocompat)', () => {
+    expect(maximizeEpsilonForScale(0)).toBe(2);
+    expect(maximizeEpsilonForScale(-1)).toBe(2);
+    expect(maximizeEpsilonForScale(Number.NaN)).toBe(2);
+    expect(maximizeEpsilonForScale(Number.POSITIVE_INFINITY)).toBe(2);
   });
 });
 

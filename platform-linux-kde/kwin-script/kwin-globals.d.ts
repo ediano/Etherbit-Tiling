@@ -30,6 +30,8 @@ interface QSize {
  */
 interface KWinOutput {
   readonly name?: string;
+  /** Fator de escala (devicePixelRatio) do output no Plasma 6; ausente em versões antigas → tratar como 1. */
+  readonly scale?: number;
 }
 
 /** Desktop virtual do KWin (Plasma 6). Tratado como opaco — só comparado por identidade/índice. */

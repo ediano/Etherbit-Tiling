@@ -2686,6 +2686,39 @@ mod tests {
     }
 
     #[test]
+    fn discard_central_de_pilha_assimetrica_nao_sobrepoe() {
+        // Regressão da diretiva (sintoma GNOME #2): numa "coluna de 3 empilhadas ao lado de 2", fechar
+        // o nó CENTRAL não pode deixar a sobrevivente sobreposta à inferior. O core é a fonte da verdade
+        // geométrica — o irmão sobe e preenche o slot. (O overlap RELATADO em hardware é transbordo de
+        // borda cross-monitor, contido na PONTE pelo clamp à work-area — ADR 0065 — não geometria do core.)
+        let area = area_1000x800();
+        // Coluna esquerda de 3 (1 topo, 2 meio, 3 baixo) ao lado de coluna direita de 2 (4, 5).
+        let left = Node::split_v(
+            1.0 / 3.0,
+            Node::Leaf(1),
+            Node::split_v(0.5, Node::Leaf(2), Node::Leaf(3)),
+        );
+        let right = Node::split_v(0.5, Node::Leaf(4), Node::Leaf(5));
+        let tree = LayoutTree { root: Some(Node::split_h(0.5, left, right)) };
+        assert_no_overlap(&compute_geometry(&tree, &area, &opts(), &[], &[1, 2, 3, 4, 5]).rects);
+        // Fecha a CENTRAL (2): a inferior (3) sobe e ocupa os 2/3 de baixo, sem sobrepor a superior (1).
+        let t1 = reconcile(&tree, &[1, 3, 4, 5], &[], None, &area, &opts());
+        let g1 = compute_geometry(&t1, &area, &opts(), &[], &[1, 3, 4, 5]);
+        assert_no_overlap(&g1.rects);
+        let r1 = g1.rects.iter().find(|r| r.id == 1).unwrap();
+        let r3 = g1.rects.iter().find(|r| r.id == 3).unwrap();
+        assert!(r1.y + r1.height <= r3.y, "3 deve subir para logo abaixo de 1, sem overlap");
+        // Fecha também a âncora de um stack de tabs: os membros restantes não podem sobrepor.
+        let stacks = vec![StackDescriptor { member_ids: vec![21, 22, 23], active_id: 21 }];
+        let ts =
+            reconcile(&LayoutTree::default(), &[21, 22, 23, 24], &stacks, None, &area, &opts());
+        assert_no_overlap(&compute_geometry(&ts, &area, &opts(), &stacks, &[21, 22, 23, 24]).rects);
+        let stacks2 = vec![StackDescriptor { member_ids: vec![22, 23], active_id: 22 }];
+        let ts2 = reconcile(&ts, &[22, 23, 24], &stacks2, None, &area, &opts());
+        assert_no_overlap(&compute_geometry(&ts2, &area, &opts(), &stacks2, &[22, 23, 24]).rects);
+    }
+
+    #[test]
     fn reconcile_is_idempotent() {
         // Reconciliar com os mesmos ids/foco não muda a árvore.
         let area = area_1000x800();

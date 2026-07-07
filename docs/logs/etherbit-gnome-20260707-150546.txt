@@ -1,0 +1,14 @@
+Error looking up permission: GDBus.Error:org.freedesktop.portal.Error.NotFound: No entry for geolocation
+[etherbit] relayout: total=0 aplicadas=0
+[etherbit] relayout: total=1 aplicadas=1
+[etherbit] grid: 1@8,40 3424x1392
+[etherbit] relayout: total=2 aplicadas=2
+[etherbit] grid: 1@8,40 1708x1392 | 2@1724,40 1708x1392
+[etherbit] relayout: total=2 aplicadas=2
+[etherbit] grid: 1@8,40 1708x1392 | 2@1724,40 1708x1392
+[etherbit] relayout: total=2 aplicadas=2
+[etherbit] grid: 1@8,40 1708x1392 | 2@1724,40 1708x1392
+[etherbit] relayout: total=2 aplicadas=2
+[etherbit] grid: 1@8,40 1708x1392 | 2@1724,40 1708x1392
+[etherbit] relayout: total=2 aplicadas=2
+[etherbit] grid: 1@8,40 1708x1392 | 2@1724,40 1708x1392

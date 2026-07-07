@@ -26,6 +26,7 @@ import {
   parseTabBars,
   parseLayoutTrees,
   shouldSuppressSpawnMaximize,
+  maximizeEpsilonForScale,
   resolveHotZone,
   serializeScope,
   resizeDeltaFrom,
@@ -272,14 +273,29 @@ function isMaximized(win: KWinWindow): boolean {
   try {
     const g = win.frameGeometry;
     const max = workspace.clientArea(KWin.MaximizeArea, win);
+    // Folga sensível à escala do output (ADR 0065): sob escala fracionária no 4K, `frameGeometry` e
+    // `MaximizeArea` divergem > 1px lógico por arredondamento a pixels físicos — a folga fixa de ±1px
+    // dava falso-negativo e a janela nascida maximizada escapava do grid só no primário HiDPI.
+    const eps = maximizeEpsilonForScale(outputScaleOf(win));
     return (
-      Math.abs(g.x - max.x) <= 1 &&
-      Math.abs(g.y - max.y) <= 1 &&
-      Math.abs(g.width - max.width) <= 1 &&
-      Math.abs(g.height - max.height) <= 1
+      Math.abs(g.x - max.x) <= eps &&
+      Math.abs(g.y - max.y) <= eps &&
+      Math.abs(g.width - max.width) <= eps &&
+      Math.abs(g.height - max.height) <= eps
     );
   } catch (e) {
     return false;
+  }
+}
+
+/// Fator de escala do output que contém a janela (Plasma 6 expõe `output.scale`; ausente → 1). Puramente
+/// defensivo: qualquer erro/ausência cai em 1 (comportamento inteiro-exato, retrocompatível).
+function outputScaleOf(win: KWinWindow): number {
+  try {
+    const s = win.output?.scale;
+    return typeof s === 'number' && Number.isFinite(s) && s > 0 ? s : 1;
+  } catch (e) {
+    return 1;
   }
 }
 
@@ -319,6 +335,26 @@ function spawnUnmaximizeIfBorn(win: KWinWindow): void {
     win.setMaximize?.(false, false);
   } catch (e) {
     // referência morta / API ausente — ignora (a janela segue como está; o retile cuida do resto)
+  }
+}
+
+/// Captura IMPERATIVA de spawn (ADR 0065): no `windowAdded`, com o Tiling ativo, uma janela recém-nascida
+/// que ainda NÃO foi tilada é desmaximizada SEM depender do teste geométrico `isMaximized` — frágil sob
+/// escala fracionária no primário 4K, onde `frameGeometry`/`MaximizeArea` divergem e a janela nascida
+/// maximizada (Konsole, System Monitor) escapava do grid. `setMaximize(false,false)` é NO-OP se ela não
+/// estiver maximizada, então é seguro chamar em qualquer nova janela. A preservação da maximização MANUAL
+/// (Unmaximize Recovery) fica intacta: só age em `!everTiled`, e uma janela já tilada nunca passa por aqui.
+function forceSpawnUnmaximize(win: KWinWindow): void {
+  try {
+    if (!tilingEnabled || !isLiveWindow(win)) {
+      return;
+    }
+    if (everTiled.has(windowId(win))) {
+      return;
+    }
+    win.setMaximize?.(false, false);
+  } catch (e) {
+    // referência morta / API ausente — ignora (o retile cuida do resto)
   }
 }
 
@@ -1446,7 +1482,10 @@ workspace.windowAdded.connect((win) => {
   } catch (e) {
     // referência morta ao ler o id — segue; sem registro a janela cai no ramo "manual" (guard everTiled)
   }
-  // Nascimento: com o Tiling ativo, nenhuma janela inicia maximizada (mesmo que o app peça).
+  // Nascimento: com o Tiling ativo, nenhuma janela inicia maximizada (mesmo que o app peça). A captura
+  // IMPERATIVA (ADR 0065) força a desmaximização independente do `isMaximized` frágil no 4K; o
+  // `spawnUnmaximizeIfBorn` (via predicado) segue como rede para apps de restore lento.
+  forceSpawnUnmaximize(win);
   spawnUnmaximizeIfBorn(win);
   retile();
 });
