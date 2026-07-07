@@ -151,6 +151,23 @@ impl Tiling {
         self.notify(&emitter).await
     }
 
+    /// Idem `SetIgnoreList`, mas recebe a lista como JSON string (`["obs","..."]`). Existe porque o
+    /// `callDBus` do KWin Script não empacota array de strings (`as`) de forma confiável no QJSEngine —
+    /// a ponte KDE serializa tudo como JSON string (mesma disciplina do ADR 0009 para `uint64`). O GNOME
+    /// segue usando o `SetIgnoreList(as)` tipado via proxy. Lista inválida vira erro D-Bus recuperável.
+    async fn set_ignore_list_json(
+        &mut self,
+        app_ids_json: String,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
+        let app_ids: Vec<String> = serde_json::from_str(&app_ids_json).map_err(|e| {
+            fdo::Error::InvalidArgs(format!("set_ignore_list_json: JSON inválido: {e}"))
+        })?;
+        self.config.ignore_list = app_ids;
+        self.persist()?;
+        self.notify(&emitter).await
+    }
+
     /// Liga/desliga os cantos arredondados das janelas e define o raio (px). Raio travado em 0..=50.
     async fn set_rounded_corners(
         &mut self,
@@ -160,6 +177,25 @@ impl Tiling {
     ) -> fdo::Result<()> {
         self.config.rounded_corners = enabled;
         self.config.corner_radius = radius.min(CORNER_RADIUS_MAX);
+        self.persist()?;
+        self.notify(&emitter).await
+    }
+
+    /// Substitui o conjunto de grupos `(monitor, workspace)` com o tiling desligado, como JSON string
+    /// (`[{"monitor":"DP-1","workspace":0}, ...]`). A ponte KDE chama isto a cada toggle Meta+Y para que
+    /// o estado sobreviva ao reinício do KWin (ADR 0057). O monitor é o NOME estável do output (ADR 0056).
+    /// JSON string (não array tipado) pela mesma razão do `SetIgnoreListJson` — o `callDBus` do KWin não
+    /// empacota estruturas compostas de forma confiável (ADR 0009). Persiste e emite `ConfigChanged`.
+    async fn set_disabled_groups(
+        &mut self,
+        groups_json: String,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
+        let groups: Vec<crate::config::DisabledGroup> = serde_json::from_str(&groups_json)
+            .map_err(|e| {
+                fdo::Error::InvalidArgs(format!("set_disabled_groups: JSON inválido: {e}"))
+            })?;
+        self.config.disabled_groups = groups;
         self.persist()?;
         self.notify(&emitter).await
     }

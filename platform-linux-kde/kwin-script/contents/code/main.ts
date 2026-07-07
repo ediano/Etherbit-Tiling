@@ -16,7 +16,7 @@
 // das barras e a captura de cliques vivem no helper `etherbit-tiling-preview` (wlr-layer-shell), pois um
 // KWin Script não pinta nem captura ponteiro. O script só publica geometria/títulos e aplica as ações.
 
-import { DEFAULT_CONFIG, type TilingConfig } from './config.js';
+import { DEFAULT_CONFIG, parseConfig, type TilingConfig } from './config.js';
 import {
   serializeWindows,
   serializeMonitors,
@@ -32,6 +32,7 @@ import {
   appendToOrder,
   removeFromOrder,
   sortByOrder,
+  parseOrderKey,
   toggleGroupDisabled,
   removeIdFromStacks,
   isStackMember,
@@ -43,7 +44,6 @@ import {
   parseTabActions,
   type Stack,
   type TreeNode,
-  type HotZone,
   type Rect,
   type TabBarView,
   type WindowSnapshot,
@@ -95,10 +95,13 @@ function loadConfig(): TilingConfig {
     active_border: readConfig('activeBorder', DEFAULT_CONFIG.active_border),
     border_color: readConfig('borderColor', DEFAULT_CONFIG.border_color),
     border_width: readConfig('borderWidth', DEFAULT_CONFIG.border_width),
-    ignore_list: DEFAULT_CONFIG.ignore_list,
+    ignore_list: readConfig('ignoreList', DEFAULT_CONFIG.ignore_list),
     autostart: DEFAULT_CONFIG.autostart,
     rounded_corners: readConfig('roundedCorners', DEFAULT_CONFIG.rounded_corners),
     corner_radius: readConfig('cornerRadius', DEFAULT_CONFIG.corner_radius),
+    // Não é chave do kwinrc: os grupos desligados vivem no daemon (ADR 0057) e são hidratados via
+    // GetConfig na carga (ver `hydrateDisabledGroups`). Aqui fica só o default do contrato.
+    disabled_groups: DEFAULT_CONFIG.disabled_groups,
   };
 }
 
@@ -117,10 +120,40 @@ function pushConfigToDaemon(cfg: TilingConfig): void {
     cfg.rounded_corners,
     cfg.corner_radius,
   );
+  // Blacklist de apps: enviada como JSON string (não como array `as`) — o `callDBus` do KWin não
+  // empacota array de strings de forma confiável no QJSEngine. O daemon expõe `SetIgnoreListJson`
+  // exatamente para esta ponte (ver ADR 0009/0055). O core passa a flutuar essas classes (is_tileable).
+  callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetIgnoreListJson', JSON.stringify(cfg.ignore_list));
 }
 
 const config = loadConfig();
 pushConfigToDaemon(config);
+
+/// Persiste o set `disabled` (grupos com tiling desligado, chaveados pelo NOME do output — ADR 0056) no
+/// daemon (ADR 0057), para sobreviver ao reinício do KWin. Chamado a cada toggle Meta+Y. Best-effort: se
+/// o daemon estiver fora do barramento, é no-op (o set em memória segue valendo até o próximo start).
+function persistDisabledGroups(): void {
+  const groups = [...disabled].map((key) => {
+    const [monitor, workspace] = parseOrderKey(key);
+    return { monitor, workspace };
+  });
+  callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetDisabledGroups', JSON.stringify(groups));
+}
+
+/// Hidrata o set `disabled` a partir da config PERSISTIDA do daemon (GetConfig) na carga do script — o
+/// toggle Meta+Y (por monitor/workspace) passa a sobreviver ao reinício do KWin (ADR 0057). Best-effort:
+/// se o daemon não responder, o set fica vazio (comportamento anterior). Re-tila ao final para aplicar.
+function hydrateDisabledGroups(): void {
+  callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'GetConfig', (json: string) => {
+    const cfg = parseConfig(json);
+    for (const g of cfg.disabled_groups) {
+      if (g && typeof g.monitor === 'string') {
+        disabled.add(orderKey(g.monitor, g.workspace));
+      }
+    }
+    retile();
+  });
+}
 
 /// Chave geral do tiling (runtime). Inicia do default do KCM (`enabled`) e é alternada em tempo real
 /// pelo atalho Meta+Shift+Y. Desligada, o `retile()` libera as janelas e NÃO chama `SyncWindows`.
@@ -133,6 +166,10 @@ log('ponte carregando; testando daemon em', BUS_NAME);
 callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'Ping', (status: string) => {
   log('Ping OK — daemon respondeu:', status);
 });
+
+// Hidrata os grupos com tiling desligado a partir da config persistida do daemon (ADR 0057): o toggle
+// Meta+Y por monitor/workspace sobrevive ao reinício do KWin. Best-effort (no-op se o daemon não responder).
+hydrateDisabledGroups();
 
 // ---- Estado leve da ponte (ver ADR 0016/0017: o daemon permanece sem estado) ----
 
@@ -162,14 +199,17 @@ const stackHidden = new Set<string>();
 /// do arrasto, eles seguem válidos para as janelas pré-existentes).
 let lastTransportOf = new Map<string, number>();
 let lastTransportToStable = new Map<number, string>();
+/// Tradução nome-do-output ↔ índice numérico do ÚLTIMO retile (ADR 0056). O estado da ponte é chaveado
+/// por nome; o contrato do daemon/core usa o índice atual. Reusados no drop (serializeState/parse) sem
+/// um retile no meio do arrasto.
+let lastNameToIndex = new Map<string, number>();
+let lastIndexToName = new Map<number, string>();
 
 /// `internalId` da janela em arrasto (null fora de um move).
 let draggedId: string | null = null;
 /// Último cursor amostrado (throttle por posição) e guarda de reentrância.
 let lastCursor: QPoint | null = null;
 let resolving = false;
-/// Zona quente resolvida no último passo do arrasto (define o drop: stack/split + escopo).
-let lastHot: HotZone | null = null;
 /// Resize manual em curso: internalId + frame inicial (para derivar borda/delta ao soltar).
 let resizeStart: {
   id: string;
@@ -280,6 +320,19 @@ function collectOutputs(): KWinOutput[] {
   return outputs;
 }
 
+/// Token de identidade ESTÁVEL de um monitor (ADR 0056): o NOME do conector (`output.name`, ex. "DP-1").
+/// É a chave do estado persistente por monitor — o índice posicional muda com hotplug/reordenação e
+/// remaparia árvores/stacks/disabled para o monitor físico errado. Fallback defensivo: se o KWin não
+/// expuser `name`, cai no índice posicional (`#idx`, comportamento legado) — pior isolamento, nunca crash.
+function outputNameOf(output: KWinOutput): string {
+  const raw = output && typeof output === 'object' ? output.name : undefined;
+  if (typeof raw === 'string' && raw.length > 0) {
+    return raw;
+  }
+  const idx = collectOutputs().indexOf(output);
+  return `#${idx < 0 ? 0 : idx}`;
+}
+
 /// Áreas úteis dos monitores (descontando painéis), indexadas conforme `outputs`.
 function monitorsFrom(outputs: KWinOutput[]): MonitorSnapshot[] {
   return outputs.map((output, index): MonitorSnapshot => {
@@ -304,18 +357,42 @@ function desktopIndexOf(win: KWinWindow): number {
 /// Chave `(monitor, desktop)` do grupo "ativo": monitor + desktop da janela ativa (ou desktop atual).
 function activeGroupKey(): string {
   const aw = workspace.activeWindow;
-  if (aw) {
-    const monitor = collectOutputs().indexOf(aw.output);
-    return orderKey(monitor < 0 ? 0 : monitor, desktopIndexOf(aw));
+  if (aw && isLiveWindow(aw)) {
+    return orderKey(outputNameOf(aw.output), desktopIndexOf(aw));
   }
   const cur = (workspace.desktops ?? []).indexOf(workspace.currentDesktop);
-  return orderKey(0, cur < 0 ? 0 : cur);
+  // Sem janela ativa: usa o primeiro monitor conhecido (nome), ou o token sintético do índice 0.
+  const firstOutput = collectOutputs()[0];
+  const name = firstOutput ? outputNameOf(firstOutput) : '#0';
+  return orderKey(name, cur < 0 ? 0 : cur);
 }
 
 /// Janela NORMAL cujo frame contém `(x, y)`, excluindo `excludeId` (a arrastada).
+///
+/// Blindagem de hardware real (ADR 0058 — Sintoma A): a `windowList()` do KWin inclui janelas mortas,
+/// abas inativas MINIMIZADAS (frame fantasma sobre o slot) e janelas de OUTRO desktop virtual, todas com
+/// coordenadas que podem conter `(x, y)`. Se qualquer uma "vencer" o lookup, o alvo fica errado; se o
+/// alvo real for descartado, `resolveHotZone` cai no ramo GLOBAL (edge-tiling) e o agrupamento por aba
+/// nunca é acionado no arraste. Filtramos as três antes do teste geométrico. Tocar `internalId`/
+/// `frameGeometry` de uma janela morta lança TypeError e abortaria o lookup inteiro — por isso o
+/// `isLiveWindow` vem PRIMEIRO.
 function windowUnderPointObj(x: number, y: number, excludeId: string): KWinWindow | null {
+  // Desktop virtual da janela arrastada: o alvo válido está no MESMO desktop (a lista mistura desktops).
+  let draggedDesktop = -1;
   for (const win of workspace.windowList()) {
-    if (windowId(win) === excludeId || !win.normalWindow) {
+    if (isLiveWindow(win) && windowId(win) === excludeId) {
+      draggedDesktop = desktopIndexOf(win);
+      break;
+    }
+  }
+  for (const win of workspace.windowList()) {
+    if (!isLiveWindow(win) || !win.normalWindow || win.minimized) {
+      continue;
+    }
+    if (windowId(win) === excludeId) {
+      continue;
+    }
+    if (draggedDesktop >= 0 && desktopIndexOf(win) !== draggedDesktop) {
       continue;
     }
     const g = win.frameGeometry;
@@ -382,11 +459,24 @@ function retile(): void {
 
   const outputs = collectOutputs();
   const monitorIndexOf = (output: KWinOutput): number => outputs.indexOf(output);
+  // Tradução estável nome↔índice deste ciclo (ADR 0056): o estado da ponte (order/trees/stacks/disabled)
+  // é chaveado pelo NOME do output; o contrato do daemon/core usa o índice numérico atual. Guardados em
+  // módulo para o caminho de arrasto (onMoveFinish) reusar sem um retile no meio.
+  const indexToName = new Map<number, string>();
+  const nameToIndex = new Map<string, number>();
+  outputs.forEach((output, index) => {
+    const name = outputNameOf(output);
+    indexToName.set(index, name);
+    nameToIndex.set(name, index);
+  });
+  lastNameToIndex = nameToIndex;
+  lastIndexToName = indexToName;
 
   interface Entry {
     win: KWinWindow;
     stableId: string;
     monitor: number;
+    monitorName: string;
     desktop: number;
   }
   const groups = new Map<string, Entry[]>();
@@ -397,13 +487,15 @@ function retile(): void {
     if (!isLiveWindow(win)) {
       continue;
     }
+    const monitor = monitorIndexOf(win.output);
     const entry: Entry = {
       win,
       stableId: windowId(win),
-      monitor: monitorIndexOf(win.output),
+      monitor,
+      monitorName: indexToName.get(monitor) ?? outputNameOf(win.output),
       desktop: desktopIndexOf(win),
     };
-    const key = orderKey(entry.monitor, entry.desktop);
+    const key = orderKey(entry.monitorName, entry.desktop);
     appendToOrder(order, key, entry.stableId);
     const arr = groups.get(key);
     if (arr) {
@@ -481,11 +573,11 @@ function retile(): void {
     'SyncWindows',
     serializeWindows(snapshots),
     serializeMonitors(monitorsFrom(outputs)),
-    serializeState(stacks, disabled, transportOf, trees, focusedStable),
+    serializeState(stacks, disabled, transportOf, trees, focusedStable, nameToIndex),
     (layoutJson: string) => {
       syncAckSeq = mySeq;
-      // Persiste as árvores reconciliadas (traduzidas de volta para internalId).
-      trees = parseLayoutTrees(layoutJson, transportToStable);
+      // Persiste as árvores reconciliadas (traduzidas de volta para internalId e para a chave por nome).
+      trees = parseLayoutTrees(layoutJson, transportToStable, indexToName);
       const commands = parseLayout(layoutJson);
       const tabBars = parseTabBars(layoutJson);
       debug('SyncWindows OK (seq', mySeq, ') — retângulos:', commands.length);
@@ -610,14 +702,12 @@ function winByStableId(id: string): KWinWindow | null {
 /// internalIds (na ordem estável) das janelas NORMAIS do grupo `(monitor, desktop)` == `key`. Base do
 /// Meta+S (agrupar/desagrupar todo o grupo).
 function groupWindowIds(key: string): string[] {
-  const outputs = collectOutputs();
   const ids: string[] = [];
   for (const win of workspace.windowList()) {
     if (!isLiveWindow(win) || !win.normalWindow) {
       continue;
     }
-    const monitor = outputs.indexOf(win.output);
-    const k = orderKey(monitor < 0 ? 0 : monitor, desktopIndexOf(win));
+    const k = orderKey(outputNameOf(win.output), desktopIndexOf(win));
     if (k === key) {
       ids.push(windowId(win));
     }
@@ -712,13 +802,13 @@ function ejectFromStack(draggedStable: string, draggedT: number): void {
     OBJECT_PATH,
     IFACE,
     'MoveWindow',
-    serializeState(stacks, disabled, lastTransportOf, trees, draggedStable),
+    serializeState(stacks, disabled, lastTransportOf, trees, draggedStable, lastNameToIndex),
     String(draggedT),
     '0',
     'eject',
     serializeScope('local'),
     (treesJson: string) => {
-      trees = parseLayoutTrees(treesJson, lastTransportToStable);
+      trees = parseLayoutTrees(treesJson, lastTransportToStable, lastIndexToName);
       retile();
     },
   );
@@ -751,13 +841,13 @@ function dropEjectedAt(draggedStable: string, draggedT: number, x: number, y: nu
       OBJECT_PATH,
       IFACE,
       'MoveWindow',
-      serializeState(stacks, disabled, lastTransportOf, trees, draggedStable),
+      serializeState(stacks, disabled, lastTransportOf, trees, draggedStable, lastNameToIndex),
       String(draggedT),
       String(targetT),
       zoneStr,
       serializeScope(scope),
       (treesJson: string) => {
-        trees = parseLayoutTrees(treesJson, lastTransportToStable);
+        trees = parseLayoutTrees(treesJson, lastTransportToStable, lastIndexToName);
         retile();
       },
     );
@@ -818,6 +908,8 @@ registerShortcut(
   'Meta+Y',
   () => {
     toggleGroupDisabled(disabled, activeGroupKey());
+    // Persiste no daemon (ADR 0057): o grupo desligado sobrevive ao reinício do KWin.
+    persistDisabledGroups();
     retile();
   },
 );
@@ -873,7 +965,6 @@ function onMoveStart(win: KWinWindow): void {
     draggedId = windowId(win);
     lastCursor = null;
     resolving = false;
-    lastHot = null;
     return;
   }
   if (win.resize) {
@@ -933,7 +1024,21 @@ function onMoveStep(): void {
     monitor,
     draggedMinSize(draggedId),
   );
-  lastHot = hot;
+  // Trace de diagnóstico do arraste (gated por `debug`): rastro de repro em hardware real p/ o Sintoma A
+  // (coordenadas do cursor/alvo/monitor + zona resolvida). Sem custo com a chave desligada.
+  debug(
+    'drag step: cursor',
+    cursor.x,
+    cursor.y,
+    '| target',
+    target ? windowId(target) : 'null',
+    targetRect ? `${targetRect.x},${targetRect.y} ${targetRect.width}x${targetRect.height}` : '-',
+    '| monitor',
+    `${monitor.x},${monitor.y} ${monitor.width}x${monitor.height}`,
+    '| hot',
+    hot.scope,
+    hot.dropZone,
+  );
   // Preview via outline NATIVO do KWin (o daemon não desenha nada — é geometria pura). Contorno do
   // retângulo-destino da zona quente; `none` esconde.
   updateOutline(hot.dropZone === 'none' ? null : hot.outline);
@@ -946,11 +1051,9 @@ function onMoveStep(): void {
 function onMoveFinish(win: KWinWindow): void {
   updateOutline(null); // esconde outline nativo + preview translúcido (helper)
   const dragged = draggedId;
-  const hot = lastHot;
   draggedId = null;
   lastCursor = null;
   resolving = false;
-  lastHot = null;
 
   if (dragged === null) {
     // Não era um move: pode ter sido um resize manual.
@@ -964,6 +1067,35 @@ function onMoveFinish(win: KWinWindow): void {
   const cursor = workspace.cursorPos;
   const target = windowUnderPointObj(cursor.x, cursor.y, dragged);
   const draggedT = lastTransportOf.get(dragged);
+
+  // Recalcula a zona quente a partir do cursor FINAL (ADR 0058 — Sintoma A): o `lastHot` vem do último
+  // `onMoveStep`, que é throttled por posição; se o cursor deu o salto final sem gerar um step, o
+  // `lastHot` ficaria defasado do ponto real de drop e o alvo (recomputado aqui) discordaria da zona.
+  // Recalcular no ponto real elimina a divergência (e casa com o outline que o usuário viu por último).
+  const targetRect = target
+    ? {
+        x: target.frameGeometry.x,
+        y: target.frameGeometry.y,
+        width: target.frameGeometry.width,
+        height: target.frameGeometry.height,
+      }
+    : null;
+  const hot = resolveHotZone(
+    { x: cursor.x, y: cursor.y },
+    targetRect,
+    monitorRectUnder(cursor.x, cursor.y),
+    draggedMinSize(dragged),
+  );
+  debug(
+    'drag finish: cursor',
+    cursor.x,
+    cursor.y,
+    '| target',
+    target ? windowId(target) : 'null',
+    '| hot',
+    hot.scope,
+    hot.dropZone,
+  );
 
   // Desagrupar pela BARRA DE TÍTULO NATIVA (ADR 0047): se a janela arrastada é membro de um stack,
   // arrastá-la pela decoração do KWin ejeta SÓ ela e a reposiciona onde foi solta — igual ao arraste
@@ -1007,13 +1139,13 @@ function onMoveFinish(win: KWinWindow): void {
       OBJECT_PATH,
       IFACE,
       'MoveWindow',
-      serializeState(stacks, disabled, lastTransportOf, trees, dragged),
+      serializeState(stacks, disabled, lastTransportOf, trees, dragged, lastNameToIndex),
       String(draggedT),
       String(targetT),
       zoneStr,
       serializeScope(scope),
       (treesJson: string) => {
-        trees = parseLayoutTrees(treesJson, lastTransportToStable);
+        trees = parseLayoutTrees(treesJson, lastTransportToStable, lastIndexToName);
         retile();
       },
     );
@@ -1034,8 +1166,7 @@ function onMoveFinish(win: KWinWindow): void {
   // GNOME, que intercepta o centro NA PONTE e nunca manda `center` ao core. O retile materializa o stack
   // (via `serializeState`), o core devolve a `tab_bar`, e o helper desenha a barra.
   if (hot && hot.scope === 'local' && hot.dropZone === 'center') {
-    const monitor = collectOutputs().indexOf(target.output);
-    const key = orderKey(monitor < 0 ? 0 : monitor, desktopIndexOf(target));
+    const key = orderKey(outputNameOf(target.output), desktopIndexOf(target));
     addToStack(stacks, key, targetStable, dragged);
     retile();
     return;
@@ -1086,13 +1217,13 @@ function applyResize(win: KWinWindow): void {
       IFACE,
       'ResizeWindow',
       monitorsJson,
-      serializeState(stacks, disabled, lastTransportOf, trees, start.id),
+      serializeState(stacks, disabled, lastTransportOf, trees, start.id, lastNameToIndex),
       // ID como string decimal (o `callDBus` não empacota uint64; daemon faz `parse::<u64>()`). ADR 0009.
       String(idT),
       d.edge,
       d.deltaPx,
       (treesJson: string) => {
-        trees = parseLayoutTrees(treesJson, lastTransportToStable);
+        trees = parseLayoutTrees(treesJson, lastTransportToStable, lastIndexToName);
         applyNext();
       },
     );

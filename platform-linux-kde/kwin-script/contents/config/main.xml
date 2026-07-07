@@ -43,6 +43,9 @@
       <min>0</min>
       <max>50</max>
     </entry>
+    <entry name="ignoreList" type="StringList">
+      <label>Windows ignored by tiling (app class/id, e.g. obs, org.kde.plasmashell)</label>
+    </entry>
     <entry name="debug" type="Bool">
       <label>Verbose logs in the journal (diagnostics): number of windows/rectangles per event</label>
       <default>false</default>
