@@ -384,7 +384,19 @@ describe('stacks: remoção, toggle de grupo e serialização', () => {
       disabled_groups: [[0, 1]],
       trees: [{ monitor: 0, workspace: 0, root: { win: 7 } }],
       focused_id: 5,
+      mins: [], // sem mins no caminho de sync (ADR 0064; só o resize popula)
     });
+  });
+
+  it('serializeState anexa os mins quando fornecidos (caminho de resize, ADR 0064)', () => {
+    const stacks = new Map<string, Stack[]>();
+    const trees = new Map<string, TreeNode | null>();
+    const mins = [
+      { id: 1, min_width: 600, min_height: 0 },
+      { id: 2, min_width: 0, min_height: 500 },
+    ];
+    const out = JSON.parse(serializeState(stacks, new Set(), trees, 0, mins));
+    expect(out.mins).toEqual(mins);
   });
 
   it('parseLayoutTrees lê as árvores por grupo e ignora entradas malformadas', () => {

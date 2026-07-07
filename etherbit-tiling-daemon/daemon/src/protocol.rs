@@ -9,10 +9,11 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use etherbit_tiling_core::{
-    compute_constrained, detect_drop_target, is_tileable, move_window as core_move_window,
-    reconcile, resize_window as core_resize_window, retain_tileable_when_maximized, DropPreview,
-    DropScope, DropZone, Edge, GridChild, LayoutOptions, LayoutTree, Node, PreviewRect,
-    StackDescriptor, TabBarRect, WindowInfo, WindowRect, WorkArea,
+    build_min_sizes, compute_constrained, detect_drop_target, is_tileable,
+    move_window as core_move_window, reconcile, resize_window as core_resize_window,
+    retain_tileable_when_maximized, DropPreview, DropScope, DropZone, Edge, GridChild,
+    LayoutOptions, LayoutTree, Node, PreviewRect, StackDescriptor, TabBarRect, WindowInfo,
+    WindowRect, WorkArea,
 };
 
 /// Desserializa um índice (monitor/workspace) de forma TOLERANTE: aceita inteiro e SATURA negativos a
@@ -75,6 +76,20 @@ pub struct WindowDto {
     /// de unmaximize no core (`retain_tileable_when_maximized`).
     #[serde(default)]
     pub maximized: bool,
+}
+
+/// Tamanho mínimo (px) de uma janela, anexado ao `state_json` para o caminho de `ResizeWindow` — que
+/// (diferente do `SyncWindows`) NÃO carrega o array de janelas. Sem isto o resize seria cego ao mínimo
+/// real do vizinho e o esmagaria a ~5% do extent (≈67px), levando à ejeção cross-monitor. Todos os
+/// campos com `de_px`/`default` para retrocompat com pontes antigas (ausente ⇒ resize com piso
+/// proporcional, como antes).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WinMinDto {
+    pub id: u64,
+    #[serde(default, deserialize_with = "de_px")]
+    pub min_width: i32,
+    #[serde(default, deserialize_with = "de_px")]
+    pub min_height: i32,
 }
 
 /// Área útil de um monitor. Espelha `monitors_json` do contrato D-Bus.
@@ -142,6 +157,11 @@ pub struct SyncStateDto {
     /// Id da janela focada (foco de teclado); 0 = nenhuma. Define a folha a rachar ao abrir janela.
     #[serde(default)]
     pub focused_id: u64,
+    /// Tamanhos mínimos (px) por janela, para o resize min-aware (`ResizeWindow` não traz o array de
+    /// janelas). Vazio/ausente ⇒ resize cai no piso proporcional antigo (retrocompat). Só o caminho de
+    /// resize consome; o `SyncWindows` ignora (usa o `min_width/min_height` do próprio `WindowDto`).
+    #[serde(default)]
+    pub mins: Vec<WinMinDto>,
 }
 
 /// Nó da árvore no contrato D-Bus (untagged): folha `{ "win": id }`, grid
@@ -734,11 +754,43 @@ pub fn resize_window(
     let state = parse_state(state_json)?;
     let edge = parse_edge(edge);
     let trees = parse_trees(&state);
+    // Mapa GLOBAL de mínimos (px) para o clamp min-aware do resize (ADR 0064). Montado a partir do
+    // `state.mins` (a ponte anexa os geometry hints ao `state_json`) reusando a MESMA verdade de
+    // agregação de stack do core (`build_min_sizes`: âncora = max dos membros + `group_header_px`). Um
+    // mapa único é seguro: cada árvore só lê os ids presentes nela. `mins` vazio ⇒ mapa vazio ⇒ o
+    // `resize_window` do core recai no piso proporcional (`MIN_RATIO`) — retrocompat com pontes antigas.
+    let min_stubs: Vec<WindowInfo> = state
+        .mins
+        .iter()
+        .map(|m| WindowInfo {
+            id: m.id,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            app_id: String::new(),
+            normal: true,
+            resizable: true,
+            maximizable: true,
+            monitor: 0,
+            workspace: 0,
+            min_width: m.min_width.max(0),
+            min_height: m.min_height.max(0),
+            maximized: false,
+        })
+        .collect();
+    let all_ids: Vec<u64> = min_stubs.iter().map(|w| w.id).collect();
+    let all_stacks: Vec<StackDescriptor> = state
+        .stacks
+        .iter()
+        .map(|s| StackDescriptor { member_ids: s.members.clone(), active_id: s.active })
+        .collect();
+    let min = build_min_sizes(&min_stubs, &all_stacks, &all_ids, &opts);
     let dtos: Vec<TreeDto> = trees
         .iter()
         .map(|(m, w, t)| {
             let resized = match areas.iter().find(|a| a.index == *m) {
-                Some(area) => core_resize_window(t, area, &opts, id, edge, delta_px),
+                Some(area) => core_resize_window(t, area, &opts, &min, id, edge, delta_px),
                 None => t.clone(),
             };
             tree_to_dto(*m, *w, &resized)
@@ -1023,6 +1075,42 @@ mod tests {
     #[test]
     fn resize_window_rejects_invalid_state() {
         assert!(resize_window(AREAS, "{bad", 1, "right", 50, OPTS).is_err());
+    }
+
+    #[test]
+    fn resize_window_min_aware_trava_no_min_do_vizinho() {
+        // ADR 0064: com os `mins` no `state_json`, um resize gigante NÃO esmaga o vizinho a ~5% (67px):
+        // o TREE RATIO é clampado para o vizinho manter seu min real. Provamos isto renderizando SEM
+        // min-size nas janelas (win_json ⇒ min 0), de modo que a saturação do render NÃO mascare o
+        // resultado — a largura ≥ 600 vem exclusivamente do clamp min-aware do resize.
+        let w = format!("[{},{}]", win_json(1, "a"), win_json(2, "b"));
+        let first = sync_windows(&w, AREAS, "", &[], OPTS).expect("ok");
+        let trees_json = serde_json::to_string(&layout_of(&first).trees).unwrap();
+        // `mins` anexado ao state: vizinho (2) com min_width 600.
+        let state = format!(r#"{{"trees":{trees_json},"mins":[{{"id":2,"min_width":600}}]}}"#);
+        let out = resize_window(AREAS, &state, 1, "right", 100_000, OPTS).expect("resize ok");
+        let resized: TreesDto = serde_json::from_str(&out).expect("trees");
+        // Render SEM min nas janelas: só as frações da árvore governam.
+        let state2 = format!(r#"{{"trees":{}}}"#, serde_json::to_string(&resized.trees).unwrap());
+        let second = sync_windows(&w, AREAS, &state2, &[], OPTS).expect("ok");
+        let w2 = layout_of(&second).rects.iter().find(|r| r.id == 2).unwrap().width;
+        assert!(w2 >= 600, "vizinho travou no min-width (got {w2}), não esmagou a ~5%");
+    }
+
+    #[test]
+    fn resize_window_sem_mins_e_retrocompativel() {
+        // Sem `mins` no state (ponte antiga): o resize gigante recai no piso proporcional e o vizinho
+        // colapsa bem abaixo de 600 (comportamento pré-0064) — prova que o novo caminho é opt-in.
+        let w = format!("[{},{}]", win_json(1, "a"), win_json(2, "b"));
+        let first = sync_windows(&w, AREAS, "", &[], OPTS).expect("ok");
+        let trees_json = serde_json::to_string(&layout_of(&first).trees).unwrap();
+        let state = format!(r#"{{"trees":{trees_json}}}"#);
+        let out = resize_window(AREAS, &state, 1, "right", 100_000, OPTS).expect("resize ok");
+        let resized: TreesDto = serde_json::from_str(&out).expect("trees");
+        let state2 = format!(r#"{{"trees":{}}}"#, serde_json::to_string(&resized.trees).unwrap());
+        let second = sync_windows(&w, AREAS, &state2, &[], OPTS).expect("ok");
+        let w2 = layout_of(&second).rects.iter().find(|r| r.id == 2).unwrap().width;
+        assert!(w2 < 600, "sem mins, o piso proporcional deixa o vizinho encolher (got {w2})");
     }
 
     #[test]

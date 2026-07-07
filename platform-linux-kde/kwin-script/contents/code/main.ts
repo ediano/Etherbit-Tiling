@@ -8,8 +8,9 @@
 //    aplicando os retângulos via `window.frameGeometry`;
 //  - registrar os atalhos globais (Meta+Y = tiling por desktop; Meta+Shift+Y = chave geral);
 //  - durante um ARRASTO, resolver a zona LOCALMENTE (eixos limpos, ADR 0028) e desenhar o indicador
-//    nativo (`workspace.showOutline`). Ao soltar: SWAP (centro de uma janela) ou split 50/50 do slot
-//    do alvo / inserção global de 50%, conforme a zona resolvida.
+//    pelo helper translúcido `etherbit-tiling-preview` (o outline nativo do KWin foi removido — ADR 0064).
+//    Ao soltar: SWAP (centro de uma janela) ou split 50/50 do slot do alvo / inserção global de 50%,
+//    conforme a zona resolvida.
 //
 // Abas VISUAIS no KDE (ADR 0039, reverte o "sem abas" do 0028): o centro de uma janela AGRUPA as duas
 // em aba (drag-to-group); as bordas dividem o slot do alvo. A matemática vive 100% no Rust; o DESENHO
@@ -49,16 +50,18 @@ import {
   type TabBarView,
   type WindowSnapshot,
   type MonitorSnapshot,
+  type WinMin,
 } from './bridge.js';
 
 const BUS_NAME = 'dev.ediano.etherbit.Tiling';
 const OBJECT_PATH = '/dev/ediano/etherbit/Tiling';
 const IFACE = 'dev.ediano.etherbit.Tiling';
 
-// Helper de preview TRANSLÚCIDO (processo separado, wlr-layer-shell + SHM). Um KWin Script só desenha
-// `showOutline` (contorno opaco); a máscara translúcida (alpha 0.3–0.4) vem deste helper, acionado por
-// D-Bus durante o drag. Se o helper não estiver no barramento, a chamada é no-op e o outline nativo
-// (fallback) segue valendo. Ver ADR 0029 (emenda) e 0013.
+// Helper de preview TRANSLÚCIDO (processo separado, wlr-layer-shell + SHM). Um KWin Script não pinta
+// superfícies próprias; a máscara translúcida (alpha 0.3–0.4) vem deste helper, acionado por D-Bus
+// durante o drag, e é a ÚNICA camada do indicador (o outline nativo do KWin foi removido, ADR 0064 —
+// sua animação de expansão confundia o usuário). Se o helper não estiver no barramento, a chamada é
+// no-op (sem indicador, mas a lógica do drop segue correta). Ver ADR 0029 (emenda) e 0013.
 const PREVIEW_BUS = 'dev.ediano.etherbit.Preview';
 const PREVIEW_PATH = '/dev/ediano/etherbit/Preview';
 const PREVIEW_IFACE = 'dev.ediano.etherbit.Preview';
@@ -1086,15 +1089,16 @@ registerShortcut(
 /// (o helper só precisa do estado quando a ZONA muda).
 let lastPreviewKey = '';
 
-/// Mostra/posiciona o preview para o retângulo resultante; esconde se `null`/zerado. Duas camadas:
-///  1) outline NATIVO (`workspace.showOutline`) — sempre disponível, mas contorno OPACO (fallback);
-///  2) máscara TRANSLÚCIDA (alpha 0.3–0.4) via o helper `etherbit-tiling-preview` por D-Bus — o KWin
-///     Script não pinta superfícies próprias (só `showOutline`); a translucidez vem do helper.
-/// Se o helper não estiver no barramento, a chamada é no-op e o outline cobre o caso. Para a zona
-/// `center` (merge/swap), o retângulo é a própria janela-alvo.
+/// Mostra/posiciona o preview para o retângulo resultante; esconde se `null`/zerado. UMA camada: a
+/// máscara TRANSLÚCIDA (alpha 0.3–0.4) via o helper `etherbit-tiling-preview` por D-Bus, que desenha um
+/// retângulo ESTÁTICO fixado ao output (ADR 0063) e limitado ao frame do alvo/quadrante.
+///
+/// O outline NATIVO do KWin (`workspace.showOutline`) foi REMOVIDO (ADR 0064): sua animação embutida de
+/// expansão ("drawdown") sugeria visualmente que o drop agruparia janelas de quadrantes ADJACENTES —
+/// falso, pois a lógica agrupa estritamente o quadrante alvo. Sem ele, o indicador reflete exatamente o
+/// escopo de pixels do destino. Para a zona `center` (merge/swap), o retângulo é a própria janela-alvo.
 function updateOutline(rect: Rect | null): void {
   if (!rect || rect.width <= 0 || rect.height <= 0) {
-    workspace.hideOutline();
     if (lastPreviewKey !== '') {
       lastPreviewKey = '';
       callDBus(PREVIEW_BUS, PREVIEW_PATH, PREVIEW_IFACE, 'HidePreview');
@@ -1105,7 +1109,6 @@ function updateOutline(rect: Rect | null): void {
   const y = Math.round(rect.y);
   const width = Math.round(rect.width);
   const height = Math.round(rect.height);
-  workspace.showOutline({ x, y, width, height });
   const key = `${x},${y},${width},${height}`;
   if (key !== lastPreviewKey) {
     lastPreviewKey = key;
@@ -1159,6 +1162,25 @@ function draggedMinSize(id: string): { width: number; height: number } {
     return { width: 0, height: 0 };
   }
   return { width: 0, height: 0 };
+}
+
+/// Mínimos (px) das janelas VIVAS por id estável, para o `state_json` do `ResizeWindow`: o clamp
+/// min-aware do core trava o vizinho no seu min real em vez de esmagá-lo a ~5% e ejetá-lo (ADR 0064).
+/// Só janelas com `minSize` > 0 entram; a tradução stable→transport acontece no `serializeState`.
+function collectMins(): WinMin[] {
+  const out: WinMin[] = [];
+  for (const win of workspace.windowList()) {
+    if (!isLiveWindow(win)) {
+      continue;
+    }
+    const min = win.minSize;
+    const mw = min ? Math.max(0, Math.round(min.width)) : 0;
+    const mh = min ? Math.max(0, Math.round(min.height)) : 0;
+    if (mw > 0 || mh > 0) {
+      out.push({ stableId: windowId(win), min_width: mw, min_height: mh });
+    }
+  }
+  return out;
 }
 
 /// Um passo do arrasto: calcula a zona quente LOCALMENTE (ADR 0028 — sem D-Bus por passo) e atualiza o
@@ -1363,6 +1385,8 @@ function applyResize(win: KWinWindow): void {
     return;
   }
   const monitorsJson = serializeMonitors(monitorsFrom(collectOutputs()));
+  // Mínimos anexados ao state: trava o vizinho no seu min real no clamp do core (ADR 0064).
+  const mins = collectMins();
   let i = 0;
   const applyNext = (): void => {
     if (i >= deltas.length) {
@@ -1377,7 +1401,7 @@ function applyResize(win: KWinWindow): void {
       IFACE,
       'ResizeWindow',
       monitorsJson,
-      serializeState(stacks, disabled, lastTransportOf, trees, start.id, lastNameToIndex),
+      serializeState(stacks, disabled, lastTransportOf, trees, start.id, lastNameToIndex, mins),
       // ID como string decimal (o `callDBus` não empacota uint64; daemon faz `parse::<u64>()`). ADR 0009.
       String(idT),
       d.edge,

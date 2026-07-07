@@ -227,6 +227,7 @@ describe('estado de tiling por grupo e árvores (ids string)', () => {
       disabled_groups: [[1, 2]],
       trees: [{ monitor: 0, workspace: 0, root: { win: 1 } }],
       focused_id: 2,
+      mins: [], // sem mins no caminho de sync (ADR 0064; só o resize popula)
     });
   });
 
@@ -238,7 +239,28 @@ describe('estado de tiling por grupo e árvores (ids string)', () => {
       disabled_groups: [],
       trees: [],
       focused_id: 0,
+      mins: [],
     });
+  });
+
+  it('serializeState traduz os mins stable→transport e omite ids sem transporte (ADR 0064)', () => {
+    const transportOf = new Map<string, number>([
+      ['a', 1],
+      ['b', 2],
+    ]);
+    const mins = [
+      { stableId: 'a', min_width: 600, min_height: 0 },
+      { stableId: 'b', min_width: 0, min_height: 500 },
+      { stableId: 'ghost', min_width: 400, min_height: 0 }, // sem transporte → omitido
+      { stableId: 'a', min_width: 0, min_height: 0 }, // min 0 → omitido
+    ];
+    const out = JSON.parse(
+      serializeState(new Map(), new Set(), transportOf, new Map(), '', new Map(), mins),
+    );
+    expect(out.mins).toEqual([
+      { id: 1, min_width: 600, min_height: 0 },
+      { id: 2, min_width: 0, min_height: 500 },
+    ]);
   });
 
   it('serializeState OMITE grupos de monitor DESCONECTADO (nome ausente no mapa) — ADR 0056', () => {
