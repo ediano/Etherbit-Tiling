@@ -771,6 +771,11 @@ fn solve_tracks(
         const EPS: f64 = 1e-6;
         mins.iter().map(|m| if m.max(0.0) > EPS { m.max(0.0) } else { 0.0 }).collect()
     };
+    // O cursor é sequencial: sob sobre-subscrição (esmagamento impositivo) as últimas tracks TRANSBORDAM a
+    // borda (deslocamento compensatório, ADR 0040) — mantendo a invariante "sem sobreposição" e o mínimo
+    // EXATO de cada rígida (o cliente Wayland aceita → converge). A fixação de borda "no cross-monitor spill"
+    // NÃO vive aqui: clampar a origem/tamanho reintroduziria overlap ou a oscilação que o 0040 matou (ver
+    // ADR 0064). O empuxo residual para fora do monitor é aparado na PONTE (clamp de apply ao work-area).
     let mut out = Vec::with_capacity(n);
     let mut cursor = start;
     for s in size {
@@ -1093,7 +1098,11 @@ fn geometry_from_tree(
 /// solta carrega o mínimo da própria janela; uma folha-âncora de stack carrega o `max` dos mínimos
 /// dos membros presentes (+ `group_header_px` na altura, pois a barra come o topo do slot). Membros
 /// não-âncora não viram folha, então saem do mapa.
-fn build_min_sizes(
+/// Monta o mapa `id → (min_width, min_height)` (px) para um conjunto de janelas/stacks. Uma folha-âncora
+/// de stack agrega o `max` dos mínimos dos membros presentes (+ `group_header_px` na altura); membros não
+/// âncora são removidos. Exposto (`pub`) para o daemon reusar a MESMA verdade de agregação de stack no
+/// caminho de resize (evita duplicar a regra). `group_ids` filtra quem entra.
+pub fn build_min_sizes(
     windows: &[WindowInfo],
     stacks: &[StackDescriptor],
     group_ids: &[u64],
@@ -1834,7 +1843,23 @@ fn binary_grid_axis(cols: &[f64], rows: &[f64]) -> Option<Axis> {
 
 /// Ajusta (soma `delta`, com clamp) o `ratio` do split alcançado seguindo `path` (sequência de
 /// first/second) a partir de `node`. `path` vazio = este nó é o alvo.
-fn adjust_ratio(node: Node, path: &[bool], delta: f64) -> Node {
+///
+/// O clamp da fração é MIN-AWARE: no grid governante (`path` vazio), a nova fração é limitada de modo
+/// que AMBOS os filhos preservem seu tamanho mínimo REAL em px (via `track_mins`/`min_extent` sobre
+/// `min`), travando a expansão exatamente na borda de menor-tamanho do vizinho — em vez do antigo piso
+/// puramente proporcional (`MIN_RATIO`), que deixava o vizinho colapsar a ~5% do extent (≈67px em 4K) e,
+/// via recusa do cliente Wayland, transbordar/ser ejetado ao monitor vizinho. `gov_extent` é o extent
+/// (px) do split governante ao longo do eixo (`rect_dim − gap`); `min` mapeia id→(min_w, min_h). Os três
+/// parâmetros só são consultados quando `path.is_empty()`; na descida são repassados intactos. Com `min`
+/// vazio ou `gov_extent ≤ 0`, o clamp colapsa a `[MIN_RATIO, 1−MIN_RATIO]` (retrocompat byte-a-byte).
+fn adjust_ratio(
+    node: Node,
+    path: &[bool],
+    delta: f64,
+    gov_extent: f64,
+    gap: f64,
+    min: &MinSizes,
+) -> Node {
     match node {
         Node::Grid { cols, rows, cells } => {
             let Some(axis) = binary_grid_axis(&cols, &rows) else {
@@ -1843,11 +1868,26 @@ fn adjust_ratio(node: Node, path: &[bool], delta: f64) -> Node {
             };
             if path.is_empty() {
                 // Grid governante: ajusta a fração da track 0 (a track 1 absorve; soma constante = 1).
+                // Mínimos por track (px) das duas subárvores; span 1 ⇒ `tmins[k] == min_extent(filho_k)`.
+                let tmins = track_mins(2, &cells, gap, min, axis);
+                let (m_first, m_second) = (tmins[0], tmins[1]);
+                // Limites da fração que honram ambos os mínimos: `E·r ≥ m_first` e `E·(1−r) ≥ m_second`.
+                // Guard `E > 0` evita divisão degenerada; `lo ≤ hi` evita o panic do `f64::clamp`
+                // (`m_first + m_second > E` = sobre-subscrição do ADR 0040, tratada no render — aqui
+                // congelamos em `r0` para não piorar).
+                let (lo, hi) = if gov_extent > 0.0 {
+                    (
+                        (m_first / gov_extent).max(MIN_RATIO),
+                        (1.0 - m_second / gov_extent).min(1.0 - MIN_RATIO),
+                    )
+                } else {
+                    (MIN_RATIO, 1.0 - MIN_RATIO)
+                };
                 let (mut tracks, horizontal) = match axis {
                     Axis::Horizontal => (cols.clone(), true),
                     Axis::Vertical => (rows.clone(), false),
                 };
-                let nr = (tracks[0] + delta).clamp(MIN_RATIO, 1.0 - MIN_RATIO);
+                let nr = if lo <= hi { (tracks[0] + delta).clamp(lo, hi) } else { tracks[0] };
                 tracks[0] = nr;
                 tracks[1] = 1.0 - nr;
                 if horizontal {
@@ -1867,7 +1907,14 @@ fn adjust_ratio(node: Node, path: &[bool], delta: f64) -> Node {
                         };
                         if side_first == want_first {
                             GridChild {
-                                node: Box::new(adjust_ratio(*c.node, &path[1..], delta)),
+                                node: Box::new(adjust_ratio(
+                                    *c.node,
+                                    &path[1..],
+                                    delta,
+                                    gov_extent,
+                                    gap,
+                                    min,
+                                )),
                                 col: c.col,
                                 row: c.row,
                                 col_span: c.col_span,
@@ -1894,6 +1941,7 @@ pub fn resize_window(
     tree: &LayoutTree,
     area: &WorkArea,
     opts: &LayoutOptions,
+    min: &MinSizes,
     id: u64,
     edge: Edge,
     delta_px: i32,
@@ -1930,7 +1978,9 @@ pub fn resize_window(
     }
     let delta_ratio = sign * (delta_px as f64) / extent;
     let node_path: Vec<bool> = path[..gi].iter().map(|d| d.first).collect();
-    LayoutTree { root: Some(adjust_ratio(root.clone(), &node_path, delta_ratio)) }
+    // `extent` é o span (px) do split GOVERNANTE ao longo do eixo — é o `E` do clamp min-aware no
+    // `adjust_ratio` (só consultado quando `node_path` esvazia, no grid governante).
+    LayoutTree { root: Some(adjust_ratio(root.clone(), &node_path, delta_ratio, extent, gap, min)) }
 }
 
 /// Arredondamento meio-para-cima compatível com `Math.round` do JS para valores positivos.
@@ -3132,7 +3182,7 @@ mod tests {
         let before = compute_geometry(&tree, &area, &opts(), &[], &[1, 2]);
         let b1 = before.rects.iter().find(|r| r.id == 1).unwrap();
         let b2 = before.rects.iter().find(|r| r.id == 2).unwrap();
-        let resized = resize_window(&tree, &area, &opts(), 1, Edge::Right, 100);
+        let resized = resize_window(&tree, &area, &opts(), &MinSizes::new(), 1, Edge::Right, 100);
         let after = compute_geometry(&resized, &area, &opts(), &[], &[1, 2]);
         let a1 = after.rects.iter().find(|r| r.id == 1).unwrap();
         let a2 = after.rects.iter().find(|r| r.id == 2).unwrap();
@@ -3152,7 +3202,7 @@ mod tests {
         let before = compute_geometry(&tree, &area, &opts(), &[], &[1, 2]);
         let b1 = before.rects.iter().find(|r| r.id == 1).unwrap().width;
         let b2 = before.rects.iter().find(|r| r.id == 2).unwrap().width;
-        let resized = resize_window(&tree, &area, &opts(), 2, Edge::Left, 60);
+        let resized = resize_window(&tree, &area, &opts(), &MinSizes::new(), 2, Edge::Left, 60);
         let after = compute_geometry(&resized, &area, &opts(), &[], &[1, 2]);
         assert_eq!(after.rects.iter().find(|r| r.id == 2).unwrap().width, b2 + 60);
         assert_eq!(after.rects.iter().find(|r| r.id == 1).unwrap().width, b1 - 60);
@@ -3168,7 +3218,7 @@ mod tests {
         let before = compute_geometry(&tree, &area, &opts(), &[], &[1, 2, 3]);
         let b2 = before.rects.iter().find(|r| r.id == 2).unwrap().height;
         let b3 = before.rects.iter().find(|r| r.id == 3).unwrap().height;
-        let resized = resize_window(&tree, &area, &opts(), 2, Edge::Bottom, 50);
+        let resized = resize_window(&tree, &area, &opts(), &MinSizes::new(), 2, Edge::Bottom, 50);
         let after = compute_geometry(&resized, &area, &opts(), &[], &[1, 2, 3]);
         assert_eq!(after.rects.iter().find(|r| r.id == 2).unwrap().height, b2 + 50);
         assert_eq!(after.rects.iter().find(|r| r.id == 3).unwrap().height, b3 - 50);
@@ -3179,21 +3229,77 @@ mod tests {
         // Borda esquerda de 1 (já colada na borda do monitor) não tem split governante → no-op.
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
-        assert_eq!(resize_window(&tree, &area, &opts(), 1, Edge::Left, 50), tree);
+        assert_eq!(resize_window(&tree, &area, &opts(), &MinSizes::new(), 1, Edge::Left, 50), tree);
         // Folha única também não redimensiona.
         let single = reconcile(&LayoutTree::default(), &[1], &[], None, &area, &opts());
-        assert_eq!(resize_window(&single, &area, &opts(), 1, Edge::Right, 50), single);
+        assert_eq!(
+            resize_window(&single, &area, &opts(), &MinSizes::new(), 1, Edge::Right, 50),
+            single
+        );
     }
 
     #[test]
     fn resize_window_clamps_to_min_ratio() {
-        // Delta gigante não colapsa a vizinha: o ratio é clampado (ambas as larguras > 0).
+        // Sem mínimos (mapa vazio): delta gigante não colapsa a vizinha — o piso proporcional
+        // `MIN_RATIO` ainda vale (retrocompat: com `MinSizes` vazio o clamp min-aware colapsa nele).
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
-        let resized = resize_window(&tree, &area, &opts(), 1, Edge::Right, 100_000);
+        let resized =
+            resize_window(&tree, &area, &opts(), &MinSizes::new(), 1, Edge::Right, 100_000);
         let after = compute_geometry(&resized, &area, &opts(), &[], &[1, 2]);
         let w2 = after.rects.iter().find(|r| r.id == 2).unwrap().width;
         assert!(w2 > 0, "vizinha nunca colapsa a zero");
+    }
+
+    #[test]
+    fn resize_window_trava_no_min_width_do_vizinho() {
+        // [1|2] lado a lado; 2 tem min_width=600. Arrastar a borda DIREITA de 1 com delta gigante NÃO
+        // esmaga 2 a ~5% (67px): trava exatamente em 600px (a borda de menor-tamanho do vizinho), 1
+        // preenche o resto e a costura permanece == inner_gap (ADR 0060). Sem min-aware, 2 iria a ~46px.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let mut min = MinSizes::new();
+        min.insert(2, (600, 0));
+        let resized = resize_window(&tree, &area, &opts(), &min, 1, Edge::Right, 100_000);
+        // A geometria constrita respeita o mesmo mapa de mínimos.
+        let windows = vec![win_min(2, 600, 0), win(1, 0)];
+        let after = compute_constrained(&resized, &area, &opts(), &[], &[1, 2], &windows, None);
+        let r1 = after.rects.iter().find(|r| r.id == 1).unwrap();
+        let r2 = after.rects.iter().find(|r| r.id == 2).unwrap();
+        assert_eq!(r2.width, 600, "vizinho trava no min-width exato (não esmaga a 67px)");
+        // Preenchimento total: 1 + gap + 2 == largura interna; costura == inner_gap.
+        assert_eq!(r2.x - (r1.x + r1.width), opts().inner_gap as i32, "costura == inner_gap");
+        assert_eq!(r1.width + r2.width, 976 - opts().inner_gap as i32, "tela 100% preenchida");
+    }
+
+    #[test]
+    fn resize_window_trava_no_min_height_vertical() {
+        // Eixo vertical: [1,2,3] cíclico → 2 e 3 empilhados na direita. 3 tem min_height=500. Arrastar a
+        // borda INFERIOR de 2 (costura 2↔3) para baixo com delta gigante trava 3 em 500px de altura.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], None, &area, &opts());
+        let mut min = MinSizes::new();
+        min.insert(3, (0, 500));
+        let resized = resize_window(&tree, &area, &opts(), &min, 2, Edge::Bottom, 100_000);
+        let windows = vec![win_min(3, 0, 500), win(1, 0), win(2, 0)];
+        let after = compute_constrained(&resized, &area, &opts(), &[], &[1, 2, 3], &windows, None);
+        let r3 = after.rects.iter().find(|r| r.id == 3).unwrap();
+        assert_eq!(r3.height, 500, "vizinho inferior trava no min-height exato");
+    }
+
+    #[test]
+    fn resize_window_trava_no_min_da_propria_janela() {
+        // O próprio arrastado também não encolhe abaixo do seu min: 1 tem min_width=600; encolher 1
+        // (borda direita, delta negativo gigante) trava 1 em 600px em vez de colapsá-lo a ~5%.
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let mut min = MinSizes::new();
+        min.insert(1, (600, 0));
+        let resized = resize_window(&tree, &area, &opts(), &min, 1, Edge::Right, -100_000);
+        let windows = vec![win_min(1, 600, 0), win(2, 0)];
+        let after = compute_constrained(&resized, &area, &opts(), &[], &[1, 2], &windows, None);
+        let r1 = after.rects.iter().find(|r| r.id == 1).unwrap();
+        assert_eq!(r1.width, 600, "a própria janela trava no seu min-width");
     }
 
     // ---- Tamanhos mínimos (geometry hints): splits assimétricos + auto-floating ----
@@ -3366,10 +3472,12 @@ mod tests {
 
     #[test]
     fn resize_abaixo_do_min_satura_geometria_mas_preserva_o_resize() {
-        // Encolher a 1 abaixo do seu min: a geometria satura no mínimo, mas o resize (ratio) valeu.
+        // Rede de segurança do RENDER (ADR 0040-A): quando o resize é min-BLIND (mapa vazio — ex.: ponte
+        // sem os hints), a fração pode ir abaixo do min, mas a geometria constrita satura no mínimo. (O
+        // caminho min-AWARE, com o mapa real, é coberto por `resize_window_trava_no_min_*`.)
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
-        let resized = resize_window(&tree, &area, &opts(), 1, Edge::Right, -300);
+        let resized = resize_window(&tree, &area, &opts(), &MinSizes::new(), 1, Edge::Right, -300);
         // sem restrição: a 1 encolheu para 184 (o resize funcionou).
         let plain = compute_geometry(&resized, &area, &opts(), &[], &[1, 2]);
         assert_eq!(plain.rects.iter().find(|r| r.id == 1).unwrap().width, 184);

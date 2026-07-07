@@ -59,6 +59,7 @@ import {
   type Rect,
   type WindowSnapshot,
   type MonitorSnapshot,
+  type WinMin,
 } from './bridge.js';
 import { EtherbitIndicator } from './indicator.js';
 import { applyRoundedCorners, clearRoundedCorners } from './effects.js';
@@ -207,10 +208,12 @@ export default class EtherbitTilingExtension extends Extension {
   private _lastHot: HotZone | null = null;
   // Em voo: evita reentrância no tick.
   private _resolving = false;
-  // Resize manual em curso: id + frame inicial (para derivar borda/delta ao soltar).
+  // Resize manual em curso: id + frame inicial (para derivar borda/delta ao soltar) + monitor de origem
+  // (pin: um overflow transitório do Mutter durante o arrasto não reatribui o grupo mid-resize — ADR 0064).
   private _resizeStart: {
     id: number;
     rect: { x: number; y: number; width: number; height: number };
+    monitor: number;
   } | null = null;
 
   /// Garante um proxy vivo: cria (se ausente) e inscreve `ConfigChanged`. Devolve o proxy ou null.
@@ -517,7 +520,16 @@ export default class EtherbitTilingExtension extends Extension {
         // reaplicar. Sem isso, uma sobrevivente que já "convergiu" (epsilon 2px) para o slot antigo
         // poderia curto-circuitar o early-return e ficar sobreposta à vizinha (ADR 0062).
         this._lastLayoutSig = '';
-        this._scheduleRelayout();
+        // Barreira SÍNCRONA pós-descarte (ADR 0064): reaplica AGORA, não no debounce de 80ms. Numa pilha
+        // assimétrica (ex.: coluna de 3 empilhadas ao lado de 2), o atraso deixava a janela central
+        // sobreposta à inferior por alguns frames (z-index overlap). O `_relayout` já filtra a janela em
+        // unmanage (`_isWindowLive`), então a passada síncrona vê só as sobreviventes e as encaixa no
+        // mesmo frame. Se estamos NO MEIO de um apply (supressão), cai no caminho pendente (o settle honra).
+        if (this._suppressRelayout) {
+          this._relayoutPending = true;
+        } else {
+          this._relayout();
+        }
       });
       // (Des)maximizar/fullscreen muda quais janelas entram no grid (Recovery): re-tila. Os sinais só
       // disparam na transição de estado (não em todo resize), então não há loop com a aplicação.
@@ -998,11 +1010,13 @@ export default class EtherbitTilingExtension extends Extension {
       });
       return;
     }
-    // Qualquer outro grab numa janela = resize manual: guarda a geometria inicial.
+    // Qualquer outro grab numa janela = resize manual: guarda a geometria inicial + o monitor de origem
+    // (pin durante o arrasto, ADR 0064).
     const r = window.get_frame_rect();
     this._resizeStart = {
       id: window.get_stable_sequence(),
       rect: { x: r.x, y: r.y, width: r.width, height: r.height },
+      monitor: Math.max(0, window.get_monitor()),
     };
   }
 
@@ -1233,11 +1247,14 @@ export default class EtherbitTilingExtension extends Extension {
     const focus = global.display.focus_window;
     const focusedId = focus ? focus.get_stable_sequence() : 0;
     const monitorsJson = serializeMonitors(this._collectMonitors());
+    // Mínimos anexados ao state: o clamp min-aware do core trava o vizinho no seu min real em vez de
+    // esmagá-lo a ~5% do extent (≈67px) e ejetá-lo ao monitor vizinho (ADR 0064).
+    const mins = this._collectMins();
     for (const d of deltas) {
       const res = this._call((p) =>
         p.ResizeWindowSync(
           monitorsJson,
-          serializeState(this._stacks, this._disabledGroups, this._trees, focusedId),
+          serializeState(this._stacks, this._disabledGroups, this._trees, focusedId, mins),
           String(start.id),
           d.edge,
           d.deltaPx,
@@ -1621,6 +1638,20 @@ export default class EtherbitTilingExtension extends Extension {
     return { width: 0, height: 0 };
   }
 
+  /// Mínimos (px) das janelas rastreadas, para o `state_json` do `ResizeWindow` (o clamp min-aware do
+  /// core trava o vizinho no seu min real em vez de esmagá-lo a ~5%; ADR 0064). Só ids com min > 0
+  /// viajam (os demais não restringem). Reusa `_minSize` (memoiza o min real mesmo p/ abas minimizadas).
+  private _collectMins(): WinMin[] {
+    const out: WinMin[] = [];
+    for (const { window } of this._tracked.values()) {
+      const [w, h] = this._minSize(window);
+      if (w > 0 || h > 0) {
+        out.push({ id: window.get_stable_sequence(), min_width: w, min_height: h });
+      }
+    }
+    return out;
+  }
+
   /// Fecha e descarta o menu de contexto atual (se houver). Idempotente.
   private _destroyTabMenu(): void {
     const menu = this._tabMenu;
@@ -1677,6 +1708,18 @@ export default class EtherbitTilingExtension extends Extension {
     this._stackHidden.clear();
   }
 
+  /// Monitor da janela para o snapshot, com PIN de resize (ADR 0064): se ESTA é a janela em resize
+  /// manual, devolve o monitor de ORIGEM capturado no grab — assim um overflow transitório do Mutter
+  /// durante o arrasto não a reatribui ao display vizinho mid-resize (ejeção). Fora do resize, o
+  /// `get_monitor()` normal (relido a cada relayout → migração entre displays segue funcionando).
+  private _pinnedMonitor(window: Meta.Window): number {
+    const rs = this._resizeStart;
+    if (rs && window.get_stable_sequence() === rs.id) {
+      return rs.monitor;
+    }
+    return Math.max(0, window.get_monitor());
+  }
+
   /// Metadados brutos de uma janela (espelham o WindowDto do daemon). A filtragem é do core.
   private _snapshot(window: Meta.Window): WindowSnapshot {
     const frame = window.get_frame_rect();
@@ -1703,8 +1746,10 @@ export default class EtherbitTilingExtension extends Extension {
       resizable,
       maximizable,
       // `get_monitor()` devolve -1 para janela sem monitor; clampa a 0 para o JSON nunca carregar um
-      // índice negativo (que invalidaria a desserialização no daemon → SyncWindows falho).
-      monitor: Math.max(0, window.get_monitor()),
+      // índice negativo (que invalidaria a desserialização no daemon → SyncWindows falho). PIN de resize
+      // (ADR 0064): enquanto a janela ARRASTADA está em resize, mantém seu monitor de ORIGEM — um overflow
+      // transitório do Mutter (frame cruzando a emenda mid-resize) não a reatribui ao display vizinho.
+      monitor: this._pinnedMonitor(window),
       workspace: Math.max(0, workspace ? workspace.index() : 0),
       min_width: minWidth,
       min_height: minHeight,

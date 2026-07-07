@@ -1,3 +1,0 @@
-Started etherbit-tiling-daemon.service - Etherbit Tiling Daemon.
-Etherbit daemon — core 0.1.0 — servindo dev.ediano.etherbit.Tiling em /dev/ediano/etherbit/Tiling
-Etherbit daemon — monitor de energia (login1) ativo.

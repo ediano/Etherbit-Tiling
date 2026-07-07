@@ -5,7 +5,9 @@ binário deu lugar ao `Node::Grid` elástico 3×3); a **regra de inserção** (r
 substituída por [#0030](0030-distribuicao-ciclica-quadrantes-e-merge-fallback.md) (Distribuição Cíclica em
 Quadrantes). Permanecem válidos: estado leve na ponte, daemon sem
 estado, core puro, gap único, cantos arredondados, resize elástico (agora por track) e o contrato
-espelhado.
+espelhado. Emendado por [#0064](0064-resize-min-aware-e-blindagem-de-descarte-drop-overlay.md): o resize
+elástico passa a clampar a proporção aos **mínimos reais (px)** do vizinho (trava na borda) em vez do
+piso proporcional fixo — fim da ejeção cross-monitor no GNOME.
 
 ## Contexto
 

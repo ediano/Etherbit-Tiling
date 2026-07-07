@@ -599,13 +599,24 @@ export function parseOrderKey(key: string): [number, number] {
   return [Number(m) || 0, Number(w) || 0];
 }
 
+/// Tamanho mínimo (px) de uma janela, anexado ao `state_json` para o caminho de `ResizeWindow`
+/// (que — diferente do `SyncWindows` — não carrega o array de janelas). Habilita o clamp min-aware do
+/// resize no core (ADR 0064). O `SyncWindows` não precisa (usa o min do próprio `windows_json`).
+export interface WinMin {
+  id: number;
+  min_width: number;
+  min_height: number;
+}
+
 /// Serializa o estado leve para o `state_json` do contrato D-Bus. Só stacks com ≥ 2 membros viajam
 /// (um stack de 1 não faz sentido). `disabled_groups` é um array de pares `[monitor, workspace]`.
+/// `mins` (opcional) só é populado no caminho de resize; vazio no `SyncWindows` (retrocompat).
 export function serializeState(
   stacks: Map<string, Stack[]>,
   disabled: Set<string>,
   trees: Map<string, TreeNode | null>,
   focusedId: number,
+  mins: WinMin[] = [],
 ): string {
   const stackDtos: Array<{
     monitor: number;
@@ -636,6 +647,7 @@ export function serializeState(
     disabled_groups: disabledDtos,
     trees: treeDtos,
     focused_id: focusedId,
+    mins,
   });
 }
 

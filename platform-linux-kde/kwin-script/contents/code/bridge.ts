@@ -192,8 +192,9 @@ export function parsePreview(json: string): DropPreview | null {
 //  - Sobre uma janela, fora do centro → split 50/50 do CORPO do alvo pelo lado mais próximo
 //    (escopo `local`): a zona local divide o slot do alvo, não o monitor.
 //  - Gap vazio → bloco de 50% pela borda mais próxima, ou monitor inteiro no miolo (escopo `global`).
-// O preview é desenhado pelo `workspace.showOutline` NATIVO do KWin (o daemon é geometria pura e não
-// renderiza nada). O core só é acionado no DROP (MoveWindow). Puro/testável.
+// O preview é desenhado pelo helper translúcido `etherbit-tiling-preview` (o outline nativo do KWin foi
+// removido, ADR 0064; o daemon é geometria pura e não renderiza nada). O core só é acionado no DROP
+// (MoveWindow). Puro/testável.
 
 /// Retângulo simples em px absolutos de tela.
 export interface Rect {
@@ -550,6 +551,15 @@ export interface TabBar {
 /// Serializa o estado leve para o `state_json`, traduzindo as folhas das árvores e os membros dos stacks
 /// (internalId) para ids de TRANSPORTE via `transportOf`. ADR 0033 (paridade com GNOME): os stacks reais
 /// (≥ 2 membros traduzíveis) viajam para o core materializar `Node::Stack` e devolver as `tab_bars`.
+/// Mínimo (px) de uma janela por id ESTÁVEL (internalId), para o `state_json` do `ResizeWindow` — o
+/// clamp min-aware do core trava o vizinho no seu min real em vez de esmagá-lo a ~5% (ADR 0064). É
+/// traduzido para id de transporte aqui (como membros/árvores). Só o resize popula; o sync ignora.
+export interface WinMin {
+  stableId: string;
+  min_width: number;
+  min_height: number;
+}
+
 export function serializeState(
   stacks: Map<string, Stack[]>,
   disabled: Set<string>,
@@ -557,6 +567,7 @@ export function serializeState(
   trees: Map<string, TreeNode | null>,
   focusedStable: string,
   nameToIndex: Map<string, number>,
+  mins: WinMin[] = [],
 ): string {
   // O estado da ponte é chaveado pelo NOME do output (ADR 0056); o contrato do daemon/core usa o ÍNDICE
   // numérico atual (WorkArea.index). Traduz nome→índice aqui. Grupo cujo monitor está DESCONECTADO
@@ -609,11 +620,21 @@ export function serializeState(
     treeDtos.push({ monitor, workspace, root: root ? treeToTransport(root, transportOf) : null });
   }
   const focused_id = transportOf.get(focusedStable) ?? 0;
+  // Mínimos traduzidos stable→transport (mesma tradução dos membros/árvores). Só ids com transporte
+  // conhecido e min > 0 viajam. Vazio no sync (o `windows_json` já carrega o min de cada janela).
+  const minDtos: Array<{ id: number; min_width: number; min_height: number }> = [];
+  for (const m of mins) {
+    const t = transportOf.get(m.stableId);
+    if (t !== undefined && (m.min_width > 0 || m.min_height > 0)) {
+      minDtos.push({ id: t, min_width: m.min_width, min_height: m.min_height });
+    }
+  }
   return JSON.stringify({
     stacks: stackDtos,
     disabled_groups: disabledDtos,
     trees: treeDtos,
     focused_id,
+    mins: minDtos,
   });
 }
 
