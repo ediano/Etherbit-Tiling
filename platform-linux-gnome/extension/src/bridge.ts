@@ -84,6 +84,29 @@ export function effectiveMinSize(
   return cache.get(id) ?? [0, 0];
 }
 
+/// Registra o frame que a janela ACEITOU num resize manual, guardando o MENOR por eixo: o min real
+/// do app nunca é maior que um tamanho que ele já aceitou. Ignora dimensões não positivas.
+export function recordAcceptedFrame(
+  frames: Map<number, [number, number]>,
+  id: number,
+  frame: [number, number],
+): void {
+  if (frame[0] <= 0 || frame[1] <= 0) {
+    return;
+  }
+  const prev = frames.get(id);
+  frames.set(id, prev ? [Math.min(prev[0], frame[0]), Math.min(prev[1], frame[1])] : frame);
+}
+
+/// Limita o min reportado ao menor frame já aceito (`recordAcceptedFrame`). Um `get_min_size()`
+/// inflado/stale travava o resize do tiling antes do limite real do app (sem tiling ia além).
+export function capMinSize(min: [number, number], accepted?: [number, number]): [number, number] {
+  if (!accepted) {
+    return min;
+  }
+  return [Math.min(min[0], accepted[0]), Math.min(min[1], accepted[1])];
+}
+
 /// Espelha o `MonitorDto` do daemon (área útil de um monitor).
 export interface MonitorSnapshot {
   index: number;

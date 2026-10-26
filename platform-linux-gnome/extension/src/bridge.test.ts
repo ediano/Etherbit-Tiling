@@ -28,7 +28,9 @@ import {
   serializeScope,
   isResizable,
   isFixedSize,
+  capMinSize,
   effectiveMinSize,
+  recordAcceptedFrame,
   geometryConverged,
   neighborInDirection,
   directionZone,
@@ -179,6 +181,26 @@ describe('effectiveMinSize (memoização do min degradado por minimização)', (
     const cache = new Map<number, [number, number]>([[1, [700, 500]]]);
     expect(effectiveMinSize(cache, 1, [640, 480], false)).toEqual([640, 480]);
     expect(cache.get(1)).toEqual([640, 480]);
+  });
+});
+
+describe('recordAcceptedFrame / capMinSize (min limitado ao frame aceito)', () => {
+  it('guarda o menor frame aceito por eixo', () => {
+    const frames = new Map<number, [number, number]>();
+    recordAcceptedFrame(frames, 1, [800, 300]);
+    recordAcceptedFrame(frames, 1, [600, 500]);
+    expect(frames.get(1)).toEqual([600, 300]);
+  });
+
+  it('ignora frame degenerado', () => {
+    const frames = new Map<number, [number, number]>();
+    recordAcceptedFrame(frames, 1, [0, 300]);
+    expect(frames.has(1)).toBe(false);
+  });
+
+  it('limita o min reportado ao frame aceito', () => {
+    expect(capMinSize([360, 410], [900, 200])).toEqual([360, 200]);
+    expect(capMinSize([360, 410], undefined)).toEqual([360, 410]);
   });
 });
 

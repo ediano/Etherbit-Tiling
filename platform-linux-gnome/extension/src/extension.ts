@@ -38,7 +38,9 @@ import {
   parseDropped,
   shouldSuppressSpawnMaximize,
   isResizable,
+  capMinSize,
   effectiveMinSize,
+  recordAcceptedFrame,
   clampGeometry,
   clampToWorkArea,
   geometryConverged,
@@ -223,6 +225,9 @@ export default class EtherbitTilingExtension {
   //  - `_lastMinSizes`: último min-size REAL por id — cobre o `get_min_size()` degradado (0,0) de
   //    janelas minimizadas (abas inativas), para o core expandir a célula ao min do membro grande.
   private _lastMinSizes = new Map<number, [number, number]>();
+  //  - `_acceptedFrames`: menor frame que a janela ACEITOU num resize manual. O min real nunca passa
+  //    disso — teto para um `get_min_size()` inflado/stale que travava o resize antes do limite do app.
+  private _acceptedFrames = new Map<number, [number, number]>();
   // Spawn-unmaximize (ciclo de vida de maximização): ids que o core JÁ tilou ao menos uma vez. Uma
   // janela que é maximizada e NUNCA foi tilada "nasceu maximizada" → forçamos `unmaximize` para ela
   // entrar na Distribuição Cíclica. Já uma janela tilada que o usuário maximiza manualmente é
@@ -619,6 +624,7 @@ export default class EtherbitTilingExtension {
     }
     this._tracked.clear();
     this._lastMinSizes.clear();
+    this._acceptedFrames.clear();
     this._everTiled.clear();
     this._closingIds.clear();
 
@@ -661,6 +667,7 @@ export default class EtherbitTilingExtension {
         removeIdFromStacks(this._stacks, id);
         this._stackHidden.delete(id);
         this._lastMinSizes.delete(id);
+        this._acceptedFrames.delete(id);
         this._floating.delete(id);
         const mruIdx = this._focusMru.indexOf(id);
         if (mruIdx !== -1) {
@@ -1021,7 +1028,10 @@ export default class EtherbitTilingExtension {
       // Restaura quem deixou de estar oculto (ex.: virou a aba ativa, ou o stack foi desfeito).
       for (const id of this._stackHidden) {
         if (!shouldHide.has(id)) {
-          byId.get(id)?.unminimize();
+          const w = byId.get(id);
+          if (w) {
+            this._unminimizeQuiet(w);
+          }
         }
       }
       // Aplica a geometria das janelas visíveis (singles + aba ativa de cada stack).
@@ -1101,7 +1111,7 @@ export default class EtherbitTilingExtension {
           if (w) {
             this._enqueueRestack(() => {
               if (this._isWindowLive(w)) {
-                w.minimize();
+                this._minimizeQuiet(w);
               }
             });
           }
@@ -1491,6 +1501,7 @@ export default class EtherbitTilingExtension {
       return;
     }
     const r = window.get_frame_rect();
+    recordAcceptedFrame(this._acceptedFrames, start.id, [r.width, r.height]);
     const deltas = resizeDeltaFrom(start.rect, {
       x: r.x,
       y: r.y,
@@ -1799,7 +1810,10 @@ export default class EtherbitTilingExtension {
     const target = (workspace ? workspace.list_windows() : []).find(
       (w) => w.get_stable_sequence() === next,
     );
-    target?.activate(global.get_current_time());
+    if (target) {
+      this._unminimizeQuiet(target);
+      target.activate(global.get_current_time());
+    }
     this._scheduleRelayout();
   }
 
@@ -2344,6 +2358,33 @@ export default class EtherbitTilingExtension {
     }
   }
 
+  /// Troca de aba sem a animação de minimizar/restaurar do Shell: o membro que entra não pode parecer
+  /// "voltando do dock" — é a mesma célula trocando de conteúdo. `skipNextEffect` é consumido pelo
+  /// próximo efeito do ator; best-effort (sem ator ou API ausente, cai no comportamento nativo).
+  private _skipNextEffect(window: Meta.Window): void {
+    try {
+      const actor = window.get_compositor_private() as Clutter.Actor | null;
+      if (actor) {
+        Main.wm.skipNextEffect(actor);
+      }
+    } catch {
+      // API do Shell ausente/alterada: segue com a animação nativa.
+    }
+  }
+
+  private _minimizeQuiet(window: Meta.Window): void {
+    this._skipNextEffect(window);
+    window.minimize();
+  }
+
+  private _unminimizeQuiet(window: Meta.Window): void {
+    if (!window.minimized) {
+      return;
+    }
+    this._skipNextEffect(window);
+    window.unminimize();
+  }
+
   /// Restaura o estado que NÓS impusemos: desminimiza as abas inativas. Chamado no disable/cleanup.
   private _restoreHiddenWindows(): void {
     if (this._stackHidden.size === 0) {
@@ -2637,7 +2678,11 @@ export default class EtherbitTilingExtension {
     // core agregar o `max` correto e a célula de abas expandir ao min do membro grande.
     const minimized =
       (window as unknown as { is_minimized?: () => boolean }).is_minimized?.() ?? false;
-    return effectiveMinSize(this._lastMinSizes, window.get_stable_sequence(), raw, minimized);
+    const id = window.get_stable_sequence();
+    return capMinSize(
+      effectiveMinSize(this._lastMinSizes, id, raw, minimized),
+      this._acceptedFrames.get(id),
+    );
   }
 
   /// Tamanho MÁXIMO (px de frame) imposto pelo app via `Meta.Window.get_max_size()` — espelha o
