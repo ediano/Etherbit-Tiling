@@ -50,7 +50,9 @@ mostraram **falsos** e ficam aqui registrados para não se repetirem:
   - **GNOME/Wayland:** o **daemon** reinicia ao vivo e a extensão-cliente reconecta via D-Bus (ADR
     [0020](0020-resiliencia-ipc-dbus.md)) — a lógica de tiling atualiza na hora. Mas o **código** da
     extensão só recarrega no **próximo login** (limite físico do Mutter; nenhum script contorna). As
-    mensagens dos instaladores comunicam isso honestamente.
+    mensagens dos instaladores comunicam isso honestamente. _Emendado pela
+    [0071](0071-update-sem-logout-hot-reload.md): com o loader estável, o código da extensão troca ao
+    vivo; logout só quando o próprio loader muda._
 - **Escopo:** apenas os instaladores de **pacote** (únicos que recebem `VERSION` e instalam o binário
   do daemon). Os `scripts/install.sh` de **dev** ficam intactos (não têm `VERSION` nem instalam o
   daemon). Os `build-*-release.sh` **não mudam** (o `VERSION` já é empacotado).

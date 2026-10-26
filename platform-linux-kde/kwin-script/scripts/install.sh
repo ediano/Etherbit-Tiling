@@ -60,6 +60,8 @@ fi
 # KWin errado num sistema misto). Ver ADR rules/0013.
 QDBUS="$(command -v qdbus6 || command -v qdbus-qt6 || true)"
 if [ -n "$QDBUS" ]; then
+  # Descarrega antes: o `reconfigure` só recarrega o código novo de um script que não está carregado.
+  "$QDBUS" org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript "$ID" >/dev/null 2>&1 || true
   "$QDBUS" org.kde.KWin /KWin reconfigure || true
 else
   echo "aviso: qdbus6/qdbus-qt6 não encontrado — recarregue o KWin manualmente (requer Plasma 6/Qt 6)."

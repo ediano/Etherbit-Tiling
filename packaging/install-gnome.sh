@@ -84,6 +84,8 @@ t() {
                      pt='  • Serviço:    %s\n' ;;
     done_wayland)    en='\nWayland: log out/in — the extension and daemon come up automatically, no manual step.\n'
                      pt='\nWayland: faça logout/login — a extensão e o daemon sobem automaticamente, sem passo manual.\n' ;;
+    done_live)       en='\nUpdated live — no logout needed (extension and daemon already reloaded).\n'
+                     pt='\nAtualizado ao vivo — sem logout (extensão e daemon já recarregados).\n' ;;
   esac
   if [ "$ETB_LANG" = pt ] && [ -n "$pt" ]; then printf -- "$pt" "$@"; else printf -- "$en" "$@"; fi
 }
@@ -173,7 +175,7 @@ if [ ! -f "$HERE/bin/etherbit-tiling-daemon" ]; then
   t err_daemon_missing "$HERE" >&2
   exit 1
 fi
-if [ ! -f "$HERE/extension/extension.js" ] || [ ! -f "$HERE/extension/metadata.json" ]; then
+if [ ! -f "$HERE/extension/extension.js" ] || [ ! -f "$HERE/extension/main.js" ] || [ ! -f "$HERE/extension/metadata.json" ]; then
   t err_ext_incomplete "$HERE" >&2
   exit 1
 fi
@@ -222,6 +224,19 @@ install -m 755 "$HERE/bin/etherbit-tiling-daemon" "$BIN_DIR/etherbit-tiling-daem
 # --- Extensão ------------------------------------------------------------------
 t ext_install "$EXT_DIR"
 mkdir -p "$EXT_DIR"
+# Loader estável + impl versionada (ADR 0071): o loader já carregado observa `impl/current` e troca
+# a implementação ao vivo. Logout só é preciso se o PRÓPRIO loader (ou o metadata) mudou, ou se a
+# extensão ainda não estava instalada (instalação limpa: o Shell ainda não a carregou).
+NEEDS_LOGOUT=0
+if ! cmp -s "$HERE/extension/extension.js" "$EXT_DIR/extension.js" 2>/dev/null \
+   || ! cmp -s "$HERE/extension/metadata.json" "$EXT_DIR/metadata.json" 2>/dev/null; then
+  NEEDS_LOGOUT=1
+fi
+IMPL_VERSION="${NEW_VERSION:-0}-$(date +%s)"
+IMPL_DIR="$EXT_DIR/impl/$IMPL_VERSION"
+mkdir -p "$IMPL_DIR"
+install -m 644 "$HERE/extension/main.js" "$IMPL_DIR/main.js"
+[ -f "$HERE/extension/main.js.map" ] && install -m 644 "$HERE/extension/main.js.map" "$IMPL_DIR/main.js.map"
 install -m 644 "$HERE/extension/extension.js"  "$EXT_DIR/extension.js"
 install -m 644 "$HERE/extension/metadata.json" "$EXT_DIR/metadata.json"
 [ -f "$HERE/extension/extension.js.map" ] && install -m 644 "$HERE/extension/extension.js.map" "$EXT_DIR/extension.js.map"
@@ -231,7 +246,6 @@ if [ -d "$HERE/extension/schemas" ]; then
   install -m 644 "$HERE"/extension/schemas/*.gschema.xml "$EXT_DIR/schemas/" 2>/dev/null || true
   command -v glib-compile-schemas >/dev/null && glib-compile-schemas "$EXT_DIR/schemas"
 fi
-
 # --- Serviço systemd (--user) --------------------------------------------------
 t service_install "$SERVICE"
 mkdir -p "$SYSTEMD_DIR"
@@ -289,6 +303,13 @@ enable_extension() {
 t enabling_ext "$UUID"
 enable_extension || t warn_enable_failed "$UUID"
 
+# --- Troca ao vivo da impl -----------------------------------------------------
+# Escrita atômica de `impl/current` (dispara o reload no loader) e limpeza: mantém as 2 mais novas.
+printf '%s\n' "$IMPL_VERSION" > "$EXT_DIR/impl/current.tmp"
+mv -f "$EXT_DIR/impl/current.tmp" "$EXT_DIR/impl/current"
+find "$EXT_DIR/impl" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -rn | tail -n +3 \
+  | cut -d' ' -f2- | while IFS= read -r d; do rm -rf -- "$d"; done
+
 # --- Marcador de versão --------------------------------------------------------
 # Registra a versão instalada — base de comparação do próximo run (upgrade idempotente).
 if [ -n "$NEW_VERSION" ]; then
@@ -301,4 +322,4 @@ t done_title
 t done_daemon "$BIN_DIR"
 t done_ext "$EXT_DIR"
 t done_service "$SYSTEMD_DIR/$SERVICE"
-t done_wayland
+if [ "$NEEDS_LOGOUT" = 1 ]; then t done_wayland; else t done_live; fi

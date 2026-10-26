@@ -31,9 +31,11 @@ pnpm --dir "$EXT" install --frozen-lockfile
 pnpm --dir "$EXT" build
 
 install -m 644 "$EXT/dist/extension.js"     "$STAGE/extension/extension.js"
+install -m 644 "$EXT/dist/main.js"          "$STAGE/extension/main.js"
 install -m 644 "$EXT/metadata.json"         "$STAGE/extension/metadata.json"
 # Opcionais, quando existirem.
 [ -f "$EXT/dist/extension.js.map" ] && install -m 644 "$EXT/dist/extension.js.map" "$STAGE/extension/extension.js.map"
+[ -f "$EXT/dist/main.js.map" ]      && install -m 644 "$EXT/dist/main.js.map"      "$STAGE/extension/main.js.map"
 [ -f "$EXT/stylesheet.css" ]        && install -m 644 "$EXT/stylesheet.css"        "$STAGE/extension/stylesheet.css"
 if [ -d "$EXT/schemas" ]; then
   mkdir -p "$STAGE/extension/schemas"

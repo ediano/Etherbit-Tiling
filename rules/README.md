@@ -81,6 +81,7 @@ arqueologia de commits.
 | [0068](0068-paridade-cosmic-no-gnome.md) | Paridade COSMIC no GNOME: recusa de tamanho (centraliza, sem flicker), inserção pela janela focada, foco/move/swap/resize/orientação/float/abas por teclado, borda ativa, smart gaps + gap externo, exceções por título e remapeamento de monitores | ✅ Aceita; resolve as pendências da #0067; emenda #0030 (cíclico vira modo `cyclic`, padrão `focus`); D-Bus estendido de forma retrocompatível (`ToggleOrientation`, `SetSmartGaps`, `SetOuterGap`, `SetInsertMode`) |
 | [0069](0069-repositorio-unico-publico.md) | Repositório único e público: descontinua o `etherbit-tiling-releases`; Releases publicadas aqui via `GITHUB_TOKEN`; landing, instaladores e metadados apontam para `ediano/Etherbit-Tiling` | ✅ Aceita; mantém #0015 |
 | [0070](0070-paridade-cosmic-no-kde.md) | Paridade COSMIC no KDE: recusa de tamanho, inserção pela focada (MRU), atalhos de foco/move/swap/resize/orientação/float/abas com liberação dos atalhos nativos do KWin no instalador, borda ativa no helper, smart gaps/gap externo, exceções por título, hotplug e descarte de sync atrasado | ✅ Aceita; espelha #0068 no KDE; estende #0039 (helper ganha a borda ativa); contrato do daemon inalterado |
+| [0071](0071-update-sem-logout-hot-reload.md) | Update sem logout: loader estável + impl versionada (`impl/<versão>/main.js`) com troca ao vivo no GNOME; `unloadScript` + `reconfigure`, restart do helper e do plasmashell no KDE | ✅ Aceita; emenda #0024 |
 
 ## Como adicionar uma nova decisão
 

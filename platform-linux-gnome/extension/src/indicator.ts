@@ -15,6 +15,7 @@
 
 import Clutter from 'gi://Clutter';
 import GObject from 'gi://GObject';
+import GLib from 'gi://GLib';
 import St from 'gi://St';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
@@ -232,6 +233,9 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
 
 // registerClass não preserva a assinatura do construtor customizado; reexpomos com o tipo correto.
 export type EtherbitIndicator = EtherbitIndicatorImpl;
-export const EtherbitIndicator = GObject.registerClass(EtherbitIndicatorImpl) as unknown as new (
-  handlers: IndicatorHandlers,
-) => EtherbitIndicatorImpl;
+// GTypeName único por carga do módulo: o loader reimporta versões novas no mesmo processo do Shell
+// (ADR 0071), e registrar de novo o mesmo nome de GType derrubaria o enable.
+export const EtherbitIndicator = GObject.registerClass(
+  { GTypeName: `EtherbitIndicator_${GLib.uuid_string_random().replace(/-/g, '')}` },
+  EtherbitIndicatorImpl,
+) as unknown as new (handlers: IndicatorHandlers) => EtherbitIndicatorImpl;

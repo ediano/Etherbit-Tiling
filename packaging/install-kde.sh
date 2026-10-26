@@ -233,6 +233,9 @@ fi
 if command -v systemctl >/dev/null; then
   systemctl --user stop "$SERVICE" 2>/dev/null || true
 fi
+# Mesmo motivo para o helper de preview/abas (ativado por D-Bus): encerrado aqui, a próxima chamada
+# ativa o binário NOVO e o estado volta por pull (ADR 0025/0062). Sem logout (ADR 0071).
+pkill -x etherbit-tiling-preview 2>/dev/null || true
 
 # --- Daemon (reuso; mesmo binário/serviço da camada GNOME) ---------------------
 t bin_install "$BIN_DIR"
@@ -279,6 +282,7 @@ if [ -f "$HERE/plasmoid/metadata.json" ] && [ -f "$HERE/plasmoid/contents/ui/mai
   t applet_install "$APPLET_ID"
   if kpackagetool6 --type=Plasma/Applet -s "$APPLET_ID" >/dev/null 2>&1; then
     kpackagetool6 --type=Plasma/Applet -u "$HERE/plasmoid"
+    APPLET_UPDATED=1
   else
     kpackagetool6 --type=Plasma/Applet -i "$HERE/plasmoid"
   fi
@@ -291,9 +295,17 @@ fi
 # Linha de corte Qt6/Plasma6: só qdbus6/qdbus-qt6 (o `qdbus` puro pode ser o do Qt5). Ver ADR 0013.
 QDBUS="$(command -v qdbus6 || command -v qdbus-qt6 || true)"
 if [ -n "$QDBUS" ]; then
+  # `reconfigure` sozinho não troca o código de um script JÁ carregado: descarrega antes, e o
+  # reconfigure recarrega os scripts habilitados com o pacote novo — upgrade sem logout (ADR 0071).
+  "$QDBUS" org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript "$ID" >/dev/null 2>&1 || true
   "$QDBUS" org.kde.KWin /KWin reconfigure || true
 else
   t warn_no_qdbus
+fi
+
+# O plasmashell mantém o QML do applet em memória: reinicia-o (a barra pisca, a sessão continua).
+if [ -n "${APPLET_UPDATED:-}" ] && command -v systemctl >/dev/null; then
+  systemctl --user try-restart plasma-plasmashell.service 2>/dev/null || true
 fi
 
 # --- Atalhos nativos do KWin que colidem com os do Etherbit (ADR 0070) ----------

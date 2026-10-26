@@ -15,16 +15,21 @@ export default defineConfig({
     sourcemap: true,
     outDir: 'dist',
     emptyOutDir: true,
+    // Duas saídas (ADR 0071): `extension.js` é o loader estável que o Shell carrega; `main.js` é a
+    // implementação versionada que o loader importa de `impl/<versão>/` e troca ao vivo.
     lib: {
-      entry: resolve(__dirname, 'src/extension.ts'),
+      entry: {
+        extension: resolve(__dirname, 'src/loader.ts'),
+        main: resolve(__dirname, 'src/extension.ts'),
+      },
       formats: ['es'],
-      fileName: () => 'extension.js',
+      fileName: (_format, name) => `${name}.js`,
     },
     rollupOptions: {
       external: GJS_EXTERNAL,
       output: {
-        entryFileNames: 'extension.js',
-        inlineDynamicImports: true,
+        entryFileNames: '[name].js',
+        // Loader e impl não compartilham código: nenhum chunk comum pode surgir entre eles.
         manualChunks: undefined,
       },
     },
