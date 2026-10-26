@@ -117,3 +117,11 @@ o mesmo, a janela só era centralizada e nunca voltava a preencher o slot. Ao fi
 (`grab-op-end` no GNOME, `interactiveMoveResizeFinished` no KDE) a ponte esquece o slot committado
 da janela agarrada (no GNOME também invalida o dedup). A recusa volta a ser detectada se o cliente
 recusar um pedido novo.
+
+## Emenda (2026-10-26) — resize até o limite do app e troca de aba sem animação
+
+- **Mínimo limitado ao frame aceito:** o `get_min_size()` memoizado podia ficar inflado/stale e o
+  clamp min-aware travava o resize antes do limite real do app (sem tiling ia além). A ponte guarda o
+  menor frame que a janela aceitou num resize manual e usa-o como teto do mínimo enviado ao core.
+- **Troca de aba silenciosa:** minimizar/restaurar os membros de um stack passa por
+  `Main.wm.skipNextEffect` — a aba que entra não "volta do dock"; é a mesma célula trocando de conteúdo.
