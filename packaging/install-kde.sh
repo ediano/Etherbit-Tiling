@@ -72,6 +72,12 @@ t() {
                      pt='>> Instalando applet da bandeja %s\n' ;;
     warn_no_applet)  en='warning: plasmoid/ missing from this bundle — System Tray icon will be ABSENT. Rebuild with packaging/build-kde-release.sh to include it.\n'
                      pt='aviso: plasmoid/ ausente neste bundle — o ícone da Bandeja do Sistema ficará AUSENTE. Reconstrua com packaging/build-kde-release.sh para incluí-lo.\n' ;;
+    shortcuts_applied) en='>> Native KWin shortcuts that clash with Etherbit freed (backup kept; restored on uninstall).\n'
+                     pt='>> Atalhos nativos do KWin que colidem com o Etherbit liberados (backup guardado; restaurados ao desinstalar).\n' ;;
+    shortcuts_kept)  en='>> ETHERBIT_KEEP_KDE_SHORTCUTS=1 — native KWin shortcuts left untouched.\n'
+                     pt='>> ETHERBIT_KEEP_KDE_SHORTCUTS=1 — atalhos nativos do KWin mantidos.\n' ;;
+    warn_no_gdbus)   en='warning: gdbus not found — set the Etherbit shortcuts in System Settings → Shortcuts.\n'
+                     pt='aviso: gdbus não encontrado — defina os atalhos do Etherbit em Configurações do Sistema → Atalhos.\n' ;;
     warn_no_qdbus)   en='warning: qdbus6/qdbus-qt6 not found — reload KWin manually (requires Plasma 6/Qt 6).\n'
                      pt='aviso: qdbus6/qdbus-qt6 não encontrado — recarregue o KWin manualmente (requer Plasma 6/Qt 6).\n' ;;
     service_install) en='>> Installing systemd --user service (%s)\n'
@@ -289,6 +295,76 @@ if [ -n "$QDBUS" ]; then
 else
   t warn_no_qdbus
 fi
+
+# --- Atalhos nativos do KWin que colidem com os do Etherbit (ADR 0070) ----------
+# Os padrões do KWin ocupam Meta+setas (Quick Tile), Meta+Shift+setas (mover p/ a tela vizinha) e
+# Meta+Alt+setas (Switch Window). Um `registerShortcut` de KWin Script que esbarra numa tecla ocupada fica
+# SEM tecla. Liberamos esses padrões em runtime pelo kglobalaccel (gdbus: marshala `a(ai)`, que o qdbus
+# não sabe), guardando os valores originais para o desinstalador restaurar. Best-effort: qualquer falha é
+# ignorada (o usuário ainda pode reatribuir em Configurações do Sistema → Atalhos).
+KGA_DEST="org.kde.kglobalaccel"
+KGA_PATH="/kglobalaccel"
+KGA_IFACE="org.kde.KGlobalAccel"
+KDE_SHORTCUTS_BACKUP="${XDG_STATE_HOME:-$HOME/.local/state}/etherbit-tiling/kde-shortcuts-backup"
+KWIN_CONFLICTS="Window Quick Tile Left|Window Quick Tile Right|Window Quick Tile Top|Window Quick Tile Bottom|Window to Next Screen|Window to Previous Screen|Switch Window Left|Switch Window Right|Switch Window Up|Switch Window Down"
+
+# kga_set <ação-kwin> <lista GVariant a(ai)> — define as teclas de uma ação do componente `kwin`.
+kga_set() {
+  gdbus call --session --dest "$KGA_DEST" --object-path "$KGA_PATH" \
+    --method "$KGA_IFACE.setForeignShortcutKeys" "['kwin', '$1', 'KWin', '']" "$2" >/dev/null 2>&1
+}
+
+# Teclas do Etherbit (códigos Qt 6: Meta=0x10000000, Shift=0x02000000, Ctrl=0x04000000, Alt=0x08000000).
+etherbit_key_list() {
+  local META=268435456 SHIFT=33554432 CTRL=67108864 ALT=134217728
+  local L=16777234 U=16777235 R=16777236 D=16777237
+  printf '%s\n' \
+    "EtherbitFocusLeft $((META + L))" "EtherbitFocusRight $((META + R))" \
+    "EtherbitFocusUp $((META + U))" "EtherbitFocusDown $((META + D))" \
+    "EtherbitMoveLeft $((META + SHIFT + L))" "EtherbitMoveRight $((META + SHIFT + R))" \
+    "EtherbitMoveUp $((META + SHIFT + U))" "EtherbitMoveDown $((META + SHIFT + D))" \
+    "EtherbitSwapLeft $((META + ALT + L))" "EtherbitSwapRight $((META + ALT + R))" \
+    "EtherbitSwapUp $((META + ALT + U))" "EtherbitSwapDown $((META + ALT + D))" \
+    "EtherbitGrowWidth $((META + CTRL + R))" "EtherbitShrinkWidth $((META + CTRL + L))" \
+    "EtherbitGrowHeight $((META + CTRL + D))" "EtherbitShrinkHeight $((META + CTRL + U))"
+}
+
+kde_shortcuts_apply() {
+  if [ "${ETHERBIT_KEEP_KDE_SHORTCUTS:-0}" = "1" ]; then
+    t shortcuts_kept
+    return 0
+  fi
+  if ! command -v gdbus >/dev/null; then
+    t warn_no_gdbus
+    return 0
+  fi
+  mkdir -p "$(dirname "$KDE_SHORTCUTS_BACKUP")"
+  # Backup só na PRIMEIRA instalação: numa reinstalação os atalhos já estão liberados (salvar de novo
+  # perderia os originais).
+  local fresh=0
+  [ -s "$KDE_SHORTCUTS_BACKUP" ] || fresh=1
+  local IFS_OLD="$IFS" action cur
+  IFS='|'
+  for action in $KWIN_CONFLICTS; do
+    IFS="$IFS_OLD"
+    if [ "$fresh" = 1 ]; then
+      cur="$(gdbus call --session --dest "$KGA_DEST" --object-path "$KGA_PATH" \
+        --method "$KGA_IFACE.shortcutKeys" "['kwin', '$action', 'KWin', '']" 2>/dev/null || true)"
+      # Saída: `([([285212690, 0, 0, 0],)],)` → guarda a lista interna `[([...],)]`.
+      cur="${cur#(}"; cur="${cur%,)}"
+      [ -n "$cur" ] && printf '%s\t%s\n' "$action" "$cur" >> "$KDE_SHORTCUTS_BACKUP"
+    fi
+    kga_set "$action" "@a(ai) []" || true
+    IFS='|'
+  done
+  IFS="$IFS_OLD"
+  local name code
+  while read -r name code; do
+    kga_set "$name" "[([$code, 0, 0, 0],)]" || true
+  done < <(etherbit_key_list)
+  t shortcuts_applied
+}
+kde_shortcuts_apply
 
 # --- Serviço systemd (--user) --------------------------------------------------
 t service_install "$SERVICE"

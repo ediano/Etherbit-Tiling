@@ -39,9 +39,6 @@ msgstr ""
 msgid "Corner radius (px):"
 msgstr ""
 
-#. config.ui — ignore list (blacklist) label
-msgid "Windows ignored by tiling (app class/id, e.g. obs, org.kde.plasmashell):"
-msgstr ""
 
 #. main.xml — enabled
 msgid "Enable tiling (master switch)"
@@ -69,4 +66,24 @@ msgstr ""
 
 #. main.xml — debug
 msgid "Verbose logs in the journal (diagnostics): number of windows/rectangles per event"
+msgstr ""
+
+#. main.xml/config.ui — outerGap
+msgid "Outer spacing at the screen edge (px; -1 = same as spacing)"
+msgstr ""
+
+#. config.ui — outerGap
+msgid "Outer spacing at the screen edge (px; -1 = same as spacing):"
+msgstr ""
+
+#. main.xml/config.ui — smartGaps
+msgid "Smart gaps: no spacing when a single window is on the workspace"
+msgstr ""
+
+#. main.xml/config.ui — focusInsert
+msgid "Open new windows next to the focused window"
+msgstr ""
+
+#. config.ui — ignoreList
+msgid "Windows ignored by tiling (class/id, or title:text, e.g. obs, title:Picture-in-Picture):"
 msgstr ""

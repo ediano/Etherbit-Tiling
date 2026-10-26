@@ -81,10 +81,39 @@
      <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
     </widget>
    </item>
+   <item row="9" column="0">
+    <widget class="QLabel" name="labelOuterGap">
+     <property name="text">
+      <string>Outer spacing at the screen edge (px; -1 = same as spacing):</string>
+     </property>
+    </widget>
+   </item>
+   <item row="9" column="1">
+    <widget class="QSpinBox" name="kcfg_outerGap">
+     <property name="minimum"><number>-1</number></property>
+     <property name="maximum"><number>100</number></property>
+     <property name="maximumWidth"><number>80</number></property>
+     <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+    </widget>
+   </item>
+   <item row="10" column="0" colspan="2">
+    <widget class="QCheckBox" name="kcfg_smartGaps">
+     <property name="text">
+      <string>Smart gaps: no spacing when a single window is on the workspace</string>
+     </property>
+    </widget>
+   </item>
+   <item row="11" column="0" colspan="2">
+    <widget class="QCheckBox" name="kcfg_focusInsert">
+     <property name="text">
+      <string>Open new windows next to the focused window</string>
+     </property>
+    </widget>
+   </item>
    <item row="7" column="0" colspan="2">
     <widget class="QLabel" name="labelIgnoreList">
      <property name="text">
-      <string>Windows ignored by tiling (app class/id, e.g. obs, org.kde.plasmashell):</string>
+      <string>Windows ignored by tiling (class/id, or title:text, e.g. obs, title:Picture-in-Picture):</string>
      </property>
     </widget>
    </item>

@@ -69,11 +69,52 @@ pub struct PreviewRect {
     pub height: i32,
 }
 
-/// Estado completo do overlay: o preview (drag) e as barras de abas. Os dois coexistem.
+/// Borda da janela ativa (active hint, ADR 0070): o FRAME da janela focada (coordenadas globais), a
+/// espessura do anel (px lógicos, desenhado POR FORA do frame) e a cor opaca.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct BorderSpec {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub thickness: i32,
+    pub color: (u8, u8, u8),
+}
+
+impl BorderSpec {
+    /// Retângulo EXTERNO da superfície: o frame expandido pela espessura em cada lado.
+    pub fn outer(&self) -> PreviewRect {
+        PreviewRect {
+            x: self.x - self.thickness,
+            y: self.y - self.thickness,
+            width: self.width + 2 * self.thickness,
+            height: self.height + 2 * self.thickness,
+        }
+    }
+}
+
+/// Estado completo do overlay: o preview (drag), as barras de abas e a borda ativa. Coexistem.
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct OverlayState {
     pub preview: Option<PreviewRect>,
     pub bars: Vec<TabBarView>,
+    pub border: Option<BorderSpec>,
+}
+
+/// Cor `#rrggbb` (ou `rrggbb`) → `(r, g, b)`. Inválida → `None`.
+pub fn parse_hex_color(raw: &str) -> Option<(u8, u8, u8)> {
+    let hex = raw.trim().trim_start_matches('#');
+    if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some((byte(0)?, byte(2)?, byte(4)?))
+}
+
+/// `true` se o pixel `(px, py)` de uma superfície `w × h` cai no ANEL de espessura `t` (a moldura); o
+/// miolo fica transparente. Puro (base do `draw_border`).
+pub fn in_border_ring(px: i32, py: i32, w: i32, h: i32, t: i32) -> bool {
+    px < t || py < t || px >= w - t || py >= h - t
 }
 
 /// Cor de realce do PREVIEW (Nord `#5e81ac`) e opacidade (ADR: 0.3–0.4 → 0.35).
@@ -155,6 +196,11 @@ struct App {
     /// pixel a pixel com o quadrante no 4K HiDPI — sem borrão/aparência expandida. `set_size` segue em px
     /// lógicos, então a EXTENSÃO do indicador não muda (nunca invade o quadrante vizinho). Default 1.
     preview_scale: i32,
+    /// Superfície da BORDA ATIVA (ADR 0070), sua spec, a origem do output e a escala do buffer.
+    border_layer: Option<LayerSurface>,
+    border: Option<BorderSpec>,
+    border_origin: Option<(i32, i32)>,
+    border_scale: i32,
     /// Superfícies das BARRAS DE ABAS (uma por grupo).
     tab_surfaces: Vec<TabSurface>,
     /// Menu de contexto aberto (no máximo um por vez). `None` = nenhum menu aberto. ADR 0040.
@@ -293,6 +339,102 @@ impl App {
             }
             // `damage_buffer` usa coordenadas do BUFFER (px físicos).
             surface.damage_buffer(0, 0, pw as i32, ph as i32);
+            surface.commit();
+        }
+    }
+
+    // ---- BORDA ATIVA (papel 3, ADR 0070) -----------------------------------------------------
+
+    /// Cria/reposiciona (Some) ou esconde (None) a moldura da janela ativa. Mesma mecânica do preview
+    /// (fixada ao output que contém o frame, margens locais, buffer na escala do output), mas na camada
+    /// `Top` — acima das janelas, abaixo do preview/menus — e click-through.
+    fn apply_border(&mut self, next: Option<BorderSpec>) {
+        let Some(spec) = next.filter(|b| b.width > 0 && b.height > 0 && b.thickness > 0) else {
+            self.border_layer = None;
+            self.border = None;
+            self.border_origin = None;
+            return;
+        };
+        let r = spec.outer();
+        let target = self.output_at(spec.x, spec.y);
+        let origin = target.as_ref().map(|(_, ox, oy, _, _)| (*ox, *oy));
+        let (mx, my) = origin.unwrap_or((0, 0));
+        let scale = target
+            .as_ref()
+            .and_then(|(o, _, _, _, _)| self.output_state.info(o))
+            .map(|i| i.scale_factor.max(1))
+            .unwrap_or(1);
+        if self.border_layer.is_some() && self.border_origin != origin {
+            self.border_layer = None;
+        }
+        self.border = Some(spec);
+        self.border_scale = scale;
+        if let Some(layer) = self.border_layer.as_ref() {
+            layer.wl_surface().set_buffer_scale(scale);
+            layer.set_size(r.width as u32, r.height as u32);
+            layer.set_margin(r.y - my, 0, 0, r.x - mx);
+            layer.commit();
+            self.draw_border(r.width as u32, r.height as u32);
+        } else {
+            let surface = self.compositor.create_surface(&self.qh);
+            let layer = self.layer_shell.create_layer_surface(
+                &self.qh,
+                surface,
+                Layer::Top,
+                Some("etherbit-border"),
+                target.as_ref().map(|(o, _, _, _, _)| o),
+            );
+            layer.set_anchor(Anchor::TOP | Anchor::LEFT);
+            layer.wl_surface().set_buffer_scale(scale);
+            layer.set_size(r.width as u32, r.height as u32);
+            layer.set_margin(r.y - my, 0, 0, r.x - mx);
+            layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+            layer.set_exclusive_zone(-1);
+            if let Ok(region) = Region::new(&self.compositor) {
+                layer.wl_surface().set_input_region(Some(region.wl_region()));
+            }
+            layer.commit();
+            self.border_layer = Some(layer);
+            self.border_origin = origin;
+        }
+    }
+
+    /// Pinta o anel opaco (espessura × escala) com o miolo transparente. `w`/`h` em px lógicos.
+    fn draw_border(&mut self, w: u32, h: u32) {
+        let Some(spec) = self.border else { return };
+        if w == 0 || h == 0 || self.border_layer.is_none() {
+            return;
+        }
+        let scale = self.border_scale.max(1);
+        let pw = w as i32 * scale;
+        let ph = h as i32 * scale;
+        let t = spec.thickness * scale;
+        let (buffer, canvas) =
+            match self.pool.create_buffer(pw, ph, pw * 4, wl_shm::Format::Argb8888) {
+                Ok(pair) => pair,
+                Err(err) => {
+                    eprintln!("Etherbit border — create_buffer falhou: {err}");
+                    return;
+                }
+            };
+        let (r, g, b) = spec.color;
+        let ring = u32::from_le_bytes([b, g, r, 0xff]).to_ne_bytes();
+        for (i, chunk) in canvas.chunks_exact_mut(4).enumerate() {
+            let px = i as i32 % pw;
+            let py = i as i32 / pw;
+            if in_border_ring(px, py, pw, ph, t) {
+                chunk.copy_from_slice(&ring);
+            } else {
+                chunk.copy_from_slice(&[0, 0, 0, 0]);
+            }
+        }
+        if let Some(layer) = self.border_layer.as_ref() {
+            let surface = layer.wl_surface();
+            if let Err(err) = buffer.attach_to(surface) {
+                eprintln!("Etherbit border — attach buffer falhou: {err}");
+                return;
+            }
+            surface.damage_buffer(0, 0, pw, ph);
             surface.commit();
         }
     }
@@ -872,6 +1014,9 @@ impl LayerShellHandler for App {
         if self.layer.as_ref().map(|l| l.wl_surface()) == Some(layer.wl_surface()) {
             self.layer = None;
         }
+        if self.border_layer.as_ref().map(|l| l.wl_surface()) == Some(layer.wl_surface()) {
+            self.border_layer = None;
+        }
         if self.menu.as_ref().map(|m| m.layer.wl_surface()) == Some(layer.wl_surface()) {
             self.menu = None;
         }
@@ -895,6 +1040,22 @@ impl LayerShellHandler for App {
                 (r.width.max(0) as u32, r.height.max(0) as u32)
             };
             self.draw_preview(w, h);
+            return;
+        }
+        // Borda ativa?
+        if self.border_layer.as_ref().map(|l| l.wl_surface()) == Some(layer.wl_surface()) {
+            let (w, h) = if configure.new_size.0 != 0 && configure.new_size.1 != 0 {
+                configure.new_size
+            } else {
+                let r = self.border.map(|b| b.outer()).unwrap_or(PreviewRect {
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 0,
+                });
+                (r.width.max(0) as u32, r.height.max(0) as u32)
+            };
+            self.draw_border(w, h);
             return;
         }
         // Menu de contexto?
@@ -1011,6 +1172,10 @@ pub fn run(
         rect: None,
         layer_origin: None,
         preview_scale: 1,
+        border_layer: None,
+        border: None,
+        border_origin: None,
+        border_scale: 1,
         tab_surfaces: Vec::new(),
         menu: None,
         pointer: None,
@@ -1056,6 +1221,9 @@ pub fn run(
                     if next.bars != last.bars {
                         app.apply_bars(&next.bars);
                     }
+                    if next.border != last.border {
+                        app.apply_border(next.border);
+                    }
                     last = next;
                 }
             }
@@ -1068,7 +1236,9 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::{local_origin_for, output_contains};
+    use super::{
+        in_border_ring, local_origin_for, output_contains, parse_hex_color, BorderSpec, PreviewRect,
+    };
 
     // Setup assimétrico do relato de hardware: principal 4K na origem (0,0) e secundário Full HD à
     // direita, começando em x=3840. As margens do core são GLOBAIS; o teste trava a conversão para a
@@ -1108,6 +1278,30 @@ mod tests {
         assert_eq!(local_origin_for(OUTPUTS_4K_FHD, -10, -10), None);
         assert_eq!(local_origin_for(OUTPUTS_4K_FHD, 6000, 2000), None);
         assert_eq!(local_origin_for(&[], 0, 0), None);
+    }
+
+    #[test]
+    fn hex_color_valida_e_invalida() {
+        assert_eq!(parse_hex_color("#5e81ac"), Some((0x5e, 0x81, 0xac)));
+        assert_eq!(parse_hex_color("BF616A"), Some((0xbf, 0x61, 0x6a)));
+        assert_eq!(parse_hex_color("#fff"), None);
+        assert_eq!(parse_hex_color("#zzzzzz"), None);
+    }
+
+    #[test]
+    fn anel_da_borda_e_so_a_moldura() {
+        // Superfície 10×8 com anel de 2px.
+        assert!(in_border_ring(0, 0, 10, 8, 2));
+        assert!(in_border_ring(9, 4, 10, 8, 2));
+        assert!(in_border_ring(5, 7, 10, 8, 2));
+        assert!(!in_border_ring(5, 4, 10, 8, 2));
+        assert!(!in_border_ring(2, 2, 10, 8, 2));
+    }
+
+    #[test]
+    fn border_outer_expande_pela_espessura() {
+        let b = BorderSpec { x: 10, y: 20, width: 100, height: 50, thickness: 3, color: (0, 0, 0) };
+        assert_eq!(b.outer(), PreviewRect { x: 7, y: 17, width: 106, height: 56 });
     }
 
     #[test]

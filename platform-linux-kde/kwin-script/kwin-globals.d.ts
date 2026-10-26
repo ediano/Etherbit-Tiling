@@ -113,6 +113,14 @@ interface KWinWindow {
    * real do KWin (Plasma 6): `Window::setMaximize(bool vertically, bool horizontally)`.
    */
   setMaximize?(vertically: boolean, horizontally: boolean): void;
+  /** Geometria do quadro mudou (inclusive por resize do PRÓPRIO cliente). Opcional/defensivo (ADR 0070). */
+  readonly frameGeometryChanged?: KWinSignal<[]>;
+  /** Título mudou (regras `title:` da lista de exceções). Opcional/defensivo (ADR 0070). */
+  readonly captionChanged?: KWinSignal<[]>;
+  /** Janela trocou de monitor. Opcional/defensivo (ADR 0070). */
+  readonly outputChanged?: KWinSignal<[]>;
+  /** Janela trocou de desktop virtual. Opcional/defensivo (ADR 0070). */
+  readonly desktopsChanged?: KWinSignal<[]>;
 }
 
 /** Sinal Qt exposto ao script. */
@@ -162,6 +170,14 @@ interface KWinWorkspace {
   readonly windowAdded: KWinSignal<[KWinWindow]>;
   readonly windowRemoved: KWinSignal<[KWinWindow]>;
   readonly windowActivated: KWinSignal<[KWinWindow]>;
+  /** Monitores conectados/removidos/reconfigurados. Opcional/defensivo (ADR 0070). */
+  readonly screensChanged?: KWinSignal<[]>;
+  /** Troca do desktop virtual atual. Opcional/defensivo (ADR 0070). */
+  readonly currentDesktopChanged?: KWinSignal<[]>;
+  /** Desktops virtuais criados/removidos/reordenados. Opcional/defensivo (ADR 0070). */
+  readonly desktopsChanged?: KWinSignal<[]>;
+  /** Envia a janela para o monitor dado (move entre monitores, ADR 0070). Opcional/defensivo. */
+  sendClientToScreen?(window: KWinWindow, output: KWinOutput): void;
 
   /** Espaço útil (descontando painéis) do monitor para a janela/área dada. */
   clientArea(option: ClientAreaOption, output: KWinOutput, desktop?: unknown): QRect;

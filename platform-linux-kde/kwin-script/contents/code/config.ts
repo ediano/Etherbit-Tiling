@@ -19,6 +19,12 @@ export interface TilingConfig {
   /// `monitor` é o NOME estável do output (ADR 0056). Só trafega do daemon → ponte (hidratação na carga);
   /// a ponte reescreve via `SetDisabledGroups`. Não é uma chave do kwinrc.
   disabled_groups: Array<{ monitor: string; workspace: number }>;
+  /// Gap EXTERNO independente (px); `null` = segue o `gap` único (ADR 0068/0070).
+  outer_gap: number | null;
+  /// Smart gaps (COSMIC): sem gaps com uma única janela no workspace.
+  smart_gaps: boolean;
+  /// Inserção de janela nova: `focus` (COSMIC — racha a focada) ou `cyclic` (ADR 0030).
+  insert_mode: string;
 }
 
 /// Deve casar 1:1 com `impl Default for Config` em daemon/src/config.rs.
@@ -33,6 +39,9 @@ export const DEFAULT_CONFIG: TilingConfig = {
   rounded_corners: true,
   corner_radius: 12,
   disabled_groups: [],
+  outer_gap: null,
+  smart_gaps: false,
+  insert_mode: 'focus',
 };
 
 /// Faz parse defensivo do JSON do daemon, completando campos ausentes com o padrão.
