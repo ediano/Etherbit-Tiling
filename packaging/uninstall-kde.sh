@@ -30,6 +30,10 @@ t() {
                      pt='>> Removendo daemon, helper de preview e unit\n' ;;
     purge_config)    en='>> ETHERBIT_PURGE=1 — removing user configuration\n'
                      pt='>> ETHERBIT_PURGE=1 — removendo configuração do usuário\n' ;;
+    shortcuts_restored) en='>> Native KWin shortcuts restored.\n'
+                     pt='>> Atalhos nativos do KWin restaurados.\n' ;;
+    warn_no_gdbus)   en='warning: gdbus not found — restore the KWin shortcuts in System Settings → Shortcuts.\n'
+                     pt='aviso: gdbus não encontrado — restaure os atalhos do KWin em Configurações do Sistema → Atalhos.\n' ;;
     config_kept)     en='>> Configuration preserved (%s). Use ETHERBIT_PURGE=1 to remove it.\n'
                      pt='>> Configuração preservada (%s). Use ETHERBIT_PURGE=1 para remover.\n' ;;
     done_title)      en='\nUninstall complete.\n'
@@ -64,6 +68,39 @@ QDBUS="$(command -v qdbus6 || command -v qdbus-qt6 || command -v qdbus || true)"
 if [ -n "$QDBUS" ]; then
   "$QDBUS" org.kde.KWin /KWin reconfigure || true
 fi
+
+# --- Atalhos nativos do KWin que colidem com os do Etherbit (ADR 0070) ----------
+# Os padrões do KWin ocupam Meta+setas (Quick Tile), Meta+Shift+setas (mover p/ a tela vizinha) e
+# Meta+Alt+setas (Switch Window). Um `registerShortcut` de KWin Script que esbarra numa tecla ocupada fica
+# SEM tecla. Liberamos esses padrões em runtime pelo kglobalaccel (gdbus: marshala `a(ai)`, que o qdbus
+# não sabe), guardando os valores originais para o desinstalador restaurar. Best-effort: qualquer falha é
+# ignorada (o usuário ainda pode reatribuir em Configurações do Sistema → Atalhos).
+KGA_DEST="org.kde.kglobalaccel"
+KGA_PATH="/kglobalaccel"
+KGA_IFACE="org.kde.KGlobalAccel"
+KDE_SHORTCUTS_BACKUP="${XDG_STATE_HOME:-$HOME/.local/state}/etherbit-tiling/kde-shortcuts-backup"
+KWIN_CONFLICTS="Window Quick Tile Left|Window Quick Tile Right|Window Quick Tile Top|Window Quick Tile Bottom|Window to Next Screen|Window to Previous Screen|Switch Window Left|Switch Window Right|Switch Window Up|Switch Window Down"
+
+# kga_set <ação-kwin> <lista GVariant a(ai)> — define as teclas de uma ação do componente `kwin`.
+kga_set() {
+  gdbus call --session --dest "$KGA_DEST" --object-path "$KGA_PATH" \
+    --method "$KGA_IFACE.setForeignShortcutKeys" "['kwin', '$1', 'KWin', '']" "$2" >/dev/null 2>&1
+}
+
+kde_shortcuts_restore() {
+  [ -s "$KDE_SHORTCUTS_BACKUP" ] || return 0
+  if ! command -v gdbus >/dev/null; then
+    t warn_no_gdbus
+    return 0
+  fi
+  local action keys
+  while IFS="$(printf '\t')" read -r action keys; do
+    [ -n "$action" ] && kga_set "$action" "${keys:-@a(ai) []}" || true
+  done < "$KDE_SHORTCUTS_BACKUP"
+  rm -f "$KDE_SHORTCUTS_BACKUP"
+  t shortcuts_restored
+}
+kde_shortcuts_restore
 
 # --- Serviço systemd (--user) --------------------------------------------------
 if command -v systemctl >/dev/null; then

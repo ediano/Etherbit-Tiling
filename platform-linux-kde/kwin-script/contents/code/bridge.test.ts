@@ -32,6 +32,18 @@ import {
   buildTabBarViews,
   serializeTabBars,
   parseTabActions,
+  sameRect,
+  sizeRefused,
+  containedIn,
+  centerInSlot,
+  directionZone,
+  neighborInDirection,
+  pushFocus,
+  pickInsertAnchor,
+  cycleStackActive,
+  toggleFloating,
+  swapInStacks,
+  type Rect,
   type Stack,
   type TabBar,
   type TreeNode,
@@ -55,6 +67,7 @@ const win: WindowSnapshot = {
   min_width: 0,
   min_height: 0,
   maximized: false,
+  title: 'Konsole',
 };
 
 describe('serializeWindows / serializeMonitors', () => {
@@ -252,6 +265,7 @@ describe('estado de tiling por grupo e árvores (ids string)', () => {
       trees: [{ monitor: 0, workspace: 0, root: { win: 1 } }],
       focused_id: 2,
       mins: [], // sem mins no caminho de sync (ADR 0064; só o resize popula)
+      floating: [],
     });
   });
 
@@ -264,6 +278,7 @@ describe('estado de tiling por grupo e árvores (ids string)', () => {
       trees: [],
       focused_id: 0,
       mins: [],
+      floating: [],
     });
   });
 
@@ -814,5 +829,86 @@ describe('barras de abas visuais (ADR 0039 — helper de overlay)', () => {
     const key = orderKey(0, 0);
     expect(toggleStackGroup(stacks, key, ['a', 'b'], 'z')).toBe(true);
     expect(stacks.get(key)?.[0]?.active).toBe('a');
+  });
+});
+
+describe('paridade COSMIC (ADR 0070)', () => {
+  const r = (x: number, y: number, width: number, height: number): Rect => ({
+    x,
+    y,
+    width,
+    height,
+  });
+
+  it('recusa de tamanho: menor e contido, centralização', () => {
+    expect(sizeRefused(r(0, 0, 805, 1000), r(0, 0, 797, 990), 2)).toBe(true);
+    expect(sizeRefused(r(0, 0, 800, 600), r(0, 0, 900, 500), 2)).toBe(false);
+    expect(sizeRefused(r(0, 0, 800, 600), r(0, 0, 0, 0), 2)).toBe(false);
+    expect(containedIn(r(10, 10, 100, 100), r(9, 10, 100, 100), 2)).toBe(true);
+    expect(containedIn(r(10, 10, 100, 100), r(20, 20, 100, 100), 2)).toBe(false);
+    expect(centerInSlot(r(100, 50, 805, 1000), r(0, 0, 797, 990))).toEqual(r(104, 55, 797, 990));
+    expect(sameRect(r(1, 2, 3, 4), r(1, 2, 3, 4))).toBe(true);
+    expect(sameRect(r(1, 2, 3, 4), r(1, 2, 3, 5))).toBe(false);
+  });
+
+  it('neighborInDirection atravessa monitores e prefere o vizinho de frente', () => {
+    const rects = new Map<string, Rect>([
+      ['a', r(8, 8, 492, 784)],
+      ['b', r(508, 8, 484, 388)],
+      ['c', r(508, 404, 484, 388)],
+      ['d', r(1008, 8, 984, 784)],
+    ]);
+    expect(neighborInDirection(rects, 'a', 'right')).toBe('b');
+    expect(neighborInDirection(rects, 'c', 'left')).toBe('a');
+    expect(neighborInDirection(rects, 'b', 'down')).toBe('c');
+    expect(neighborInDirection(rects, 'b', 'right')).toBe('d');
+    expect(neighborInDirection(rects, 'a', 'left')).toBeNull();
+    expect(directionZone('up')).toBe('top');
+    expect(directionZone('down')).toBe('bottom');
+  });
+
+  it('pushFocus/pickInsertAnchor pulam a janela nova', () => {
+    const mru: string[] = [];
+    pushFocus(mru, 'a');
+    pushFocus(mru, 'b');
+    pushFocus(mru, 'nova');
+    pushFocus(mru, '');
+    expect(mru).toEqual(['nova', 'b', 'a']);
+    expect(pickInsertAnchor(mru, new Set(['a', 'b', 'nova']), new Set(['a', 'b']))).toBe('b');
+    expect(pickInsertAnchor(mru, new Set(['nova']), new Set(['a']))).toBe('');
+  });
+
+  it('cycleStackActive, toggleFloating e swapInStacks', () => {
+    const stacks = new Map<string, Stack[]>([
+      ['DP-1:0', [{ members: ['a', 'b', 'c'], active: 'a' }]],
+    ]);
+    expect(cycleStackActive(stacks, 'a', 1)).toBe('b');
+    expect(cycleStackActive(stacks, 'a', -1)).toBe('c');
+    expect(cycleStackActive(stacks, 'z', 1)).toBeNull();
+    const f = new Set<string>();
+    expect(toggleFloating(f, 'a')).toBe(true);
+    expect(toggleFloating(f, 'a')).toBe(false);
+    swapInStacks(stacks, 'c', 'x');
+    expect(stacks.get('DP-1:0')?.[0]).toEqual({ members: ['a', 'b', 'x'], active: 'x' });
+  });
+
+  it('serializeState traduz os flutuantes para ids de transporte', () => {
+    const out = JSON.parse(
+      serializeState(
+        new Map(),
+        new Set(),
+        new Map([
+          ['a', 1],
+          ['b', 2],
+        ]),
+        new Map(),
+        'a',
+        new Map([['DP-1', 0]]),
+        [],
+        ['b', 'desconhecida'],
+      ),
+    );
+    expect(out.floating).toEqual([2]);
+    expect(out.focused_id).toBe(1);
   });
 });

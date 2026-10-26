@@ -32,6 +32,9 @@ describe('DEFAULT_CONFIG', () => {
       rounded_corners: true,
       corner_radius: 12,
       disabled_groups: [],
+      outer_gap: null,
+      smart_gaps: false,
+      insert_mode: 'focus',
     });
   });
 

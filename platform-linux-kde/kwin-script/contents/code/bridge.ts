@@ -23,6 +23,8 @@ export interface WindowSnapshot {
   min_height: number;
   /// Janela maximizada no momento (estado). Dispara o tratamento de unmaximize no core.
   maximized: boolean;
+  /// Título (`caption`) — alvo das regras `title:` da lista de exceções (ADR 0068/0070).
+  title: string;
 }
 
 /// Espelha o `MonitorDto` do daemon (área útil de um monitor).
@@ -100,6 +102,7 @@ export function serializeWindows(windows: WindowSnapshot[]): string {
       min_width: roundPx(w.min_width),
       min_height: roundPx(w.min_height),
       maximized: w.maximized,
+      title: w.title,
     })),
   );
 }
@@ -608,6 +611,7 @@ export function serializeState(
   focusedStable: string,
   nameToIndex: Map<string, number>,
   mins: WinMin[] = [],
+  floating: Iterable<string> = [],
 ): string {
   // O estado da ponte é chaveado pelo NOME do output (ADR 0056); o contrato do daemon/core usa o ÍNDICE
   // numérico atual (WorkArea.index). Traduz nome→índice aqui. Grupo cujo monitor está DESCONECTADO
@@ -669,12 +673,21 @@ export function serializeState(
       minDtos.push({ id: t, min_width: m.min_width, min_height: m.min_height });
     }
   }
+  // Janelas flutuantes por escolha do usuário (Meta+G, ADR 0070), traduzidas stable→transport.
+  const floatingDtos: number[] = [];
+  for (const sid of floating) {
+    const t = transportOf.get(sid);
+    if (t !== undefined) {
+      floatingDtos.push(t);
+    }
+  }
   return JSON.stringify({
     stacks: stackDtos,
     disabled_groups: disabledDtos,
     trees: treeDtos,
     focused_id,
     mins: minDtos,
+    floating: floatingDtos,
   });
 }
 
@@ -1070,6 +1083,174 @@ export function setActiveMember(stacks: Map<string, Stack[]>, member: string): b
     }
   }
   return false;
+}
+
+// ---- Paridade COSMIC (ADR 0070, espelho do GNOME — ADR 0068) ----
+
+/// Igualdade exata de dois retângulos.
+export function sameRect(a: Rect, b: Rect): boolean {
+  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+}
+
+/// `true` se o cliente RECUSOU o tamanho do slot: ficou menor em algum eixo e não maior em nenhum
+/// (dentro de `epsilon`) — size increments de terminal, tamanho máximo. Maior que o slot é mínimo.
+export function sizeRefused(want: Rect, got: Rect, epsilon: number): boolean {
+  if (got.width <= 0 || got.height <= 0) {
+    return false;
+  }
+  const notBigger = got.width <= want.width + epsilon && got.height <= want.height + epsilon;
+  const smaller = got.width < want.width - epsilon || got.height < want.height - epsilon;
+  return notBigger && smaller;
+}
+
+/// `true` se `got` cabe inteiro dentro de `want` (tolerância `epsilon`).
+export function containedIn(want: Rect, got: Rect, epsilon: number): boolean {
+  return (
+    got.x >= want.x - epsilon &&
+    got.y >= want.y - epsilon &&
+    got.x + got.width <= want.x + want.width + epsilon &&
+    got.y + got.height <= want.y + want.height + epsilon
+  );
+}
+
+/// Posição CENTRALIZADA de uma janela que recusou o tamanho do slot: o tamanho aceito pelo cliente,
+/// com a folga dividida igualmente nas bordas. Inteiros.
+export function centerInSlot(want: Rect, got: Rect): Rect {
+  return {
+    x: want.x + Math.floor(Math.max(0, want.width - got.width) / 2),
+    y: want.y + Math.floor(Math.max(0, want.height - got.height) / 2),
+    width: got.width,
+    height: got.height,
+  };
+}
+
+/// Direção de navegação/movimento por teclado.
+export type Direction = 'left' | 'right' | 'up' | 'down';
+
+/// Zona do `MoveWindow` correspondente a uma direção (a janela vai para AQUELE lado do vizinho).
+export function directionZone(dir: Direction): 'left' | 'right' | 'top' | 'bottom' {
+  return dir === 'up' ? 'top' : dir === 'down' ? 'bottom' : dir;
+}
+
+/// Vizinho de `fromId` na direção `dir` pela geometria (px absolutos — atravessa monitores).
+/// Candidatos: inteiramente além da borda naquele lado (tolerância `epsilon` absorve o gap).
+/// Preferência: sobreposição no eixo perpendicular, menor distância de borda, centro mais próximo.
+export function neighborInDirection(
+  rects: Map<string, Rect>,
+  fromId: string,
+  dir: Direction,
+  epsilon = 2,
+): string | null {
+  const a = rects.get(fromId);
+  if (!a) {
+    return null;
+  }
+  const horizontal = dir === 'left' || dir === 'right';
+  let best: { id: string; overlap: boolean; dist: number; perp: number } | null = null;
+  for (const [id, b] of rects) {
+    if (id === fromId) {
+      continue;
+    }
+    let dist: number;
+    if (dir === 'left') {
+      dist = a.x - (b.x + b.width);
+    } else if (dir === 'right') {
+      dist = b.x - (a.x + a.width);
+    } else if (dir === 'up') {
+      dist = a.y - (b.y + b.height);
+    } else {
+      dist = b.y - (a.y + a.height);
+    }
+    if (dist < -epsilon) {
+      continue;
+    }
+    const overlap = horizontal
+      ? Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y) > 0
+      : Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x) > 0;
+    const perp = horizontal
+      ? Math.abs(a.y + a.height / 2 - (b.y + b.height / 2))
+      : Math.abs(a.x + a.width / 2 - (b.x + b.width / 2));
+    const cand = { id, overlap, dist: Math.max(0, dist), perp };
+    if (
+      !best ||
+      (cand.overlap && !best.overlap) ||
+      (cand.overlap === best.overlap &&
+        (cand.dist < best.dist || (cand.dist === best.dist && cand.perp < best.perp)))
+    ) {
+      best = cand;
+    }
+  }
+  return best ? best.id : null;
+}
+
+/// Registra `id` no topo do histórico de foco (MRU), sem duplicatas, limitado a `cap` entradas.
+export function pushFocus(mru: string[], id: string, cap = 32): void {
+  if (id === '') {
+    return;
+  }
+  const idx = mru.indexOf(id);
+  if (idx !== -1) {
+    mru.splice(idx, 1);
+  }
+  mru.unshift(id);
+  if (mru.length > cap) {
+    mru.length = cap;
+  }
+}
+
+/// Âncora da inserção COSMIC: a janela mais recentemente focada que JÁ está no grid (`tiled`) e ainda
+/// existe (`present`). No `windowAdded` o KWin já ativou a janela NOVA — ela é pulada por não estar em
+/// `tiled`, e a anterior vira o alvo do split. `''` = nenhuma.
+export function pickInsertAnchor(mru: string[], present: Set<string>, tiled: Set<string>): string {
+  for (const id of mru) {
+    if (present.has(id) && tiled.has(id)) {
+      return id;
+    }
+  }
+  return '';
+}
+
+/// Avança a aba ativa do stack que contém `member` em `step` (±1, circular). Devolve o novo ativo, ou
+/// `null` se `member` não está em stack nenhum.
+export function cycleStackActive(
+  stacks: Map<string, Stack[]>,
+  member: string,
+  step: number,
+): string | null {
+  for (const list of stacks.values()) {
+    for (const s of list) {
+      const idx = s.members.indexOf(member);
+      if (idx === -1 || s.members.length === 0) {
+        continue;
+      }
+      const n = s.members.length;
+      const next = s.members[(((idx + step) % n) + n) % n] ?? member;
+      s.active = next;
+      return next;
+    }
+  }
+  return null;
+}
+
+/// Liga/desliga o float de `id` (Meta+G). Devolve `true` se agora flutua.
+export function toggleFloating(floating: Set<string>, id: string): boolean {
+  if (floating.has(id)) {
+    floating.delete(id);
+    return false;
+  }
+  floating.add(id);
+  return true;
+}
+
+/// Troca `a` ⇄ `b` nos membros/ativa dos stacks — acompanha o swap de folhas do core (`center` local).
+export function swapInStacks(stacks: Map<string, Stack[]>, a: string, b: string): void {
+  const relabel = (id: string): string => (id === a ? b : id === b ? a : id);
+  for (const list of stacks.values()) {
+    for (const s of list) {
+      s.members = s.members.map(relabel);
+      s.active = relabel(s.active);
+    }
+  }
 }
 
 function isFiniteNumber(value: unknown): value is number {

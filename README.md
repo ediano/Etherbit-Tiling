@@ -31,7 +31,9 @@ eventos de janela e aplica as decisões do core.
 - **Arquitetura nativa e resiliente** — camada macOS em Swift sobre as APIs estáveis da Apple
   (Accessibility); não quebra a cada atualização do macOS.
 
-### Atalhos (GNOME, padrão inspirado no COSMIC)
+### Atalhos (GNOME e KDE, padrão inspirado no COSMIC)
+
+No KDE, `Super` é a tecla `Meta`. A exceção é o liga/desliga da chave geral, que no KDE é `Meta+Shift+Y`.
 
 | Atalho                | Ação                                                       |
 | --------------------- | ---------------------------------------------------------- |
@@ -48,6 +50,11 @@ eventos de janela e aplica as decisões do core.
 Os atalhos nativos do GNOME que colidem (meia-tela, maximizar, mover entre monitores, trava de
 rotação em `Super+O`) ficam desligados enquanto a extensão está ativa e são restaurados ao desativá-la
 (chave `override-conflicting-keys`). Detalhes em [rules/0068](rules/0068-paridade-cosmic-no-gnome.md).
+
+No KDE, o instalador libera os padrões do KWin que colidem: Quick Tile (`Meta`+setas), mover para a tela
+vizinha (`Meta+Shift`+setas) e Switch Window (`Meta+Alt`+setas). O desinstalador os restaura. Para manter
+os atalhos do KWin, instale com `ETHERBIT_KEEP_KDE_SHORTCUTS=1`. Detalhes em
+[rules/0070](rules/0070-paridade-cosmic-no-kde.md).
 
 ---
 

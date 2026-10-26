@@ -45,6 +45,18 @@ import {
   buildTabBarViews,
   serializeTabBars,
   parseTabActions,
+  sameRect,
+  sizeRefused,
+  containedIn,
+  centerInSlot,
+  directionZone,
+  neighborInDirection,
+  pushFocus,
+  pickInsertAnchor,
+  cycleStackActive,
+  toggleFloating,
+  swapInStacks,
+  type Direction,
   type Stack,
   type TreeNode,
   type Rect,
@@ -109,7 +121,16 @@ function loadConfig(): TilingConfig {
     // Não é chave do kwinrc: os grupos desligados vivem no daemon (ADR 0057) e são hidratados via
     // GetConfig na carga (ver `hydrateDisabledGroups`). Aqui fica só o default do contrato.
     disabled_groups: DEFAULT_CONFIG.disabled_groups,
+    // Paridade COSMIC (ADR 0070): `outerGap` -1 = segue o gap único; `focusInsert` = modo `focus`.
+    outer_gap: outerGapFromConfig(readConfig('outerGap', -1) as number),
+    smart_gaps: readConfig('smartGaps', DEFAULT_CONFIG.smart_gaps),
+    insert_mode: (readConfig('focusInsert', true) as boolean) ? 'focus' : 'cyclic',
   };
+}
+
+/// `outerGap` do kwinrc → contrato: negativo = `null` (segue o `gap` único).
+function outerGapFromConfig(raw: number): number | null {
+  return typeof raw === 'number' && raw >= 0 ? raw : null;
 }
 
 /// Empurra a config lida do kwinrc para o daemon: ele persiste no TOML. NÃO mexe em autostart (o KDE
@@ -131,6 +152,21 @@ function pushConfigToDaemon(cfg: TilingConfig): void {
   // empacota array de strings de forma confiável no QJSEngine. O daemon expõe `SetIgnoreListJson`
   // exatamente para esta ponte (ver ADR 0009/0055). O core passa a flutuar essas classes (is_tileable).
   callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetIgnoreListJson', JSON.stringify(cfg.ignore_list));
+  // Paridade COSMIC (ADR 0070): borda ativa, smart gaps, modo de inserção e gap externo.
+  callDBus(
+    BUS_NAME,
+    OBJECT_PATH,
+    IFACE,
+    'SetActiveBorder',
+    cfg.active_border,
+    cfg.border_color,
+    cfg.border_width,
+  );
+  callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetSmartGaps', cfg.smart_gaps);
+  callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetInsertMode', cfg.insert_mode);
+  if (cfg.outer_gap !== null) {
+    callDBus(BUS_NAME, OBJECT_PATH, IFACE, 'SetOuterGap', cfg.outer_gap);
+  }
 }
 
 const config = loadConfig();
@@ -242,6 +278,21 @@ let applying = false;
 /// detectamos "o daemon não respondeu ao sync anterior" — avisamos no próximo evento de janela.
 let syncSeq = 0;
 let syncAckSeq = 0;
+
+// ---- Paridade COSMIC (ADR 0070, espelho do GNOME — ADR 0068) ----
+
+/// Histórico de foco (MRU, internalIds): a âncora da inserção é a última focada JÁ tilada.
+const focusMru: string[] = [];
+/// Janelas que o usuário pôs para flutuar (Meta+G).
+const floating = new Set<string>();
+/// Slot que o core deu a cada janela no último apply (já clampado). Base da recusa de tamanho.
+let lastApplied = new Map<string, Rect>();
+/// Tolerância (px) da recusa de tamanho — espelha `RELAYOUT_CONVERGE_EPSILON_PX` do GNOME.
+const REFUSAL_EPSILON_PX = 2;
+/// Passo (px) do resize por teclado.
+const KEY_RESIZE_STEP_PX = 48;
+/// Assinatura da última borda enviada ao helper ('' = escondida).
+let lastBorderKey = '';
 
 /// Id estável de sessão da janela (QUuid → string). Coagido para servir de chave de mapa.
 function windowId(win: KWinWindow): string {
@@ -587,8 +638,10 @@ function releaseToFloating(): void {
     applying = false;
   }
   stackHidden.clear();
-  // Tiling desligado: nenhuma barra de abas deve permanecer no overlay.
+  lastApplied.clear();
+  // Tiling desligado: nenhuma barra de abas nem borda deve permanecer no overlay.
   pushTabs([]);
+  updateBorder();
 }
 
 /// Coleta janelas + monitores na ORDEM estável, pede o layout ao daemon (com o estado de árvores +
@@ -712,6 +765,7 @@ function retile(): void {
         min_width: min ? Math.max(0, Math.round(min.width)) : 0,
         min_height: min ? Math.max(0, Math.round(min.height)) : 0,
         maximized: isMaximized(entry.win),
+        title: entry.win.caption || '',
       });
     }
   }
@@ -719,8 +773,15 @@ function retile(): void {
   // Guarda os mapas de transporte para o drop (MoveWindow) reusar durante o arrasto.
   lastTransportOf = transportOf;
   lastTransportToStable = transportToStable;
-  const aw = workspace.activeWindow;
-  const focusedStable = aw && isLiveWindow(aw) ? windowId(aw) : '';
+  // Âncora da inserção COSMIC (ADR 0070): a última focada JÁ tilada e não flutuante — no `windowAdded`
+  // o KWin já ativou a janela NOVA, que ainda não está no grid.
+  const tiledNow = new Set<string>();
+  for (const sid of everTiled) {
+    if (!floating.has(sid)) {
+      tiledNow.add(sid);
+    }
+  }
+  const focusedStable = pickInsertAnchor(focusMru, new Set(transportOf.keys()), tiledNow);
 
   syncSeq += 1;
   const mySeq = syncSeq;
@@ -736,8 +797,14 @@ function retile(): void {
     'SyncWindows',
     serializeWindows(snapshots),
     serializeMonitors(monitors),
-    serializeState(stacks, disabled, transportOf, trees, focusedStable, nameToIndex),
+    serializeState(stacks, disabled, transportOf, trees, focusedStable, nameToIndex, [], floating),
     (layoutJson: string) => {
+      // Resposta ATRASADA (ADR 0070): um sync mais novo já foi enviado com o mesmo estado-base; aplicar
+      // esta sobrescreveria `trees` e a geometria com um snapshot velho. Só confirma e descarta.
+      if (mySeq < syncSeq) {
+        syncAckSeq = Math.max(syncAckSeq, mySeq);
+        return;
+      }
       syncAckSeq = mySeq;
       // Persiste as árvores reconciliadas (traduzidas de volta para internalId e para a chave por nome).
       trees = parseLayoutTrees(layoutJson, transportToStable, indexToName);
@@ -758,6 +825,8 @@ function retile(): void {
         }
       }
 
+      const prevApplied = lastApplied;
+      const nextApplied = new Map<string, Rect>();
       applying = true;
       // Alguma janela do snapshot morreu entre o envio do SyncWindows e esta resposta? Ao detectar,
       // pulamos a referência inválida (sem abortar o apply) e re-tilamos uma vez no fim para o daemon
@@ -820,17 +889,28 @@ function retile(): void {
             const mi = win.output ? outputs.indexOf(win.output) : -1;
             const area = mi >= 0 ? monitors[mi] : undefined;
             const g = area ? clampToWorkArea(command, area) : command;
-            win.frameGeometry = {
-              x: g.x,
-              y: g.y,
-              width: g.width,
-              height: g.height,
-            };
+            const slot = { x: g.x, y: g.y, width: g.width, height: g.height };
+            // Recusa de tamanho (ADR 0070): o MESMO slot já foi pedido e o cliente ficou menor (size
+            // increments de terminal, tamanho máximo). Reenviar só reproduz a recusa; centraliza.
+            const prev = prevApplied.get(wid);
+            const fg = win.frameGeometry;
+            const cur = { x: fg.x, y: fg.y, width: fg.width, height: fg.height };
+            if (prev && sameRect(prev, slot) && sizeRefused(slot, cur, REFUSAL_EPSILON_PX)) {
+              const c = centerInSlot(slot, cur);
+              if (cur.x !== c.x || cur.y !== c.y) {
+                win.frameGeometry = c;
+              }
+            } else {
+              win.frameGeometry = slot;
+            }
+            nextApplied.set(wid, slot);
           }
         }
       } finally {
         applying = false;
       }
+      lastApplied = nextApplied;
+      updateBorder();
       stackHidden.clear();
       for (const sid of shouldHide) {
         stackHidden.add(sid);
@@ -914,6 +994,7 @@ function drainTabActions(): void {
     // geometria idêntica — sem isso, um helper reiniciado ficaria em branco até a próxima mudança de
     // layout (só a janela ativa do grupo visível). Cliques reais nunca caem aqui (drenam ≥1 ação).
     lastTabsKey = '';
+    lastBorderKey = '';
     retile();
   });
 }
@@ -1215,6 +1296,7 @@ function onMoveStart(win: KWinWindow): void {
     draggedId = windowId(win);
     lastCursor = null;
     resolving = false;
+    updateBorder();
     return;
   }
   if (win.resize) {
@@ -1326,6 +1408,7 @@ function onMoveFinish(win: KWinWindow): void {
   updateOutline(null); // esconde outline nativo + preview translúcido (helper)
   const dragged = draggedId;
   draggedId = null;
+  updateBorder();
   lastCursor = null;
   resolving = false;
 
@@ -1503,6 +1586,25 @@ function applyResize(win: KWinWindow): void {
 
 /// Conecta os sinais de move interativo de uma janela (start/step/finish).
 function trackWindow(win: KWinWindow): void {
+  // Recusa de tamanho + borda ativa (ADR 0070): um resize do PRÓPRIO cliente depois do apply.
+  win.frameGeometryChanged?.connect(() => onFrameChanged(win));
+  // Exceções por título: só re-tila se houver regras `title:` (evita retile a cada título de aba web).
+  win.captionChanged?.connect(() => {
+    if (!applying && config.ignore_list.some((r) => r.trim().toLowerCase().startsWith('title:'))) {
+      retile();
+    }
+  });
+  // Troca de monitor/desktop da janela (inclusive feita pelo KWin no hotplug).
+  win.outputChanged?.connect(() => {
+    if (!applying) {
+      retile();
+    }
+  });
+  win.desktopsChanged?.connect(() => {
+    if (!applying) {
+      retile();
+    }
+  });
   win.interactiveMoveResizeStarted.connect(() => onMoveStart(win));
   win.interactiveMoveResizeStepped.connect(() => onMoveStep());
   win.interactiveMoveResizeFinished.connect(() => onMoveFinish(win));
@@ -1520,8 +1622,446 @@ function trackWindow(win: KWinWindow): void {
         spawnUnmaximizeIfBorn(win);
         retile();
       }
+      updateBorder();
     });
   }
+}
+
+/// Mudança de geometria FORA do nosso apply (ADR 0070): se a janela recusou o tamanho do slot (ficou
+/// menor e contida), centraliza no slot; e reposiciona a borda se for a janela ativa. Ignora arrasto e
+/// resize interativos (o usuário está no controle) e a nossa própria escrita (`applying`).
+function onFrameChanged(win: KWinWindow): void {
+  if (applying || draggedId !== null || resizeStart !== null || !isLiveWindow(win)) {
+    return;
+  }
+  try {
+    const want = lastApplied.get(windowId(win));
+    if (want) {
+      const fg = win.frameGeometry;
+      const cur = { x: fg.x, y: fg.y, width: fg.width, height: fg.height };
+      if (
+        sizeRefused(want, cur, REFUSAL_EPSILON_PX) &&
+        containedIn(want, cur, REFUSAL_EPSILON_PX)
+      ) {
+        const c = centerInSlot(want, cur);
+        if (cur.x !== c.x || cur.y !== c.y) {
+          applying = true;
+          try {
+            win.frameGeometry = c;
+          } finally {
+            applying = false;
+          }
+        }
+      }
+    }
+    if (workspace.activeWindow === win) {
+      updateBorder();
+    }
+  } catch (e) {
+    // referência morta — ignora
+  }
+}
+
+/// Borda da janela ativa (active hint, ADR 0070), desenhada pelo helper (um KWin Script não pinta).
+/// Some com o tiling/config desligados, sem foco, em maximizada/fullscreen/minimizada e no arrasto.
+function updateBorder(): void {
+  let key = '';
+  let rect: QRect | null = null;
+  try {
+    const aw = workspace.activeWindow;
+    const visible =
+      !!aw &&
+      isLiveWindow(aw) &&
+      tilingEnabled &&
+      config.active_border &&
+      config.border_width > 0 &&
+      draggedId === null &&
+      aw.normalWindow &&
+      !aw.minimized &&
+      !aw.fullScreen &&
+      !maximizedIds.has(windowId(aw)) &&
+      !isMaximized(aw);
+    if (visible && aw) {
+      rect = aw.frameGeometry;
+      key = `${rect.x},${rect.y},${rect.width},${rect.height}`;
+    }
+  } catch (e) {
+    key = '';
+  }
+  if (key === lastBorderKey) {
+    return;
+  }
+  lastBorderKey = key;
+  if (!rect) {
+    callDBus(PREVIEW_BUS, PREVIEW_PATH, PREVIEW_IFACE, 'HideBorder');
+    return;
+  }
+  callDBus(
+    PREVIEW_BUS,
+    PREVIEW_PATH,
+    PREVIEW_IFACE,
+    'ShowBorder',
+    Math.round(rect.x),
+    Math.round(rect.y),
+    Math.round(rect.width),
+    Math.round(rect.height),
+    config.border_width,
+    config.border_color,
+  );
+}
+
+// ---- Atalhos COSMIC (ADR 0070): foco/move/swap/resize/orientação/float/abas ----
+
+/// `true` se a janela está no desktop virtual atual (ou em todos).
+function onCurrentDesktop(win: KWinWindow): boolean {
+  const wd = win.desktops ?? [];
+  return win.onAllDesktops || wd.length === 0 || wd.indexOf(workspace.currentDesktop) !== -1;
+}
+
+/// Frames das janelas normais VISÍVEIS do desktop atual, por internalId (atravessa monitores).
+function visibleRects(): { rects: Map<string, Rect>; byId: Map<string, KWinWindow> } {
+  const rects = new Map<string, Rect>();
+  const byId = new Map<string, KWinWindow>();
+  for (const win of workspace.windowList()) {
+    try {
+      if (!isLiveWindow(win) || !win.normalWindow || win.minimized || !onCurrentDesktop(win)) {
+        continue;
+      }
+      const g = win.frameGeometry;
+      const id = windowId(win);
+      rects.set(id, { x: g.x, y: g.y, width: g.width, height: g.height });
+      byId.set(id, win);
+    } catch (e) {
+      // referência morta — pula
+    }
+  }
+  return { rects, byId };
+}
+
+/// Janela ativa que está no grid (tilada), ou `null`.
+function focusedTiled(): KWinWindow | null {
+  const aw = workspace.activeWindow;
+  if (!aw || !isLiveWindow(aw) || !lastApplied.has(windowId(aw))) {
+    return null;
+  }
+  return aw;
+}
+
+/// Vizinho TILADO de `win` na direção, no MESMO monitor (move/swap operam na árvore do grupo).
+function tiledNeighbor(win: KWinWindow, dir: Direction): KWinWindow | null {
+  const { rects, byId } = visibleRects();
+  const tiled = new Map<string, Rect>();
+  for (const [id, r] of rects) {
+    const w = byId.get(id);
+    if (w && w.output === win.output && lastApplied.has(id)) {
+      tiled.set(id, r);
+    }
+  }
+  const next = neighborInDirection(tiled, windowId(win), dir);
+  return next === null ? null : (byId.get(next) ?? null);
+}
+
+/// Persiste as árvores devolvidas por MoveWindow/ResizeWindow/ToggleOrientation e re-tila.
+function applyTreesAndRetile(treesJson: string): void {
+  trees = parseLayoutTrees(treesJson, lastTransportToStable, lastIndexToName);
+  retile();
+}
+
+/// Meta+setas: foca a janela vizinha naquela direção.
+function focusDirection(dir: Direction): void {
+  const aw = workspace.activeWindow;
+  if (!aw || !isLiveWindow(aw)) {
+    return;
+  }
+  const { rects, byId } = visibleRects();
+  const next = neighborInDirection(rects, windowId(aw), dir);
+  const target = next === null ? null : byId.get(next);
+  if (target) {
+    workspace.activeWindow = target;
+  }
+}
+
+/// Meta+Shift+setas: move a janela para aquele lado da vizinha. Sem vizinha no monitor, envia ao
+/// monitor adjacente; membro de stack sai do grupo primeiro.
+function moveDirection(dir: Direction): void {
+  const win = focusedTiled();
+  if (!win) {
+    return;
+  }
+  const id = windowId(win);
+  if (removeIdFromStacks(stacks, id)) {
+    retile();
+    return;
+  }
+  const neighbor = tiledNeighbor(win, dir);
+  const idT = lastTransportOf.get(id);
+  const nT = neighbor ? lastTransportOf.get(windowId(neighbor)) : undefined;
+  if (neighbor && idT !== undefined && nT !== undefined) {
+    callDBus(
+      BUS_NAME,
+      OBJECT_PATH,
+      IFACE,
+      'MoveWindow',
+      serializeState(stacks, disabled, lastTransportOf, trees, id, lastNameToIndex),
+      String(idT),
+      String(nT),
+      directionZone(dir),
+      serializeScope('local'),
+      applyTreesAndRetile,
+    );
+    return;
+  }
+  // Monitor adjacente: vizinho pela geometria das work-areas.
+  const outputs = collectOutputs();
+  const areas = new Map<string, Rect>();
+  const byName = new Map<string, KWinOutput>();
+  for (const o of outputs) {
+    const a = workspace.clientArea(KWin.MaximizeArea, o, workspace.currentDesktop);
+    const name = outputNameOf(o);
+    areas.set(name, { x: a.x, y: a.y, width: a.width, height: a.height });
+    byName.set(name, o);
+  }
+  const targetName = neighborInDirection(areas, outputNameOf(win.output), dir);
+  const target = targetName === null ? undefined : byName.get(targetName);
+  if (target && workspace.sendClientToScreen) {
+    workspace.sendClientToScreen(win, target);
+    retile();
+  }
+}
+
+/// Meta+Alt+setas: troca a janela com a vizinha tilada (o core permuta as folhas — `center` local).
+function swapDirection(dir: Direction): void {
+  const win = focusedTiled();
+  const neighbor = win ? tiledNeighbor(win, dir) : null;
+  if (!win || !neighbor) {
+    return;
+  }
+  const a = windowId(win);
+  const b = windowId(neighbor);
+  const aT = lastTransportOf.get(a);
+  const bT = lastTransportOf.get(b);
+  if (aT === undefined || bT === undefined) {
+    return;
+  }
+  callDBus(
+    BUS_NAME,
+    OBJECT_PATH,
+    IFACE,
+    'MoveWindow',
+    serializeState(stacks, disabled, lastTransportOf, trees, a, lastNameToIndex),
+    String(aT),
+    String(bT),
+    'center',
+    serializeScope('local'),
+    (treesJson: string) => {
+      swapInStacks(stacks, a, b);
+      applyTreesAndRetile(treesJson);
+    },
+  );
+}
+
+/// Meta+Ctrl+setas: redimensiona pela borda direita/inferior; na borda da tela (árvore inalterada)
+/// tenta a borda oposta.
+function resizeFocused(edge: 'right' | 'bottom', delta: number): void {
+  const win = focusedTiled();
+  if (!win) {
+    return;
+  }
+  const id = windowId(win);
+  const idT = lastTransportOf.get(id);
+  if (idT === undefined) {
+    return;
+  }
+  const monitorsJson = serializeMonitors(monitorsFrom(collectOutputs()));
+  const mins = collectMins();
+  const before = JSON.stringify([...trees]);
+  const call = (e: string, onDone: (json: string) => void): void => {
+    callDBus(
+      BUS_NAME,
+      OBJECT_PATH,
+      IFACE,
+      'ResizeWindow',
+      monitorsJson,
+      serializeState(stacks, disabled, lastTransportOf, trees, id, lastNameToIndex, mins),
+      String(idT),
+      e,
+      delta,
+      onDone,
+    );
+  };
+  call(edge, (json: string) => {
+    const next = parseLayoutTrees(json, lastTransportToStable, lastIndexToName);
+    if (JSON.stringify([...next]) !== before) {
+      trees = next;
+      retile();
+      return;
+    }
+    call(edge === 'right' ? 'left' : 'top', applyTreesAndRetile);
+  });
+}
+
+/// Meta+O: alterna a orientação do split da janela ativa.
+function toggleOrientation(): void {
+  const win = focusedTiled();
+  if (!win) {
+    return;
+  }
+  const id = windowId(win);
+  const idT = lastTransportOf.get(id);
+  if (idT === undefined) {
+    return;
+  }
+  callDBus(
+    BUS_NAME,
+    OBJECT_PATH,
+    IFACE,
+    'ToggleOrientation',
+    serializeState(stacks, disabled, lastTransportOf, trees, id, lastNameToIndex),
+    String(idT),
+    applyTreesAndRetile,
+  );
+}
+
+/// Meta+G: alterna a janela ativa entre tiling e flutuante (ao flutuar, sai do stack).
+function toggleFloatingShortcut(): void {
+  const aw = workspace.activeWindow;
+  if (!aw || !isLiveWindow(aw) || !aw.normalWindow) {
+    return;
+  }
+  const id = windowId(aw);
+  if (toggleFloating(floating, id)) {
+    removeIdFromStacks(stacks, id);
+    lastApplied.delete(id);
+  }
+  retile();
+}
+
+/// Meta+] / Meta+[: ativa a aba seguinte/anterior do grupo da janela ativa.
+function cycleTab(step: number): void {
+  const aw = workspace.activeWindow;
+  if (!aw || !isLiveWindow(aw)) {
+    return;
+  }
+  const next = cycleStackActive(stacks, windowId(aw), step);
+  if (next === null) {
+    return;
+  }
+  const target = winByStableId(next);
+  if (target) {
+    workspace.activeWindow = target;
+  }
+  retile();
+}
+
+const COSMIC_SHORTCUTS: Array<[string, string, string, () => void]> = [
+  [
+    'EtherbitFocusLeft',
+    'Etherbit: foca a janela à esquerda',
+    'Meta+Left',
+    () => focusDirection('left'),
+  ],
+  [
+    'EtherbitFocusRight',
+    'Etherbit: foca a janela à direita',
+    'Meta+Right',
+    () => focusDirection('right'),
+  ],
+  ['EtherbitFocusUp', 'Etherbit: foca a janela acima', 'Meta+Up', () => focusDirection('up')],
+  [
+    'EtherbitFocusDown',
+    'Etherbit: foca a janela abaixo',
+    'Meta+Down',
+    () => focusDirection('down'),
+  ],
+  [
+    'EtherbitMoveLeft',
+    'Etherbit: move a janela para a esquerda',
+    'Meta+Shift+Left',
+    () => moveDirection('left'),
+  ],
+  [
+    'EtherbitMoveRight',
+    'Etherbit: move a janela para a direita',
+    'Meta+Shift+Right',
+    () => moveDirection('right'),
+  ],
+  [
+    'EtherbitMoveUp',
+    'Etherbit: move a janela para cima',
+    'Meta+Shift+Up',
+    () => moveDirection('up'),
+  ],
+  [
+    'EtherbitMoveDown',
+    'Etherbit: move a janela para baixo',
+    'Meta+Shift+Down',
+    () => moveDirection('down'),
+  ],
+  [
+    'EtherbitSwapLeft',
+    'Etherbit: troca com a vizinha à esquerda',
+    'Meta+Alt+Left',
+    () => swapDirection('left'),
+  ],
+  [
+    'EtherbitSwapRight',
+    'Etherbit: troca com a vizinha à direita',
+    'Meta+Alt+Right',
+    () => swapDirection('right'),
+  ],
+  [
+    'EtherbitSwapUp',
+    'Etherbit: troca com a vizinha acima',
+    'Meta+Alt+Up',
+    () => swapDirection('up'),
+  ],
+  [
+    'EtherbitSwapDown',
+    'Etherbit: troca com a vizinha abaixo',
+    'Meta+Alt+Down',
+    () => swapDirection('down'),
+  ],
+  [
+    'EtherbitGrowWidth',
+    'Etherbit: aumenta a largura',
+    'Meta+Ctrl+Right',
+    () => resizeFocused('right', KEY_RESIZE_STEP_PX),
+  ],
+  [
+    'EtherbitShrinkWidth',
+    'Etherbit: diminui a largura',
+    'Meta+Ctrl+Left',
+    () => resizeFocused('right', -KEY_RESIZE_STEP_PX),
+  ],
+  [
+    'EtherbitGrowHeight',
+    'Etherbit: aumenta a altura',
+    'Meta+Ctrl+Down',
+    () => resizeFocused('bottom', KEY_RESIZE_STEP_PX),
+  ],
+  [
+    'EtherbitShrinkHeight',
+    'Etherbit: diminui a altura',
+    'Meta+Ctrl+Up',
+    () => resizeFocused('bottom', -KEY_RESIZE_STEP_PX),
+  ],
+  [
+    'EtherbitToggleOrientation',
+    'Etherbit: alterna a orientação do split',
+    'Meta+O',
+    () => toggleOrientation(),
+  ],
+  [
+    'EtherbitToggleFloating',
+    'Etherbit: alterna tiling/flutuante',
+    'Meta+G',
+    () => toggleFloatingShortcut(),
+  ],
+  ['EtherbitTabNext', 'Etherbit: próxima aba do grupo', 'Meta+]', () => cycleTab(1)],
+  ['EtherbitTabPrev', 'Etherbit: aba anterior do grupo', 'Meta+[', () => cycleTab(-1)],
+];
+for (const [name, label, keys, handler] of COSMIC_SHORTCUTS) {
+  registerShortcut(name, label, keys, handler);
 }
 
 workspace.windowAdded.connect((win) => {
@@ -1551,23 +2091,61 @@ workspace.windowRemoved.connect((win) => {
     everTiled.delete(id);
     maximizedIds.delete(id);
     spawnAt.delete(id);
+    floating.delete(id);
+    lastApplied.delete(id);
+    const mruIdx = focusMru.indexOf(id);
+    if (mruIdx !== -1) {
+      focusMru.splice(mruIdx, 1);
+    }
   } catch (e) {
     // referência morta — segue direto para o retile
   }
   retile();
 });
 // O foco mudar pode reorganizar o grid (ordem estável por grupo). Ignora durante a aplicação.
-workspace.windowActivated.connect(() => {
+workspace.windowActivated.connect((win) => {
+  // Histórico de foco (âncora da inserção COSMIC, ADR 0070) e borda: SEMPRE, mesmo sob `applying`.
+  try {
+    if (win && isLiveWindow(win)) {
+      pushFocus(focusMru, windowId(win));
+    }
+  } catch (e) {
+    // referência morta — ignora
+  }
+  updateBorder();
   if (applying) {
     return;
   }
   retile();
 });
 
-// Rastreia as janelas já abertas e faz o layout inicial.
+// Hotplug de monitores e troca/reordenação de desktops (ADR 0070): o estado é chaveado pelo NOME do
+// output (ADR 0056), então basta re-tilar para reancorar. Conexões defensivas (sinais opcionais).
+workspace.screensChanged?.connect(() => retile());
+workspace.desktopsChanged?.connect(() => retile());
+workspace.currentDesktopChanged?.connect(() => {
+  updateBorder();
+  retile();
+});
+
+// Rastreia as janelas já abertas e faz o layout inicial. ADOÇÃO (paridade com o GNOME, ADR 0067/0070):
+// quem já existia na carga do script entra como "já tilada" — uma janela que o usuário maximizou antes
+// não é desmaximizada como se tivesse nascido maximizada.
 for (const win of workspace.windowList()) {
   trackWindow(win);
+  try {
+    if (isLiveWindow(win)) {
+      everTiled.add(windowId(win));
+    }
+  } catch (e) {
+    // referência morta — ignora
+  }
+}
+const initialActive = workspace.activeWindow;
+if (initialActive && isLiveWindow(initialActive)) {
+  pushFocus(focusMru, windowId(initialActive));
 }
 retile();
+updateBorder();
 
 log('ponte carregada, servindo via', BUS_NAME);

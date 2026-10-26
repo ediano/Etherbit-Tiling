@@ -46,6 +46,20 @@
     <entry name="ignoreList" type="StringList">
       <label>Windows ignored by tiling (app class/id, e.g. obs, org.kde.plasmashell)</label>
     </entry>
+    <entry name="outerGap" type="Int">
+      <label>Outer spacing at the screen edge (px; -1 = same as spacing)</label>
+      <default>-1</default>
+      <min>-1</min>
+      <max>100</max>
+    </entry>
+    <entry name="smartGaps" type="Bool">
+      <label>Smart gaps: no spacing when a single window is on the workspace</label>
+      <default>false</default>
+    </entry>
+    <entry name="focusInsert" type="Bool">
+      <label>Open new windows next to the focused window</label>
+      <default>true</default>
+    </entry>
     <entry name="debug" type="Bool">
       <label>Verbose logs in the journal (diagnostics): number of windows/rectangles per event</label>
       <default>false</default>

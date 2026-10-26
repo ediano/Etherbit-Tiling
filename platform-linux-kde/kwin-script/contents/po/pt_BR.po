@@ -38,9 +38,6 @@ msgstr "Cantos arredondados (requer o efeito nativo de cantos do KWin)"
 msgid "Corner radius (px):"
 msgstr "Raio dos cantos (px):"
 
-#. config.ui — ignore list (blacklist) label
-msgid "Windows ignored by tiling (app class/id, e.g. obs, org.kde.plasmashell):"
-msgstr "Janelas ignoradas pelo tiling (classe/id do app, ex. obs, org.kde.plasmashell):"
 
 #. main.xml — enabled
 msgid "Enable tiling (master switch)"
@@ -69,3 +66,23 @@ msgstr "Janelas ignoradas pelo tiling (classe/id do app, ex. obs, org.kde.plasma
 #. main.xml — debug
 msgid "Verbose logs in the journal (diagnostics): number of windows/rectangles per event"
 msgstr "Logs detalhados no journal (diagnóstico): nº de janelas/retângulos por evento"
+
+#. main.xml/config.ui — outerGap
+msgid "Outer spacing at the screen edge (px; -1 = same as spacing)"
+msgstr "Espaçamento externo na borda da tela (px; -1 = igual ao espaçamento)"
+
+#. config.ui — outerGap
+msgid "Outer spacing at the screen edge (px; -1 = same as spacing):"
+msgstr "Espaçamento externo na borda da tela (px; -1 = igual ao espaçamento):"
+
+#. main.xml/config.ui — smartGaps
+msgid "Smart gaps: no spacing when a single window is on the workspace"
+msgstr "Smart gaps: sem espaçamento quando há uma única janela no workspace"
+
+#. main.xml/config.ui — focusInsert
+msgid "Open new windows next to the focused window"
+msgstr "Abrir novas janelas ao lado da janela focada"
+
+#. config.ui — ignoreList
+msgid "Windows ignored by tiling (class/id, or title:text, e.g. obs, title:Picture-in-Picture):"
+msgstr "Janelas ignoradas pelo tiling (classe/id, ou title:texto, ex. obs, title:Picture-in-Picture):"

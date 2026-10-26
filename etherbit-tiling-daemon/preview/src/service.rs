@@ -1,7 +1,8 @@
 // service.rs — interfaces D-Bus do helper de overlay do KDE. ADR 0029/0039.
 //
 // `dev.ediano.etherbit.Preview` (papel 1): `ShowPreview(x,y,w,h)`/`HidePreview()` — o retângulo
-// translúcido do drag (espírito do ADR 0029: só geometria).
+// translúcido do drag (espírito do ADR 0029: só geometria). Papel 3 (ADR 0070), na mesma interface:
+// `ShowBorder(x,y,w,h,thickness,color)`/`HideBorder()` — a moldura da janela ativa.
 //
 // `dev.ediano.etherbit.Tabs` (papel 2, ADR 0039): `ShowTabs(json)` publica as barras de abas (geometria
 // + título + ativa); `HideTabs()` limpa; `DrainTabActions() -> json` devolve e esvazia a fila de cliques
@@ -14,7 +15,7 @@ use anyhow::Result;
 use tokio::sync::watch;
 use zbus::interface;
 
-use crate::overlay::{OverlayState, PreviewRect};
+use crate::overlay::{parse_hex_color, BorderSpec, OverlayState, PreviewRect};
 use crate::tabs::{TabAction, TabBarView};
 
 pub const BUS_NAME: &str = "dev.ediano.etherbit.Preview";
@@ -37,6 +38,23 @@ impl Preview {
     /// Esconde o preview (fim do arrasto ou zona `none`).
     fn hide_preview(&self) {
         self.tx.send_modify(|s| s.preview = None);
+    }
+
+    /// Borda da janela ativa (ADR 0070): `x,y,w,h` = FRAME da janela focada; `thickness` px por fora;
+    /// `color` = `#rrggbb` (inválida → cor padrão Nord). `w`/`h`/`thickness` ≤ 0 escondem.
+    fn show_border(&self, x: i32, y: i32, width: i32, height: i32, thickness: i32, color: String) {
+        let next = if width > 0 && height > 0 && thickness > 0 {
+            let color = parse_hex_color(&color).unwrap_or((0x5e, 0x81, 0xac));
+            Some(BorderSpec { x, y, width, height, thickness, color })
+        } else {
+            None
+        };
+        self.tx.send_modify(|s| s.border = next);
+    }
+
+    /// Esconde a borda ativa.
+    fn hide_border(&self) {
+        self.tx.send_modify(|s| s.border = None);
     }
 }
 
