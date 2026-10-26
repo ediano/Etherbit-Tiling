@@ -39,6 +39,9 @@ import {
   clampGeometry,
   clampToWorkArea,
   geometryConverged,
+  sizeRefused,
+  centerInSlot,
+  sameRect,
   parseLayoutTrees,
   resolveHotZone,
   serializeScope,
@@ -53,6 +56,18 @@ import {
   toggleGroupDisabled,
   addToStack,
   setActiveMember,
+  neighborInDirection,
+  directionZone,
+  pushFocus,
+  pickInsertAnchor,
+  remapMonitors,
+  isIdentityRemap,
+  remapGroupMap,
+  remapGroupSet,
+  cycleStackActive,
+  toggleFloating,
+  swapInStacks,
+  type Direction,
   type Stack,
   type TabBar,
   type TreeNode,
@@ -63,12 +78,31 @@ import {
   type WinMin,
 } from './bridge.js';
 import { EtherbitIndicator } from './indicator.js';
-import { applyRoundedCorners, clearRoundedCorners } from './effects.js';
+import { applyRoundedCorners, clearRoundedCorners, hasClientShadow } from './effects.js';
 import { initI18n } from './i18n.js';
 
 /// Nomes das chaves de atalho no gschema (schemas/org.gnome.shell.extensions.etherbit-tiling.gschema.xml).
 const KEY_TOGGLE_TILING = 'toggle-tiling';
 const KEY_TOGGLE_TABBING = 'toggle-tabbing';
+const KEY_OVERRIDE_NATIVE = 'override-conflicting-keys';
+const KEY_SAVED_NATIVE = 'saved-native-keys';
+
+/// Atalhos nativos do GNOME que colidem com os do tiling (Super+setas, Super+Shift+setas, Super+O).
+/// Desligados enquanto a extensão está ativa e restaurados no `disable()` (ADR 0068, como o pop-shell).
+const NATIVE_CONFLICTS: Array<[string, string]> = [
+  ['org.gnome.mutter.keybindings', 'toggle-tiled-left'],
+  ['org.gnome.mutter.keybindings', 'toggle-tiled-right'],
+  ['org.gnome.desktop.wm.keybindings', 'maximize'],
+  ['org.gnome.desktop.wm.keybindings', 'unmaximize'],
+  ['org.gnome.desktop.wm.keybindings', 'move-to-monitor-left'],
+  ['org.gnome.desktop.wm.keybindings', 'move-to-monitor-right'],
+  ['org.gnome.desktop.wm.keybindings', 'move-to-monitor-up'],
+  ['org.gnome.desktop.wm.keybindings', 'move-to-monitor-down'],
+  ['org.gnome.settings-daemon.plugins.media-keys', 'rotate-video-lock-static'],
+];
+
+/// Passo (px) do resize por teclado.
+const KEY_RESIZE_STEP_PX = 48;
 
 /// Período do loop que amostra o cursor durante o arrasto (~60 FPS).
 const DRAG_TICK_MS = 16;
@@ -216,6 +250,23 @@ export default class EtherbitTilingExtension extends Extension {
     rect: { x: number; y: number; width: number; height: number };
     monitor: number;
   } | null = null;
+  // ---- Paridade COSMIC (ADR 0068) ----
+  // Atalhos registrados via `Main.wm.addKeybinding` (removidos no `disable()`).
+  private _keybindings: string[] = [];
+  // Histórico de foco (MRU): a âncora da inserção é a última focada JÁ tilada (a nova rouba o foco).
+  private _focusMru: number[] = [];
+  // Janelas que o usuário pôs para flutuar (Super+G).
+  private _floating = new Set<number>();
+  // Borda da janela ativa (active hint) + a janela seguida e seus sinais.
+  private _border: St.Widget | null = null;
+  private _borderWindow: Meta.Window | null = null;
+  private _borderWindowIds: number[] = [];
+  private _restackedId = 0;
+  private _overviewIds: number[] = [];
+  // Geometria (completa) de cada monitor no último `monitors-changed`, para remapear os grupos.
+  private _monitorGeoms: Rect[] = [];
+  // Assinatura das barras de abas desenhadas (evita recriar widgets idênticos).
+  private _lastTabSig = '';
   // Janelas em fechamento (unmanage disparado) a EXCLUIR do próximo snapshot — barreira atômica do
   // descarte (ADR 0062). `_isWindowLive` depende da destruição do ator, que pode não ter ocorrido ainda
   // no instante do `unmanaged`; sem esta exclusão explícita a janela morta entra no snapshot, o core
@@ -236,6 +287,7 @@ export default class EtherbitTilingExtension extends Extension {
         this._indicator?.sync(this._config);
         // Gaps/ignore_list/cantos podem ter mudado → recalcula o layout.
         this._scheduleRelayout();
+        this._positionBorder();
       });
       this._proxy = proxy;
       return proxy;
@@ -320,6 +372,13 @@ export default class EtherbitTilingExtension extends Extension {
       // O raio é a única fonte de verdade do arredondamento: `> 0` liga, `0` desliga. Derivamos o
       // `rounded_corners` do contrato a partir disso (não há mais toggle separado).
       onCornerRadius: (radius) => this._call((p) => p.SetRoundedCornersSync(radius > 0, radius)),
+      onActiveBorder: (enabled) =>
+        this._call((p) =>
+          p.SetActiveBorderSync(enabled, this._config.border_color, this._config.border_width),
+        ),
+      onSmartGaps: (enabled) => this._call((p) => p.SetSmartGapsSync(enabled)),
+      onFocusInsert: (enabled) =>
+        this._call((p) => p.SetInsertModeSync(enabled ? 'focus' : 'cyclic')),
     });
     Main.panel.addToStatusArea(this.uuid, this._indicator);
 
@@ -341,7 +400,7 @@ export default class EtherbitTilingExtension extends Extension {
       global.display.connect('window-created', (_display, window) => this._onWindowCreated(window)),
     );
     this._displayIds.push(
-      global.display.connect('notify::focus-window', () => this._scheduleRelayout()),
+      global.display.connect('notify::focus-window', () => this._onFocusChanged()),
     );
     // Início do arrasto de uma janela: começa a rastrear o cursor e desenhar a drop zone.
     this._displayIds.push(
@@ -358,36 +417,83 @@ export default class EtherbitTilingExtension extends Extension {
         // que nenhum `size-changed` tenha chegado (ex.: mover sem redimensionar).
         this._relayoutPending = true;
         this._releaseSuppression();
+        this._positionBorder();
       }),
     );
 
     this._workspaceId = global.workspace_manager.connect('active-workspace-changed', () =>
       this._scheduleRelayout(),
     );
-    this._monitorsId = Main.layoutManager.connect('monitors-changed', () =>
-      this._scheduleRelayout(),
-    );
+    this._monitorGeoms = this._collectMonitorGeoms();
+    this._monitorsId = Main.layoutManager.connect('monitors-changed', () => {
+      this._remapMonitorGroups();
+      this._scheduleRelayout();
+    });
+    // Borda ativa: segue o empilhamento e some na visão geral.
+    this._restackedId = global.display.connect('restacked', () => this._positionBorder());
+    this._overviewIds = [
+      Main.overview.connect('showing', () => this._positionBorder()),
+      Main.overview.connect('hidden', () => this._positionBorder()),
+    ];
 
     // 6) Atalhos globais (Super+Y = tiling por workspace; Super+S = agrupar em abas). As teclas
     // vivem no gschema; aqui só ligamos o disparo aos handlers que mutam o estado e re-tilam.
     try {
       this._settings = this.getSettings();
-      Main.wm.addKeybinding(
-        KEY_TOGGLE_TILING,
-        this._settings,
-        Meta.KeyBindingFlags.NONE,
-        Shell.ActionMode.NORMAL,
-        () => this._toggleTilingShortcut(),
-      );
-      Main.wm.addKeybinding(
-        KEY_TOGGLE_TABBING,
-        this._settings,
-        Meta.KeyBindingFlags.NONE,
-        Shell.ActionMode.NORMAL,
-        () => this._toggleTabbingShortcut(),
-      );
+      const bindings: Array<[string, () => void]> = [
+        [KEY_TOGGLE_TILING, () => this._toggleTilingShortcut()],
+        [KEY_TOGGLE_TABBING, () => this._toggleTabbingShortcut()],
+        ['focus-left', () => this._focusDirection('left')],
+        ['focus-right', () => this._focusDirection('right')],
+        ['focus-up', () => this._focusDirection('up')],
+        ['focus-down', () => this._focusDirection('down')],
+        ['move-left', () => this._moveDirection('left')],
+        ['move-right', () => this._moveDirection('right')],
+        ['move-up', () => this._moveDirection('up')],
+        ['move-down', () => this._moveDirection('down')],
+        ['swap-left', () => this._swapDirection('left')],
+        ['swap-right', () => this._swapDirection('right')],
+        ['swap-up', () => this._swapDirection('up')],
+        ['swap-down', () => this._swapDirection('down')],
+        ['resize-grow-width', () => this._resizeFocused('right', KEY_RESIZE_STEP_PX)],
+        ['resize-shrink-width', () => this._resizeFocused('right', -KEY_RESIZE_STEP_PX)],
+        ['resize-grow-height', () => this._resizeFocused('bottom', KEY_RESIZE_STEP_PX)],
+        ['resize-shrink-height', () => this._resizeFocused('bottom', -KEY_RESIZE_STEP_PX)],
+        ['toggle-orientation', () => this._toggleOrientation()],
+        ['toggle-floating', () => this._toggleFloatingShortcut()],
+        ['tab-next', () => this._cycleTab(1)],
+        ['tab-prev', () => this._cycleTab(-1)],
+      ];
+      // Libera ANTES de registrar: um atalho nativo ainda ativo venceria o nosso.
+      this._overrideNativeKeys();
+      for (const [name, handler] of bindings) {
+        try {
+          Main.wm.addKeybinding(
+            name,
+            this._settings,
+            Meta.KeyBindingFlags.NONE,
+            Shell.ActionMode.NORMAL,
+            handler,
+          );
+          this._keybindings.push(name);
+        } catch (error) {
+          console.error(`Etherbit Tiling: falha ao registrar o atalho ${name}: ${error}`);
+        }
+      }
     } catch (error) {
       console.error(`Etherbit Tiling: falha ao registrar atalhos: ${error}`);
+    }
+
+    // 6a) Borda ativa já na janela focada no momento do enable.
+    this._followBorder(global.display.focus_window);
+
+    // 6b) Adota as janelas já abertas (não disparam `window-created`): sem isso ficam sem handlers de
+    //     `unmanaged`/`size-changed` e o efeito de cantos não é removido no `disable()` (ADR 0067).
+    for (const actor of global.get_window_actors()) {
+      const window = actor.get_meta_window();
+      if (window) {
+        this._onWindowCreated(window, true);
+      }
     }
 
     // 7) Layout inicial para as janelas já abertas. No boot frio, um único disparo pode ser descartado
@@ -427,11 +533,26 @@ export default class EtherbitTilingExtension extends Extension {
     this._lastAppliedRects.clear();
 
     // Remove os atalhos globais.
-    if (this._settings) {
-      Main.wm.removeKeybinding(KEY_TOGGLE_TILING);
-      Main.wm.removeKeybinding(KEY_TOGGLE_TABBING);
-      this._settings = null;
+    for (const name of this._keybindings) {
+      Main.wm.removeKeybinding(name);
     }
+    this._keybindings = [];
+    this._restoreNativeKeys();
+    this._settings = null;
+
+    // Borda ativa e seus sinais.
+    this._destroyBorder();
+    if (this._restackedId) {
+      global.display.disconnect(this._restackedId);
+      this._restackedId = 0;
+    }
+    for (const id of this._overviewIds) {
+      Main.overview.disconnect(id);
+    }
+    this._overviewIds = [];
+    this._focusMru = [];
+    this._floating.clear();
+    this._monitorGeoms = [];
 
     // Restaura janelas que minimizamos como abas inativas e descarta as barras de abas e o menu.
     this._restoreHiddenWindows();
@@ -484,6 +605,9 @@ export default class EtherbitTilingExtension extends Extension {
       }
     }
     this._tracked.clear();
+    this._lastMinSizes.clear();
+    this._everTiled.clear();
+    this._closingIds.clear();
 
     if (this._nameWatchId) {
       Gio.bus_unwatch_name(this._nameWatchId);
@@ -497,8 +621,10 @@ export default class EtherbitTilingExtension extends Extension {
     this._config = { ...DEFAULT_CONFIG };
   }
 
-  /// Rastreia a janela para reagir ao seu fechamento e agenda um relayout.
-  private _onWindowCreated(window: Meta.Window): void {
+  /// Rastreia a janela para reagir ao seu fechamento e agenda um relayout. `adopted` = janela já aberta
+  /// ANTES do `enable()` (ADR 0067): ganha os mesmos sinais, mas não passa pelo spawn-unmaximize nem
+  /// pelo gating de `first-frame` (já renderizou) — o estado atual do usuário é preservado.
+  private _onWindowCreated(window: Meta.Window, adopted = false): void {
     const id = window.get_stable_sequence();
     if (!this._tracked.has(id)) {
       const unmanagedId = window.connect('unmanaged', () => {
@@ -522,6 +648,14 @@ export default class EtherbitTilingExtension extends Extension {
         removeIdFromStacks(this._stacks, id);
         this._stackHidden.delete(id);
         this._lastMinSizes.delete(id);
+        this._floating.delete(id);
+        const mruIdx = this._focusMru.indexOf(id);
+        if (mruIdx !== -1) {
+          this._focusMru.splice(mruIdx, 1);
+        }
+        if (this._borderWindow === window) {
+          this._followBorder(null);
+        }
         this._everTiled.delete(id);
         // A topologia mudou (uma janela saiu): invalida o dedup para o relayout pós-fechamento SEMPRE
         // reaplicar. Sem isso, uma sobrevivente que já "convergiu" (epsilon 2px) para o slot antigo
@@ -578,7 +712,7 @@ export default class EtherbitTilingExtension extends Extension {
       // `size-changed` acima fica como rede. Se o ator ainda não existe aqui, `firstFrameId` fica 0.
       let firstFrameId = 0;
       const actor = window.get_compositor_private() as Meta.WindowActor | null;
-      if (actor) {
+      if (actor && !adopted) {
         firstFrameId = actor.connect('first-frame', () => {
           const tracked = this._tracked.get(id);
           if (tracked) {
@@ -600,8 +734,15 @@ export default class EtherbitTilingExtension extends Extension {
         notifyIds,
         actor,
         firstFrameId,
-        spawnAt: GLib.get_monotonic_time(),
+        // Adotada: fora da janela de graça de spawn (uma maximização dela é manual).
+        spawnAt: adopted ? 0 : GLib.get_monotonic_time(),
       });
+    }
+    if (adopted) {
+      // Já existia: trata como "já tilada" para que maximizar/fullscreen seja preservado, não suprimido.
+      this._everTiled.add(id);
+      this._scheduleRelayout();
+      return;
     }
     // Nascimento: com o Tiling ativo, nenhuma janela inicia maximizada nem fullscreen (mesmo que o app peça).
     this._spawnUnmaximizeIfBorn(window, id);
@@ -740,8 +881,13 @@ export default class EtherbitTilingExtension extends Extension {
       }
     }
 
-    const focus = global.display.focus_window;
-    const focusedId = focus ? focus.get_stable_sequence() : 0;
+    // Âncora da inserção COSMIC (ADR 0068): a última focada JÁ tilada — quando este sync roda, o GNOME
+    // já passou o foco para a janela nova, que ainda não está no grid.
+    const focusedId = pickInsertAnchor(
+      this._focusMru,
+      new Set(snapshots.map((s) => s.id)),
+      new Set([...this._everTiled].filter((id) => !this._floating.has(id))),
+    );
 
     // Coletado UMA vez: serve tanto ao sync quanto ao clamp de apply à work-area (ADR 0065). A árvore
     // por grupo é `(monitor, workspace)`, então o monitor-alvo de cada janela é o do seu snapshot.
@@ -753,7 +899,14 @@ export default class EtherbitTilingExtension extends Extension {
       p.SyncWindowsSync(
         serializeWindows(snapshots),
         serializeMonitors(monitors),
-        serializeState(this._stacks, this._disabledGroups, this._trees, focusedId),
+        serializeState(
+          this._stacks,
+          this._disabledGroups,
+          this._trees,
+          focusedId,
+          [],
+          this._floating,
+        ),
       ),
     );
     if (!res) {
@@ -796,6 +949,8 @@ export default class EtherbitTilingExtension extends Extension {
     // realizada): o frame não bate → não convergiu → reaplica, em vez de cair num dedup envenenado
     // que congelava o grid até o toggle manual `disable()`→`enable()` (ADR 0038).
     if (layoutSig === this._lastLayoutSig && this._appliedGeometryConverged(byId)) {
+      // Convergiu — inclusive janelas que recusaram o tamanho do slot (ADR 0068): só as centraliza.
+      this._centerRefusedWindows(byId);
       return;
     }
     this._lastLayoutSig = layoutSig;
@@ -842,6 +997,7 @@ export default class EtherbitTilingExtension extends Extension {
     this._suppressRelayout = true;
     // Reinicia o registro do que committamos neste ciclo (base da verificação de convergência do
     // próximo dedup, ADR 0038). Só recebe janelas visíveis e não-maximizadas, gravadas pós-apply.
+    const prevApplied = new Map(this._lastAppliedRects);
     this._lastAppliedRects.clear();
     // Uma janela pode morrer ENTRE o snapshot e a aplicação (unmanage assíncrono). Se isso ocorrer,
     // o layout que estamos aplicando é da topologia antiga (N células) — as sobreviventes cairiam em
@@ -885,7 +1041,18 @@ export default class EtherbitTilingExtension extends Extension {
           // ≥1px se o monitor não for resolvido (defensivo — rect inválido quebraria o framebuffer do Cogl).
           const target = monitorForWin.get(command.id);
           const g = target ? clampToWorkArea(command, target) : clampGeometry(command);
-          window.move_resize_frame(false, g.x, g.y, g.width, g.height);
+          // Recusa de tamanho (ADR 0068): o MESMO slot já foi pedido e o cliente ficou menor (size
+          // increments/tamanho máximo). Reenviar o resize só reproduz a recusa (flicker); centraliza.
+          const prev = prevApplied.get(command.id);
+          const cur = window.get_frame_rect();
+          if (prev && sameRect(prev, g) && sizeRefused(g, cur, RELAYOUT_CONVERGE_EPSILON_PX)) {
+            const c = centerInSlot(g, cur);
+            if (cur.x !== c.x || cur.y !== c.y) {
+              window.move_frame(false, c.x, c.y);
+            }
+          } else {
+            window.move_resize_frame(false, g.x, g.y, g.width, g.height);
+          }
           // Registra o slot committado: o próximo dedup só curto-circuita se o frame chegar nele.
           this._lastAppliedRects.set(command.id, {
             x: g.x,
@@ -897,7 +1064,10 @@ export default class EtherbitTilingExtension extends Extension {
           // efeito; `0` o remove (não há mais toggle separado). Best-effort, nunca quebra.
           const actor = window.get_compositor_private() as Clutter.Actor | null;
           if (actor) {
-            if (this._config.corner_radius > 0) {
+            if (
+              this._config.corner_radius > 0 &&
+              !hasClientShadow(window.get_frame_rect(), window.get_buffer_rect())
+            ) {
               applyRoundedCorners(actor, this._config.corner_radius);
             } else {
               clearRoundedCorners(actor);
@@ -938,6 +1108,7 @@ export default class EtherbitTilingExtension extends Extension {
 
     // Desenha as barras de abas a partir da geometria devolvida pelo core.
     this._rebuildTabBars(tabBars, byId);
+    this._positionBorder();
 
     // Janela morreu durante o apply: o layout aplicado é da topologia antiga. Invalida o dedup (para a
     // próxima passada não ser engolida por uma assinatura/convergência "no slot errado") e agenda um
@@ -968,6 +1139,29 @@ export default class EtherbitTilingExtension extends Extension {
       current.set(id, { x: r.x, y: r.y, width: r.width, height: r.height });
     }
     return geometryConverged(this._lastAppliedRects, current, RELAYOUT_CONVERGE_EPSILON_PX);
+  }
+
+  /// Centraliza no slot as janelas que recusaram o tamanho pedido (ADR 0068). Só `move_frame` (não
+  /// redimensiona), então não dispara `size-changed` nem realimenta o laço. Idempotente.
+  private _centerRefusedWindows(byId: Map<number, Meta.Window>): void {
+    for (const [id, want] of this._lastAppliedRects) {
+      const window = byId.get(id);
+      if (!window || !this._isWindowLive(window) || this._isMaximized(window)) {
+        continue;
+      }
+      try {
+        const cur = window.get_frame_rect();
+        if (!sizeRefused(want, cur, RELAYOUT_CONVERGE_EPSILON_PX)) {
+          continue;
+        }
+        const c = centerInSlot(want, cur);
+        if (cur.x !== c.x || cur.y !== c.y) {
+          window.move_frame(false, c.x, c.y);
+        }
+      } catch (error) {
+        console.error(`Etherbit Tiling: falha ao centralizar a janela ${id}: ${error}`);
+      }
+    }
   }
 
   /// Mapeia, por grupo `(monitor, workspace)`, os ids tiláveis no último layout (singles + membros
@@ -1362,12 +1556,402 @@ export default class EtherbitTilingExtension extends Extension {
     this._scheduleRelayout();
   }
 
+  // ---- Paridade COSMIC: teclado, float, foco, borda ativa e monitores (ADR 0068) ----
+
+  /// Troca de foco: alimenta o histórico (âncora da inserção), move a borda e re-tila (dedup absorve).
+  private _onFocusChanged(): void {
+    const focus = global.display.focus_window;
+    if (focus) {
+      pushFocus(this._focusMru, focus.get_stable_sequence());
+    }
+    this._followBorder(focus);
+    this._scheduleRelayout();
+  }
+
+  /// Retângulos (frame) das janelas normais VISÍVEIS do workspace ativo, por id — base da navegação
+  /// direcional (atravessa monitores, inclui flutuantes, como o COSMIC).
+  private _visibleRects(): { rects: Map<number, Rect>; byId: Map<number, Meta.Window> } {
+    const rects = new Map<number, Rect>();
+    const byId = new Map<number, Meta.Window>();
+    const workspace = global.workspace_manager.get_active_workspace();
+    for (const window of workspace ? workspace.list_windows() : []) {
+      if (
+        window.get_window_type() !== Meta.WindowType.NORMAL ||
+        window.minimized ||
+        !this._isWindowLive(window)
+      ) {
+        continue;
+      }
+      const r = window.get_frame_rect();
+      const id = window.get_stable_sequence();
+      rects.set(id, { x: r.x, y: r.y, width: r.width, height: r.height });
+      byId.set(id, window);
+    }
+    return { rects, byId };
+  }
+
+  /// Super+setas: foca a janela vizinha naquela direção.
+  private _focusDirection(dir: Direction): void {
+    const focus = global.display.focus_window;
+    if (!focus) {
+      return;
+    }
+    const { rects, byId } = this._visibleRects();
+    const next = neighborInDirection(rects, focus.get_stable_sequence(), dir);
+    if (next !== null) {
+      byId.get(next)?.activate(global.get_current_time());
+    }
+  }
+
+  /// Vizinho TILADO de `window` na direção, no MESMO grupo `(monitor, workspace)` (move/swap operam na
+  /// árvore do grupo). `null` se não houver.
+  private _tiledNeighbor(window: Meta.Window, dir: Direction): Meta.Window | null {
+    const { rects, byId } = this._visibleRects();
+    const monitor = window.get_monitor();
+    const tiled = new Map<number, Rect>();
+    for (const [id, r] of rects) {
+      const w = byId.get(id);
+      if (w && w.get_monitor() === monitor && this._lastAppliedRects.has(id)) {
+        tiled.set(id, r);
+      }
+    }
+    const next = neighborInDirection(tiled, window.get_stable_sequence(), dir);
+    return next === null ? null : (byId.get(next) ?? null);
+  }
+
+  /// Persiste as árvores devolvidas por MoveWindow/ResizeWindow/ToggleOrientation e re-tila.
+  private _applyTrees(res: [string] | null): void {
+    if (res) {
+      this._trees = parseLayoutTrees(res[0]);
+      this._scheduleRelayout();
+    }
+  }
+
+  /// Janela focada que está no grid (tilada, não flutuante), ou `null`.
+  private _focusedTiled(): Meta.Window | null {
+    const focus = global.display.focus_window;
+    if (!focus || !this._lastAppliedRects.has(focus.get_stable_sequence())) {
+      return null;
+    }
+    return focus;
+  }
+
+  /// Super+Shift+setas: move a janela para aquele lado da vizinha (COSMIC). Sem vizinha no monitor,
+  /// cruza para o monitor adjacente naquela direção; membro de stack sai do grupo primeiro.
+  private _moveDirection(dir: Direction): void {
+    const window = this._focusedTiled();
+    if (!window) {
+      return;
+    }
+    const id = window.get_stable_sequence();
+    if (removeIdFromStacks(this._stacks, id)) {
+      this._scheduleRelayout();
+      return;
+    }
+    const neighbor = this._tiledNeighbor(window, dir);
+    if (neighbor) {
+      this._applyTrees(
+        this._call((p) =>
+          p.MoveWindowSync(
+            serializeState(this._stacks, this._disabledGroups, this._trees, id),
+            String(id),
+            String(neighbor.get_stable_sequence()),
+            directionZone(dir),
+            serializeScope('local'),
+          ),
+        ),
+      );
+      return;
+    }
+    const metaDir = {
+      left: Meta.DisplayDirection.LEFT,
+      right: Meta.DisplayDirection.RIGHT,
+      up: Meta.DisplayDirection.UP,
+      down: Meta.DisplayDirection.DOWN,
+    }[dir];
+    const target = global.display.get_monitor_neighbor_index(window.get_monitor(), metaDir);
+    if (target >= 0) {
+      window.move_to_monitor(target);
+      this._scheduleRelayout();
+    }
+  }
+
+  /// Super+Alt+setas: troca a janela com a vizinha tilada (o core permuta as folhas).
+  private _swapDirection(dir: Direction): void {
+    const window = this._focusedTiled();
+    if (!window) {
+      return;
+    }
+    const neighbor = this._tiledNeighbor(window, dir);
+    if (!neighbor) {
+      return;
+    }
+    const a = window.get_stable_sequence();
+    const b = neighbor.get_stable_sequence();
+    const res = this._call((p) =>
+      p.MoveWindowSync(
+        serializeState(this._stacks, this._disabledGroups, this._trees, a),
+        String(a),
+        String(b),
+        'center',
+        serializeScope('local'),
+      ),
+    );
+    if (res) {
+      swapInStacks(this._stacks, a, b);
+    }
+    this._applyTrees(res);
+  }
+
+  /// Super+Ctrl+setas: redimensiona pela borda direita/inferior; na borda da tela (sem split daquele
+  /// lado) usa a borda oposta, como o pop-shell.
+  private _resizeFocused(edge: 'right' | 'bottom', delta: number): void {
+    const window = this._focusedTiled();
+    if (!window) {
+      return;
+    }
+    const id = String(window.get_stable_sequence());
+    const monitorsJson = serializeMonitors(this._collectMonitors());
+    const mins = this._collectMins();
+    const resize = (e: string): [string] | null =>
+      this._call((p) =>
+        p.ResizeWindowSync(
+          monitorsJson,
+          serializeState(this._stacks, this._disabledGroups, this._trees, 0, mins),
+          id,
+          e,
+          delta,
+        ),
+      );
+    const before = JSON.stringify([...this._trees]);
+    let res = resize(edge);
+    if (res && JSON.stringify([...parseLayoutTrees(res[0])]) === before) {
+      res = resize(edge === 'right' ? 'left' : 'top');
+    }
+    this._applyTrees(res);
+  }
+
+  /// Super+O: alterna a orientação do split da janela focada.
+  private _toggleOrientation(): void {
+    const window = this._focusedTiled();
+    if (!window) {
+      return;
+    }
+    const id = window.get_stable_sequence();
+    this._applyTrees(
+      this._call((p) =>
+        p.ToggleOrientationSync(
+          serializeState(this._stacks, this._disabledGroups, this._trees, id),
+          String(id),
+        ),
+      ),
+    );
+  }
+
+  /// Super+G: alterna a janela focada entre tiling e flutuante. Ao flutuar sai do stack e fica por
+  /// cima; ao voltar, o core a reinsere (rachando a focada anterior).
+  private _toggleFloatingShortcut(): void {
+    const focus = global.display.focus_window;
+    if (!focus || focus.get_window_type() !== Meta.WindowType.NORMAL) {
+      return;
+    }
+    const id = focus.get_stable_sequence();
+    if (toggleFloating(this._floating, id)) {
+      removeIdFromStacks(this._stacks, id);
+      focus.raise();
+    }
+    this._scheduleRelayout();
+    this._positionBorder();
+  }
+
+  /// Super+] / Super+[: ativa a aba seguinte/anterior do grupo da janela focada.
+  private _cycleTab(step: number): void {
+    const focus = global.display.focus_window;
+    if (!focus) {
+      return;
+    }
+    const next = cycleStackActive(this._stacks, focus.get_stable_sequence(), step);
+    if (next === null) {
+      return;
+    }
+    const workspace = global.workspace_manager.get_active_workspace();
+    const target = (workspace ? workspace.list_windows() : []).find(
+      (w) => w.get_stable_sequence() === next,
+    );
+    target?.activate(global.get_current_time());
+    this._scheduleRelayout();
+  }
+
+  /// Desliga os atalhos nativos que colidem (se `override-conflicting-keys`), guardando os valores
+  /// originais no gsettings da extensão — sobrevive a um crash do Shell: se já há valores salvos (o
+  /// `disable()` anterior não rodou), eles são preservados em vez de sobrescritos por `[]`.
+  private _overrideNativeKeys(): void {
+    const settings = this._settings;
+    if (!settings || !settings.get_boolean(KEY_OVERRIDE_NATIVE)) {
+      return;
+    }
+    const saved = this._savedNativeKeys(settings);
+    const fresh = Object.keys(saved).length === 0;
+    for (const [schemaId, key] of NATIVE_CONFLICTS) {
+      const native = this._nativeSettings(schemaId, key);
+      if (!native) {
+        continue;
+      }
+      const slot = `${schemaId}::${key}`;
+      if (fresh) {
+        saved[slot] = native.get_strv(key);
+      }
+      native.set_strv(key, []);
+    }
+    settings.set_string(KEY_SAVED_NATIVE, JSON.stringify(saved));
+  }
+
+  /// Valores nativos salvos (JSON no gsettings da extensão); vazio/corrompido = nenhum.
+  private _savedNativeKeys(settings: Gio.Settings): Record<string, string[]> {
+    try {
+      return JSON.parse(settings.get_string(KEY_SAVED_NATIVE) || '{}') as Record<string, string[]>;
+    } catch {
+      return {};
+    }
+  }
+
+  /// Restaura os atalhos nativos salvos por `_overrideNativeKeys` e limpa o registro.
+  private _restoreNativeKeys(): void {
+    const settings = this._settings;
+    if (!settings) {
+      return;
+    }
+    const saved = this._savedNativeKeys(settings);
+    for (const [slot, value] of Object.entries(saved)) {
+      const [schemaId, key] = slot.split('::');
+      if (schemaId && key && Array.isArray(value)) {
+        this._nativeSettings(schemaId, key)?.set_strv(key, value);
+      }
+    }
+    settings.set_string(KEY_SAVED_NATIVE, '');
+  }
+
+  /// `Gio.Settings` de um schema nativo SE ele existir e tiver `key` (schemas variam por distro/versão).
+  private _nativeSettings(schemaId: string, key: string): Gio.Settings | null {
+    const schema = Gio.SettingsSchemaSource.get_default()?.lookup(schemaId, true);
+    if (!schema || !schema.has_key(key)) {
+      return null;
+    }
+    return new Gio.Settings({ settings_schema: schema });
+  }
+
+  /// Passa a seguir `window` com a borda ativa (sinais de posição/tamanho), soltando a anterior.
+  private _followBorder(window: Meta.Window | null): void {
+    if (this._borderWindow !== window) {
+      for (const id of this._borderWindowIds) {
+        try {
+          this._borderWindow?.disconnect(id);
+        } catch {
+          // janela já destruída — ignora.
+        }
+      }
+      this._borderWindowIds = [];
+      this._borderWindow = window;
+      if (window) {
+        this._borderWindowIds = [
+          window.connect('position-changed', () => this._positionBorder()),
+          window.connect('size-changed', () => this._positionBorder()),
+        ];
+      }
+    }
+    this._positionBorder();
+  }
+
+  /// Desenha a borda (active hint, COSMIC) em volta do frame da janela focada, logo acima do ator dela
+  /// no `window_group` (janelas por cima a cobrem). Some com a config desligada, sem foco, em
+  /// maximizada/fullscreen/minimizada, durante o arrasto e na visão geral.
+  private _positionBorder(): void {
+    const window = this._borderWindow;
+    const cfg = this._config;
+    const actor = window?.get_compositor_private() as Clutter.Actor | null | undefined;
+    const visible =
+      !!window &&
+      !!actor &&
+      cfg.enabled &&
+      cfg.active_border &&
+      cfg.border_width > 0 &&
+      this._draggedId === 0 &&
+      !Main.overview.visible &&
+      !window.minimized &&
+      window.get_window_type() === Meta.WindowType.NORMAL &&
+      !this._isMaximized(window) &&
+      !this._isFullscreen(window);
+    // Ator fora do `window_group` = animação do Shell em curso (troca de workspace): esconde.
+    if (!visible || !window || !actor || actor.get_parent() !== global.window_group) {
+      this._border?.hide();
+      return;
+    }
+    if (!this._border) {
+      this._border = new St.Widget({ reactive: false, can_focus: false, track_hover: false });
+      global.window_group.add_child(this._border);
+    }
+    const bw = cfg.border_width;
+    const r = window.get_frame_rect();
+    const radius = cfg.corner_radius > 0 ? cfg.corner_radius + bw : 0;
+    this._border.set_style(
+      `border: ${bw}px solid ${cfg.border_color}; border-radius: ${radius}px;`,
+    );
+    this._border.set_position(r.x - bw, r.y - bw);
+    this._border.set_size(Math.max(1, r.width + 2 * bw), Math.max(1, r.height + 2 * bw));
+    global.window_group.set_child_above_sibling(this._border, actor);
+    this._border.show();
+  }
+
+  /// Remove a borda ativa e solta a janela seguida.
+  private _destroyBorder(): void {
+    this._followBorder(null);
+    this._border?.destroy();
+    this._border = null;
+  }
+
+  /// Geometria completa de cada monitor (não a work-area: painéis mudam com o Shell, o monitor não).
+  private _collectMonitorGeoms(): Rect[] {
+    const out: Rect[] = [];
+    for (let i = 0; i < global.display.get_n_monitors(); i += 1) {
+      const g = global.display.get_monitor_geometry(i);
+      out.push({ x: g.x, y: g.y, width: g.width, height: g.height });
+    }
+    return out;
+  }
+
+  /// Hotplug/reordenação (ADR 0068): o estado da ponte é indexado por `(monitor, workspace)` posicional;
+  /// reescreve as chaves para os novos índices (casando por geometria) em vez de reatribuir as árvores
+  /// ao monitor errado. Grupos de monitor removido são descartados (o core reinsere as janelas).
+  private _remapMonitorGroups(): void {
+    const next = this._collectMonitorGeoms();
+    const mapping = remapMonitors(this._monitorGeoms, next);
+    this._monitorGeoms = next;
+    if (isIdentityRemap(mapping)) {
+      return;
+    }
+    this._trees = remapGroupMap(this._trees, mapping);
+    this._stacks = remapGroupMap(this._stacks, mapping);
+    this._order = remapGroupMap(this._order, mapping);
+    this._disabledGroups = remapGroupSet(this._disabledGroups, mapping);
+    this._lastLayoutSig = '';
+  }
+
   // ---- Barra de abas (desenhada pela ponte; geometria vem do core) ----
 
   /// Recria as barras de abas a partir das `TabBar` devolvidas pelo core. Recriar a cada relayout é
   /// simples e barato (só existem quando há stacks). Cada aba mostra ícone + título nativos.
   private _rebuildTabBars(tabBars: TabBar[], byId: Map<number, Meta.Window>): void {
+    // Barras idênticas às já desenhadas (mesma geometria/membros/ativa e mesmos títulos): mantém os
+    // widgets — recriar faria a barra piscar a cada relayout (ADR 0068).
+    const sig = JSON.stringify([
+      tabBars,
+      tabBars.map((b) => b.members.map((m) => byId.get(m)?.get_title() ?? '')),
+    ]);
+    if (sig === this._lastTabSig && this._tabBars.length === tabBars.length) {
+      return;
+    }
     this._destroyTabBars();
+    this._lastTabSig = sig;
     this._tabBarRects.clear();
     for (const bar of tabBars) {
       const box = new St.BoxLayout({
@@ -1717,6 +2301,7 @@ export default class EtherbitTilingExtension extends Extension {
       box.destroy();
     }
     this._tabBars = [];
+    this._lastTabSig = '';
   }
 
   /// Libera as janelas do grid para o comportamento flutuante do sistema (chave geral desligada):
@@ -1729,6 +2314,7 @@ export default class EtherbitTilingExtension extends Extension {
     this._lastAppliedRects.clear();
     this._restoreHiddenWindows();
     this._destroyTabBars();
+    this._positionBorder();
     for (const { window } of this._tracked.values()) {
       const actor = window.get_compositor_private() as Clutter.Actor | null;
       if (actor) {
@@ -1801,6 +2387,7 @@ export default class EtherbitTilingExtension extends Extension {
       min_width: minWidth,
       min_height: minHeight,
       maximized: this._isMaximized(window),
+      title: window.get_title() ?? '',
     };
   }
 
@@ -1971,6 +2558,15 @@ export default class EtherbitTilingExtension extends Extension {
         unmaximize.call(window);
       } catch {
         unmaximize.call(window, Meta.MaximizeFlags.BOTH);
+      }
+      // Rede para o caso em que a chamada 0-arg NÃO lança, mas também não desmaximiza (GJS emite só
+      // um warning de aridade no Mutter 45): conferimos o estado e caímos na assinatura legada.
+      if (this._isMaximized(window)) {
+        try {
+          unmaximize.call(window, Meta.MaximizeFlags.BOTH);
+        } catch {
+          // assinatura legada inexistente (Mutter >= 46) — o 0-arg já era o caminho certo.
+        }
       }
     } catch (error) {
       console.error(`Etherbit Tiling: spawn-unmaximize falhou na janela ${id}: ${error}`);

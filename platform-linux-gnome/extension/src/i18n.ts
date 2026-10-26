@@ -15,11 +15,17 @@ const MESSAGES: Record<Lang, Record<string, string>> = {
     'toggle.enable': 'Enable tiling',
     'gap.label': 'Spacing (px)',
     'radius.label': 'Corner radius (px)',
+    'toggle.border': 'Highlight active window',
+    'toggle.smartGaps': 'Smart gaps',
+    'toggle.focusInsert': 'Open next to focused window',
   },
   'pt-BR': {
     'toggle.enable': 'Ativar tiling',
     'gap.label': 'Espaçamento (px)',
     'radius.label': 'Raio dos cantos (px)',
+    'toggle.border': 'Destacar janela ativa',
+    'toggle.smartGaps': 'Smart gaps',
+    'toggle.focusInsert': 'Abrir ao lado da janela focada',
   },
 };
 

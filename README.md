@@ -31,6 +31,24 @@ eventos de janela e aplica as decisões do core.
 - **Arquitetura nativa e resiliente** — camada macOS em Swift sobre as APIs estáveis da Apple
   (Accessibility); não quebra a cada atualização do macOS.
 
+### Atalhos (GNOME, padrão inspirado no COSMIC)
+
+| Atalho                | Ação                                                       |
+| --------------------- | ---------------------------------------------------------- |
+| `Super` + setas       | Foca a janela vizinha (atravessa monitores)                |
+| `Super+Shift` + setas | Move a janela (na borda, vai para o monitor vizinho)       |
+| `Super+Alt` + setas   | Troca a janela com a vizinha                               |
+| `Super+Ctrl` + setas  | Redimensiona (direita/baixo cresce, esquerda/cima encolhe) |
+| `Super+O`             | Alterna a orientação do split da janela focada             |
+| `Super+G`             | Alterna a janela focada entre tiling e flutuante           |
+| `Super+S`             | Agrupa/desagrupa as janelas em abas                        |
+| `Super+]` / `Super+[` | Próxima/anterior aba do grupo                              |
+| `Super+Y`             | Liga/desliga o tiling no workspace atual                   |
+
+Os atalhos nativos do GNOME que colidem (meia-tela, maximizar, mover entre monitores, trava de
+rotação em `Super+O`) ficam desligados enquanto a extensão está ativa e são restaurados ao desativá-la
+(chave `override-conflicting-keys`). Detalhes em [rules/0068](rules/0068-paridade-cosmic-no-gnome.md).
+
 ---
 
 ## 🗂️ Estrutura do monorepo

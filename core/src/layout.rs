@@ -25,7 +25,7 @@ pub type MinSizes = HashMap<u64, (i32, i32)>;
 /// Metadados brutos de uma janela, agnósticos do compositor. `id` é uma chave estável na
 /// sessão (no GNOME, `Meta.Window.get_stable_sequence()`; no KDE, `internalId`/`windowId`),
 /// usada pela ponte para resolver o retângulo de volta à janela real.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct WindowInfo {
     pub id: u64,
     pub x: i32,
@@ -49,6 +49,8 @@ pub struct WindowInfo {
     /// Janela maximizada no momento (estado, não capacidade — `maximizable` é a capacidade). Usado
     /// pelo tratamento de unmaximize: uma janela que abriu maximizada fica fora do grid até voltar.
     pub maximized: bool,
+    /// Título da janela — alvo das regras `title:` da lista de exceções (ADR 0068). Vazio = sem título.
+    pub title: String,
 }
 
 /// Área útil de um monitor (já descontadas barras/docks do compositor).
@@ -304,8 +306,7 @@ enum Slot<'a> {
 ///  2) é redimensionável e maximizável (descarta diálogos rígidos);
 ///  3) é uma janela normal (descarta dock/utility/splash/dialog).
 pub fn is_tileable(window: &WindowInfo, ignore_list: &[String]) -> bool {
-    let id = window.app_id.to_lowercase();
-    if !id.is_empty() && ignore_list.iter().any(|entry| entry.to_lowercase() == id) {
+    if ignore_list.iter().any(|rule| matches_exception(rule, window)) {
         return false;
     }
     if !window.resizable || !window.maximizable {
@@ -315,6 +316,21 @@ pub fn is_tileable(window: &WindowInfo, ignore_list: &[String]) -> bool {
         return false;
     }
     true
+}
+
+/// Regra da lista de exceções (ADR 0068), case-insensitive:
+///  - `title:<trecho>` — o título CONTÉM o trecho (ex.: `title:Picture-in-Picture`);
+///  - `class:<id>` ou `<id>` puro — o `app_id`/WM_CLASS é IGUAL ao id (forma histórica).
+///
+/// Regra vazia nunca casa.
+pub fn matches_exception(rule: &str, window: &WindowInfo) -> bool {
+    let rule = rule.trim().to_lowercase();
+    if let Some(needle) = rule.strip_prefix("title:") {
+        let needle = needle.trim();
+        return !needle.is_empty() && window.title.to_lowercase().contains(needle);
+    }
+    let id = rule.strip_prefix("class:").unwrap_or(&rule).trim();
+    !id.is_empty() && window.app_id.to_lowercase() == id
 }
 
 /// Retângulo em ponto-flutuante usado internamente pela recursão do BSP (evita acumular erro de
@@ -1714,6 +1730,7 @@ fn reconcile_topology(
     target_leaves: &[u64],
     area: &WorkArea,
     opts: &LayoutOptions,
+    focused: Option<u64>,
 ) -> LayoutTree {
     if target_leaves.is_empty() {
         return LayoutTree::default();
@@ -1733,12 +1750,29 @@ fn reconcile_topology(
     if tree.root.is_none() {
         return LayoutTree { root: cyclic_bootstrap(target_leaves, area, opts) };
     }
-    // Inserções: cada nova folha entra pelo próximo quadrante do ciclo (contagem do estado atual da
-    // árvore — recomputada por inserção, não monotônica), na ordem de `current_ids`.
+    // Inserções, na ordem de `current_ids`. Com `focused` (modo COSMIC, ADR 0068) a nova folha racha a
+    // folha FOCADA no eixo maior e herda o foco — a próxima nova racha ela (espiral/dwindle). Sem foco
+    // válido, entra pelo próximo quadrante do ciclo (contagem recomputada por inserção, ADR 0030).
+    let mut anchor = focused;
     for &id in target_leaves {
-        if !tree.root.as_ref().map(|r| node_contains(r, id)).unwrap_or(false) {
-            let count_before = collect_leaf_ids(&tree).len();
-            tree = insert_cyclic(tree, id, count_before, area, opts);
+        let Some(root) = tree.root.as_ref() else { break };
+        if node_contains(root, id) {
+            continue;
+        }
+        match anchor.filter(|&f| f != id && node_contains(root, f)) {
+            Some(f) => {
+                let axis = leaf_split_axis(root, f, area, opts);
+                let root = tree.root.take().expect("raiz presente");
+                tree = LayoutTree { root: Some(split_leaf_into(root, f, id, axis, false, 0.5)) };
+                anchor = Some(id);
+            }
+            None => {
+                let count_before = collect_leaf_ids(&tree).len();
+                tree = insert_cyclic(tree, id, count_before, area, opts);
+                if anchor.is_some() {
+                    anchor = Some(id);
+                }
+            }
         }
     }
     tree
@@ -1764,6 +1798,42 @@ pub fn reconcile(
     opts: &LayoutOptions,
 ) -> LayoutTree {
     let _ = focused;
+    reconcile_with(prev, current_ids, stacks, None, area, opts)
+}
+
+/// Variante COSMIC do `reconcile` (ADR 0068): cada janela NOVA racha a folha da janela `focused` (a
+/// focada ANTES da nova abrir — a ponte manda o histórico de foco) pelo eixo maior, nova à direita/
+/// embaixo. Várias novas de uma vez formam a espiral (cada uma herda o foco). Sem foco válido no grupo
+/// (ou árvore vazia/bootstrap) cai na distribuição cíclica do `reconcile`. Um `focused` que é membro
+/// de stack resolve para a âncora (o slot do stack é rachado, não o stack por dentro).
+pub fn reconcile_focused(
+    prev: &LayoutTree,
+    current_ids: &[u64],
+    stacks: &[StackDescriptor],
+    focused: Option<u64>,
+    area: &WorkArea,
+    opts: &LayoutOptions,
+) -> LayoutTree {
+    let anchor = focused.map(|f| {
+        stacks
+            .iter()
+            .map(|s| s.member_ids.iter().copied().filter(|m| current_ids.contains(m)).collect())
+            .find(|present: &Vec<u64>| present.contains(&f))
+            .and_then(|present| present.first().copied())
+            .unwrap_or(f)
+    });
+    reconcile_with(prev, current_ids, stacks, anchor, area, opts)
+}
+
+/// Núcleo comum de `reconcile`/`reconcile_focused`.
+fn reconcile_with(
+    prev: &LayoutTree,
+    current_ids: &[u64],
+    stacks: &[StackDescriptor],
+    focused: Option<u64>,
+    area: &WorkArea,
+    opts: &LayoutOptions,
+) -> LayoutTree {
     // A topologia opera sobre a forma DESMATERIALIZADA (stack → folha-âncora); os `Node::Stack` são
     // remontados no fim conforme o comando.
     let prev = LayoutTree { root: prev.root.clone().map(dematerialize_stacks) };
@@ -1778,8 +1848,53 @@ pub fn reconcile(
     let target_leaves: Vec<u64> =
         current_ids.iter().copied().filter(|id| !non_anchor.contains(id)).collect();
 
-    let demat = reconcile_topology(&prev, &target_leaves, area, opts);
+    let demat = reconcile_topology(&prev, &target_leaves, area, opts, focused);
     LayoutTree { root: demat.root.map(|r| materialize_stacks(r, stacks, current_ids)) }
+}
+
+/// Alterna a orientação do split que contém a janela `id` (Super+O do COSMIC, ADR 0068): o grid
+/// BINÁRIO mais interno que a contém troca de eixo (lado a lado ⇄ empilhado), preservando a fração e a
+/// ordem dos filhos. Grids não binários são atravessados até um ancestral binário. Janela única (raiz
+/// folha) ou ausente = no-op.
+pub fn toggle_orientation(tree: &LayoutTree, id: u64) -> LayoutTree {
+    fn transpose(cols: Vec<f64>, rows: Vec<f64>, cells: Vec<GridChild>) -> Node {
+        Node::Grid {
+            cols: rows,
+            rows: cols,
+            cells: cells
+                .into_iter()
+                .map(|c| GridChild {
+                    node: c.node,
+                    col: c.row,
+                    row: c.col,
+                    col_span: c.row_span,
+                    row_span: c.col_span,
+                })
+                .collect(),
+        }
+    }
+    fn walk(node: Node, id: u64) -> (Node, bool) {
+        let Node::Grid { cols, rows, cells } = node else { return (node, false) };
+        let mut done = false;
+        let cells: Vec<GridChild> = cells
+            .into_iter()
+            .map(|c| {
+                if !done && node_contains(&c.node, id) {
+                    let (n, d) = walk(*c.node, id);
+                    done = d;
+                    GridChild { node: Box::new(n), ..c }
+                } else {
+                    c
+                }
+            })
+            .collect();
+        let contains = cells.iter().any(|c| node_contains(&c.node, id));
+        if !done && contains && binary_grid_axis(&cols, &rows).is_some() {
+            return (transpose(cols, rows, cells), true);
+        }
+        (Node::Grid { cols, rows, cells }, done)
+    }
+    LayoutTree { root: tree.root.clone().map(|r| walk(r, id).0) }
 }
 
 /// Uma decisão na descida da raiz até uma folha: o retângulo do nó-split, seu eixo e se descemos
@@ -2053,6 +2168,7 @@ mod tests {
             min_width: 0,
             min_height: 0,
             maximized: false,
+            title: String::new(),
         }
     }
 
@@ -3738,5 +3854,117 @@ mod tests {
         let area = area_1000x800();
         let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], None, &area, &opts());
         assert_eq!(retain_tileable_when_maximized(&tree, &[1, 2, 3], &[]), vec![1, 2, 3]);
+    }
+
+    // ---- ADR 0068: paridade COSMIC (inserção pela focada, orientação, exceções) ----
+
+    /// Retângulo (snapped) da folha `id` na geometria pura da árvore.
+    fn leaf_rect(tree: &LayoutTree, id: u64) -> WindowRect {
+        let res = compute_geometry(tree, &area_1000x800(), &opts(), &[], &[]);
+        res.rects.into_iter().find(|r| r.id == id).expect("folha presente")
+    }
+
+    #[test]
+    fn reconcile_focused_racha_a_focada_pelo_eixo_maior() {
+        let area = area_1000x800();
+        // 1 | 2 (lado a lado). Foco em 1 → a nova (3) racha a ESQUERDA, não a direita do ciclo.
+        let base = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let tree = reconcile_focused(&base, &[1, 2, 3], &[], Some(1), &area, &opts());
+        let r1 = leaf_rect(&tree, 1);
+        let r3 = leaf_rect(&tree, 3);
+        let r2 = leaf_rect(&tree, 2);
+        // A metade esquerda (alta) é rachada na vertical: 1 em cima, 3 embaixo, 2 intacta.
+        assert_eq!(r1.x, r3.x);
+        assert!(r3.y > r1.y);
+        assert!(r2.x > r1.x);
+        assert_eq!(r2.height, leaf_rect(&base, 2).height);
+    }
+
+    #[test]
+    fn reconcile_focused_varias_novas_formam_espiral() {
+        let area = area_1000x800();
+        let base = reconcile(&LayoutTree::default(), &[1], &[], None, &area, &opts());
+        let tree = reconcile_focused(&base, &[1, 2, 3], &[], Some(1), &area, &opts());
+        // 2 racha 1 (horizontal); 3 herda o foco e racha 2 (agora alta → vertical).
+        let r2 = leaf_rect(&tree, 2);
+        let r3 = leaf_rect(&tree, 3);
+        assert_eq!(r2.x, r3.x);
+        assert!(r3.y > r2.y);
+    }
+
+    #[test]
+    fn reconcile_focused_sem_foco_cai_no_ciclo() {
+        let area = area_1000x800();
+        let base = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        assert_eq!(
+            reconcile_focused(&base, &[1, 2, 3], &[], None, &area, &opts()),
+            reconcile(&base, &[1, 2, 3], &[], None, &area, &opts())
+        );
+        // Foco numa janela fora do grupo também cai no ciclo.
+        assert_eq!(
+            reconcile_focused(&base, &[1, 2, 3], &[], Some(99), &area, &opts()),
+            reconcile(&base, &[1, 2, 3], &[], None, &area, &opts())
+        );
+    }
+
+    #[test]
+    fn reconcile_focused_membro_de_stack_racha_o_slot_do_stack() {
+        let area = area_1000x800();
+        let stacks = vec![StackDescriptor { member_ids: vec![1, 2], active_id: 2 }];
+        let base = reconcile(&LayoutTree::default(), &[1, 2], &stacks, None, &area, &opts());
+        let tree = reconcile_focused(&base, &[1, 2, 3], &stacks, Some(2), &area, &opts());
+        // Stack intacto num lado, 3 no outro.
+        let root = tree.root.expect("raiz");
+        assert!(matches!(root, Node::Grid { .. }));
+        assert!(node_contains(&root, 3));
+    }
+
+    #[test]
+    fn toggle_orientation_troca_o_eixo_do_split_binario() {
+        let area = area_1000x800();
+        let tree = reconcile(&LayoutTree::default(), &[1, 2], &[], None, &area, &opts());
+        let before = leaf_rect(&tree, 2);
+        let toggled = toggle_orientation(&tree, 2);
+        let after = leaf_rect(&toggled, 2);
+        assert!(before.x > 0 && before.y == leaf_rect(&tree, 1).y);
+        assert_eq!(after.x, leaf_rect(&toggled, 1).x);
+        assert!(after.y > leaf_rect(&toggled, 1).y);
+        // Involução: alternar duas vezes devolve a árvore original.
+        assert_eq!(toggle_orientation(&toggled, 2), tree);
+    }
+
+    #[test]
+    fn toggle_orientation_afeta_so_o_split_mais_interno() {
+        let area = area_1000x800();
+        // 1 | (2 / 3): alternar 3 vira 1 | (2 | 3) — a raiz segue lado a lado.
+        let tree = reconcile(&LayoutTree::default(), &[1, 2, 3], &[], None, &area, &opts());
+        let toggled = toggle_orientation(&tree, 3);
+        let (r1, r2, r3) = (leaf_rect(&toggled, 1), leaf_rect(&toggled, 2), leaf_rect(&toggled, 3));
+        assert!(r2.x > r1.x && r3.x > r2.x);
+        assert_eq!(r2.y, r3.y);
+    }
+
+    #[test]
+    fn toggle_orientation_janela_unica_e_noop() {
+        let tree = LayoutTree { root: Some(Node::Leaf(1)) };
+        assert_eq!(toggle_orientation(&tree, 1), tree);
+        assert_eq!(toggle_orientation(&LayoutTree::default(), 1), LayoutTree::default());
+    }
+
+    #[test]
+    fn excecoes_por_classe_e_por_titulo() {
+        let w = WindowInfo {
+            app_id: "Firefox".into(),
+            title: "Picture-in-Picture".into(),
+            ..win(1, 0)
+        };
+        assert!(matches_exception("firefox", &w));
+        assert!(matches_exception("class:FIREFOX", &w));
+        assert!(matches_exception("title:picture-in", &w));
+        assert!(!matches_exception("title:", &w));
+        assert!(!matches_exception("", &w));
+        assert!(!matches_exception("title:youtube", &w));
+        assert!(!is_tileable(&w, &["title:Picture".into()]));
+        assert!(is_tileable(&w, &["obs".into()]));
     }
 }

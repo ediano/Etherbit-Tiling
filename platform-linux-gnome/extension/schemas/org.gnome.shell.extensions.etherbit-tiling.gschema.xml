@@ -22,5 +22,97 @@
         desfaz o agrupamento, voltando à grade.
       </description>
     </key>
+    <key name="focus-left" type="as">
+      <default><![CDATA[['<Super>Left']]]></default>
+      <summary>Foca a janela à esquerda</summary>
+    </key>
+    <key name="focus-right" type="as">
+      <default><![CDATA[['<Super>Right']]]></default>
+      <summary>Foca a janela à direita</summary>
+    </key>
+    <key name="focus-up" type="as">
+      <default><![CDATA[['<Super>Up']]]></default>
+      <summary>Foca a janela acima</summary>
+    </key>
+    <key name="focus-down" type="as">
+      <default><![CDATA[['<Super>Down']]]></default>
+      <summary>Foca a janela abaixo</summary>
+    </key>
+    <key name="move-left" type="as">
+      <default><![CDATA[['<Super><Shift>Left']]]></default>
+      <summary>Move a janela para a esquerda (cruza para o monitor vizinho na borda)</summary>
+    </key>
+    <key name="move-right" type="as">
+      <default><![CDATA[['<Super><Shift>Right']]]></default>
+      <summary>Move a janela para a direita (cruza para o monitor vizinho na borda)</summary>
+    </key>
+    <key name="move-up" type="as">
+      <default><![CDATA[['<Super><Shift>Up']]]></default>
+      <summary>Move a janela para cima</summary>
+    </key>
+    <key name="move-down" type="as">
+      <default><![CDATA[['<Super><Shift>Down']]]></default>
+      <summary>Move a janela para baixo</summary>
+    </key>
+    <key name="swap-left" type="as">
+      <default><![CDATA[['<Super><Alt>Left']]]></default>
+      <summary>Troca a janela com a vizinha à esquerda</summary>
+    </key>
+    <key name="swap-right" type="as">
+      <default><![CDATA[['<Super><Alt>Right']]]></default>
+      <summary>Troca a janela com a vizinha à direita</summary>
+    </key>
+    <key name="swap-up" type="as">
+      <default><![CDATA[['<Super><Alt>Up']]]></default>
+      <summary>Troca a janela com a vizinha acima</summary>
+    </key>
+    <key name="swap-down" type="as">
+      <default><![CDATA[['<Super><Alt>Down']]]></default>
+      <summary>Troca a janela com a vizinha abaixo</summary>
+    </key>
+    <key name="resize-grow-width" type="as">
+      <default><![CDATA[['<Super><Control>Right']]]></default>
+      <summary>Aumenta a largura da janela</summary>
+    </key>
+    <key name="resize-shrink-width" type="as">
+      <default><![CDATA[['<Super><Control>Left']]]></default>
+      <summary>Diminui a largura da janela</summary>
+    </key>
+    <key name="resize-grow-height" type="as">
+      <default><![CDATA[['<Super><Control>Down']]]></default>
+      <summary>Aumenta a altura da janela</summary>
+    </key>
+    <key name="resize-shrink-height" type="as">
+      <default><![CDATA[['<Super><Control>Up']]]></default>
+      <summary>Diminui a altura da janela</summary>
+    </key>
+    <key name="toggle-orientation" type="as">
+      <default><![CDATA[['<Super>o']]]></default>
+      <summary>Alterna a orientação do split da janela focada</summary>
+    </key>
+    <key name="toggle-floating" type="as">
+      <default><![CDATA[['<Super>g']]]></default>
+      <summary>Alterna a janela focada entre tiling e flutuante</summary>
+    </key>
+    <key name="tab-next" type="as">
+      <default><![CDATA[['<Super>bracketright']]]></default>
+      <summary>Ativa a próxima aba do grupo</summary>
+    </key>
+    <key name="tab-prev" type="as">
+      <default><![CDATA[['<Super>bracketleft']]]></default>
+      <summary>Ativa a aba anterior do grupo</summary>
+    </key>
+    <key name="override-conflicting-keys" type="b">
+      <default>true</default>
+      <summary>Libera atalhos nativos do GNOME que colidem com os do tiling</summary>
+      <description>
+        Desliga, enquanto a extensão estiver ativa, os atalhos nativos de meia-tela, maximizar e mover
+        entre monitores (Super+setas e Super+Shift+setas), restaurando-os ao desativar.
+      </description>
+    </key>
+    <key name="saved-native-keys" type="s">
+      <default>''</default>
+      <summary>Estado interno: atalhos nativos salvos (JSON) para restaurar ao desativar</summary>
+    </key>
   </schema>
 </schemalist>

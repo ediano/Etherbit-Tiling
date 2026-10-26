@@ -29,14 +29,25 @@ void main() {
 }
 `;
 
-/// Anexa (idempotente) o efeito de cantos arredondados ao ator, com `radius` px, atualizando o
-/// tamanho atual a cada chamada (o relayout reaplica após mover/redimensionar). Nunca lança.
+/// Handler `notify::size` por ator com efeito: a alocação após `move_resize_frame` é assíncrona, então
+/// os uniforms lidos no apply ficariam com o tamanho ANTIGO (ADR 0067). Seguimos o tamanho real.
+const sizeHandlers = new WeakMap<Clutter.Actor, number>();
+
+function updateSize(actor: Clutter.Actor, effect: Clutter.ShaderEffect): void {
+  const [w, h] = actor.get_size();
+  if (w > 0 && h > 0) {
+    effect.set_uniform_value('width', w);
+    effect.set_uniform_value('height', h);
+  }
+}
+
+/// Anexa (idempotente) o efeito de cantos arredondados ao ator, com `radius` px. O tamanho é mantido
+/// em dia pelo `notify::size` do próprio ator. Nunca lança.
 export function applyRoundedCorners(actor: Clutter.Actor, radius: number): void {
   try {
-    // Tamanho do ator ANTES de anexar/atualizar. Logo após `move_resize_frame`, a alocação é
-    // assíncrona e uma janela recém-criada ainda mede 0×0; anexar a OffscreenEffect (base do
-    // ShaderEffect) montaria um framebuffer 0×0 → `cogl_framebuffer_set_viewport: width>0 && height>0`.
-    // Aborta sem efeito; o relayout seguinte reaplica quando o ator já tiver tamanho válido.
+    // Tamanho do ator ANTES de anexar. Uma janela recém-criada ainda mede 0×0; anexar a
+    // OffscreenEffect (base do ShaderEffect) montaria um framebuffer 0×0 →
+    // `cogl_framebuffer_set_viewport: width>0 && height>0`. Aborta; o relayout seguinte reaplica.
     const [w, h] = actor.get_size();
     if (w <= 0 || h <= 0) {
       return;
@@ -48,9 +59,19 @@ export function applyRoundedCorners(actor: Clutter.Actor, radius: number): void 
       effect.set_shader_source(SHADER);
       actor.add_effect_with_name(EFFECT_NAME, effect);
       effect.set_uniform_value('tex', 0);
+      const fx = effect;
+      sizeHandlers.set(
+        actor,
+        actor.connect('notify::size', () => {
+          try {
+            updateSize(actor, fx);
+          } catch {
+            // ator em destruição — ignora.
+          }
+        }),
+      );
     }
-    effect.set_uniform_value('width', w);
-    effect.set_uniform_value('height', h);
+    updateSize(actor, effect);
     effect.set_uniform_value('radius', radius);
   } catch (error) {
     console.error(`Etherbit Tiling: cantos arredondados indisponíveis: ${error}`);
@@ -60,10 +81,25 @@ export function applyRoundedCorners(actor: Clutter.Actor, radius: number): void 
 /// Remove o efeito do ator (toggle desligado ou desativando a extensão). Nunca lança.
 export function clearRoundedCorners(actor: Clutter.Actor): void {
   try {
+    const handler = sizeHandlers.get(actor);
+    if (handler) {
+      actor.disconnect(handler);
+      sizeHandlers.delete(actor);
+    }
     if (actor.get_effect(EFFECT_NAME)) {
       actor.remove_effect_by_name(EFFECT_NAME);
     }
   } catch {
     // sem efeito / ator inválido — nada a fazer.
   }
+}
+
+/// `true` se a janela desenha a própria moldura com sombra (CSD: GTK4/libadwaita, Chromium...): o
+/// buffer é maior que o frame. Essas janelas já arredondam os cantos, e o SDF sobre o ator inteiro
+/// recortaria a SOMBRA, não a borda visível — por isso o efeito não se aplica a elas.
+export function hasClientShadow(
+  frame: { width: number; height: number },
+  buffer: { width: number; height: number },
+): boolean {
+  return buffer.width > frame.width || buffer.height > frame.height;
 }

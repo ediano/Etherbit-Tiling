@@ -30,6 +30,20 @@ import {
   isFixedSize,
   effectiveMinSize,
   geometryConverged,
+  neighborInDirection,
+  directionZone,
+  pushFocus,
+  pickInsertAnchor,
+  remapMonitors,
+  isIdentityRemap,
+  remapGroupMap,
+  remapGroupSet,
+  cycleStackActive,
+  toggleFloating,
+  swapInStacks,
+  sizeRefused,
+  containedIn,
+  centerInSlot,
   type Stack,
   type TreeNode,
   type WindowSnapshot,
@@ -52,6 +66,7 @@ const win: WindowSnapshot = {
   min_width: 0,
   min_height: 0,
   maximized: false,
+  title: 'kitty',
 };
 
 describe('serializeWindows / serializeMonitors', () => {
@@ -386,6 +401,7 @@ describe('stacks: remoção, toggle de grupo e serialização', () => {
       trees: [{ monitor: 0, workspace: 0, root: { win: 7 } }],
       focused_id: 5,
       mins: [], // sem mins no caminho de sync (ADR 0064; só o resize popula)
+      floating: [],
     });
   });
 
@@ -692,5 +708,156 @@ describe('geometryConverged', () => {
     expect(geometryConverged(last, new Map([[1, r(13, 20, 300, 400)]]), 2)).toBe(false); // x
     expect(geometryConverged(last, new Map([[1, r(10, 20, 300, 405)]]), 2)).toBe(false); // height
     expect(geometryConverged(last, new Map([[1, r(11, 21, 301, 401)]]), 2)).toBe(true); // tudo ≤2px
+  });
+});
+
+describe('recusa de tamanho (ADR 0068)', () => {
+  const r = (x: number, y: number, width: number, height: number): Rect => ({
+    x,
+    y,
+    width,
+    height,
+  });
+
+  it('terminal menor (size increments) contido no slot → convergiu', () => {
+    const last = new Map([[1, r(0, 0, 805, 1000)]]);
+    const current = new Map([[1, r(0, 0, 797, 990)]]);
+    expect(geometryConverged(last, current, 2)).toBe(true);
+  });
+
+  it('menor mas FORA do slot (apply descartado) → não convergiu', () => {
+    const last = new Map([[1, r(0, 0, 800, 1000)]]);
+    const current = new Map([[1, r(900, 100, 400, 300)]]);
+    expect(geometryConverged(last, current, 2)).toBe(false);
+  });
+
+  it('sizeRefused: menor num eixo e não maior no outro', () => {
+    expect(sizeRefused(r(0, 0, 800, 600), r(0, 0, 790, 600), 2)).toBe(true);
+    expect(sizeRefused(r(0, 0, 800, 600), r(0, 0, 900, 500), 2)).toBe(false);
+    expect(sizeRefused(r(0, 0, 800, 600), r(0, 0, 800, 600), 2)).toBe(false);
+    expect(sizeRefused(r(0, 0, 800, 600), r(0, 0, 0, 0), 2)).toBe(false);
+  });
+
+  it('containedIn respeita o epsilon', () => {
+    expect(containedIn(r(10, 10, 100, 100), r(9, 10, 100, 100), 2)).toBe(true);
+    expect(containedIn(r(10, 10, 100, 100), r(20, 20, 100, 100), 2)).toBe(false);
+  });
+
+  it('centerInSlot divide a folga igualmente', () => {
+    expect(centerInSlot(r(100, 50, 805, 1000), r(0, 0, 797, 990))).toEqual(r(104, 55, 797, 990));
+    expect(centerInSlot(r(0, 0, 100, 100), r(0, 0, 120, 100))).toEqual(r(0, 0, 120, 100));
+  });
+});
+
+describe('paridade COSMIC (ADR 0068)', () => {
+  const r = (x: number, y: number, width: number, height: number): Rect => ({
+    x,
+    y,
+    width,
+    height,
+  });
+  // 1 | 2/3 (coluna esquerda inteira; direita dividida) + monitor 2 à direita com a janela 4.
+  const rects = new Map<number, Rect>([
+    [1, r(8, 8, 492, 784)],
+    [2, r(508, 8, 484, 388)],
+    [3, r(508, 404, 484, 388)],
+    [4, r(1008, 8, 984, 784)],
+  ]);
+
+  it('neighborInDirection escolhe o vizinho de frente', () => {
+    expect(neighborInDirection(rects, 1, 'right')).toBe(2);
+    expect(neighborInDirection(rects, 3, 'left')).toBe(1);
+    expect(neighborInDirection(rects, 2, 'down')).toBe(3);
+    expect(neighborInDirection(rects, 3, 'up')).toBe(2);
+    expect(neighborInDirection(rects, 1, 'left')).toBeNull();
+    // Atravessa monitores.
+    expect(neighborInDirection(rects, 2, 'right')).toBe(4);
+    expect(neighborInDirection(rects, 99, 'right')).toBeNull();
+  });
+
+  it('directionZone mapeia setas para zonas do MoveWindow', () => {
+    expect(directionZone('up')).toBe('top');
+    expect(directionZone('down')).toBe('bottom');
+    expect(directionZone('left')).toBe('left');
+  });
+
+  it('pushFocus mantém MRU sem duplicatas e com teto', () => {
+    const mru: number[] = [];
+    pushFocus(mru, 1);
+    pushFocus(mru, 2);
+    pushFocus(mru, 1);
+    pushFocus(mru, 0);
+    expect(mru).toEqual([1, 2]);
+    for (let i = 10; i < 50; i += 1) {
+      pushFocus(mru, i, 5);
+    }
+    expect(mru.length).toBe(5);
+  });
+
+  it('pickInsertAnchor pula a janela nova (ainda não tilada)', () => {
+    const mru = [9, 2, 1];
+    expect(pickInsertAnchor(mru, new Set([1, 2, 9]), new Set([1, 2]))).toBe(2);
+    expect(pickInsertAnchor(mru, new Set([1, 9]), new Set([1, 2]))).toBe(1);
+    expect(pickInsertAnchor(mru, new Set([9]), new Set([1, 2]))).toBe(0);
+  });
+
+  it('remapMonitors casa por geometria e cai no índice', () => {
+    const a = r(0, 0, 1920, 1080);
+    const b = r(1920, 0, 2560, 1440);
+    // Reordenação: os índices trocam, as geometrias ficam.
+    const swapped = remapMonitors([a, b], [b, a]);
+    expect([...swapped]).toEqual([
+      [0, 1],
+      [1, 0],
+    ]);
+    expect(isIdentityRemap(swapped)).toBe(false);
+    // Desconectou o segundo.
+    expect([...remapMonitors([a, b], [a])]).toEqual([
+      [0, 0],
+      [1, null],
+    ]);
+    // Troca de resolução no mesmo índice.
+    expect(isIdentityRemap(remapMonitors([a], [r(0, 0, 1280, 720)]))).toBe(true);
+  });
+
+  it('remapGroupMap/Set reescrevem e descartam grupos', () => {
+    const mapping = new Map<number, number | null>([
+      [0, 1],
+      [1, null],
+    ]);
+    const m = remapGroupMap(
+      new Map([
+        ['0:2', 'a'],
+        ['1:0', 'b'],
+        ['5:0', 'c'],
+      ]),
+      mapping,
+    );
+    expect([...m]).toEqual([
+      ['1:2', 'a'],
+      ['5:0', 'c'],
+    ]);
+    expect([...remapGroupSet(new Set(['0:0', '1:1']), mapping)]).toEqual(['1:0']);
+  });
+
+  it('cycleStackActive é circular', () => {
+    const stacks = new Map([['0:0', [{ members: [1, 2, 3], active: 1 }]]]);
+    expect(cycleStackActive(stacks, 1, 1)).toBe(2);
+    expect(cycleStackActive(stacks, 1, -1)).toBe(3);
+    expect(stacks.get('0:0')?.[0]?.active).toBe(3);
+    expect(cycleStackActive(stacks, 9, 1)).toBeNull();
+  });
+
+  it('toggleFloating alterna', () => {
+    const f = new Set<number>();
+    expect(toggleFloating(f, 4)).toBe(true);
+    expect(toggleFloating(f, 4)).toBe(false);
+    expect(f.size).toBe(0);
+  });
+
+  it('swapInStacks troca membros e ativa', () => {
+    const stacks = new Map([['0:0', [{ members: [1, 2], active: 2 }]]]);
+    swapInStacks(stacks, 2, 7);
+    expect(stacks.get('0:0')?.[0]).toEqual({ members: [1, 7], active: 7 });
   });
 });

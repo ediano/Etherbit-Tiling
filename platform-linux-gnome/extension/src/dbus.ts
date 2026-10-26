@@ -31,6 +31,15 @@ const IFACE_XML = `
     <method name="SetGap">
       <arg type="u" direction="in" name="gap"/>
     </method>
+    <method name="SetOuterGap">
+      <arg type="u" direction="in" name="gap"/>
+    </method>
+    <method name="SetSmartGaps">
+      <arg type="b" direction="in" name="enabled"/>
+    </method>
+    <method name="SetInsertMode">
+      <arg type="s" direction="in" name="mode"/>
+    </method>
     <method name="SetActiveBorder">
       <arg type="b" direction="in" name="enabled"/>
       <arg type="s" direction="in" name="color"/>
@@ -75,6 +84,11 @@ const IFACE_XML = `
       <arg type="i" direction="in" name="delta_px"/>
       <arg type="s" direction="out" name="trees_json"/>
     </method>
+    <method name="ToggleOrientation">
+      <arg type="s" direction="in" name="state_json"/>
+      <arg type="s" direction="in" name="id"/>
+      <arg type="s" direction="out" name="trees_json"/>
+    </method>
     <signal name="ConfigChanged">
       <arg type="s" name="config_json"/>
     </signal>
@@ -89,6 +103,11 @@ export interface TilingProxy {
   /// Chave geral do tiling: `false` libera as janelas (a ponte pausa o laço); `true` re-tila.
   SetEnabledSync(enabled: boolean): void;
   SetGapSync(gap: number): void;
+  SetOuterGapSync(gap: number): void;
+  /// Smart gaps (COSMIC): sem gaps com uma única janela no workspace (ADR 0068).
+  SetSmartGapsSync(enabled: boolean): void;
+  /// `focus` (nova janela racha a focada, COSMIC) ou `cyclic` (ADR 0030).
+  SetInsertModeSync(mode: string): void;
   SetActiveBorderSync(enabled: boolean, color: string, width: number): void;
   SetIgnoreListSync(appIds: string[]): void;
   SetAutostartSync(enabled: boolean): void;
@@ -118,6 +137,8 @@ export interface TilingProxy {
     edge: string,
     deltaPx: number,
   ): [string];
+  /// Super+O (ADR 0068): alterna a orientação do split que contém `id`. Devolve `{"trees":[...]}`.
+  ToggleOrientationSync(stateJson: string, id: string): [string];
   connectSignal(
     name: 'ConfigChanged',
     callback: (proxy: TilingProxy, sender: string, params: [string]) => void,
@@ -129,7 +150,14 @@ type TilingProxyCtor = (bus: Gio.DBusConnection, name: string, objectPath: strin
 
 const TilingProxyWrapper = Gio.DBusProxy.makeProxyWrapper(IFACE_XML) as unknown as TilingProxyCtor;
 
+/// Teto de bloqueio de cada chamada síncrona (ADR 0067). As chamadas rodam na thread principal do
+/// gnome-shell; o default do GDBus (~25 s) congelaria o compositor inteiro com o daemon travado ou
+/// parado (SIGSTOP). O daemon é puro e responde em µs–ms, então 1 s é folga ampla.
+const CALL_TIMEOUT_MS = 1000;
+
 /// Cria um proxy síncrono no barramento de sessão. Pode lançar se o daemon não estiver no bus.
 export function createTilingProxy(): TilingProxy {
-  return TilingProxyWrapper(Gio.DBus.session, BUS_NAME, OBJECT_PATH);
+  const proxy = TilingProxyWrapper(Gio.DBus.session, BUS_NAME, OBJECT_PATH);
+  (proxy as unknown as Gio.DBusProxy).set_default_timeout(CALL_TIMEOUT_MS);
+  return proxy;
 }
