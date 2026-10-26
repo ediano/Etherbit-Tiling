@@ -93,7 +93,7 @@ A extensão usa **pnpm** (habilitado via corepack no container):
 cd platform-linux-gnome/extension
 pnpm install
 pnpm typecheck      # checagem de tipos (tsc --noEmit)
-pnpm build          # bundle ESM de produção em dist/extension.js
+pnpm build          # dist/extension.js (loader estável) + dist/main.js (impl versionada)
 pnpm run install:ext  # build + copia para ~/.local/share/gnome-shell/extensions/etherbit.tiling@ediano.dev/
 ```
 
@@ -104,10 +104,11 @@ O build usa Vite em modo _library_ mantendo `gi://`/`resource:///` literais (ver
 
 ### Recarregar no Wayland
 
-O GNOME Shell **não** recarrega extensões com `Alt+F2` `r` no Wayland (isso é só X11). Para aplicar:
+O GNOME Shell **não** recarrega extensões com `Alt+F2` `r` no Wayland (isso é só X11). Para contornar,
+o `extension.js` é um loader estável que troca a impl ao vivo (ver [rules/0071](../rules/0071-update-sem-logout-hot-reload.md)):
 
-- **Sessão real:** faça **logout/login** após `pnpm run install:ext`, depois
-  `gnome-extensions enable etherbit.tiling@ediano.dev`.
+- **Sessão real:** `pnpm run install:ext` recarrega a extensão **sem logout**. Logout é necessário só
+  na primeira instalação ou quando `src/loader.ts`/`metadata.json` mudam (o script avisa).
 - **Loop de dev:** rode um Shell **aninhado** isolado, sem derrubar sua sessão:
   ```bash
   dbus-run-session -- gnome-shell --nested --wayland

@@ -6,6 +6,9 @@
 //  - coleta os metadados brutos das janelas + áreas úteis, envia ao daemon (`SyncWindows`) e
 //    APLICA os retângulos-alvo devolvidos via `move_resize_frame` (geométrico e instantâneo).
 // Toda a matemática (Ether Flow) e a resiliência gráfica vivem no Rust (core/daemon).
+//
+// Este módulo é a implementação VERSIONADA (`impl/<versão>/main.js`): quem o carrega é o loader
+// estável (`loader.ts`), que troca de versão ao vivo sem logout (ADR 0071).
 
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
@@ -14,7 +17,7 @@ import Meta from 'gi://Meta';
 import Pango from 'gi://Pango';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
-import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
+import type { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
@@ -140,7 +143,17 @@ interface Tracked {
   spawnAt: number;
 }
 
-export default class EtherbitTilingExtension extends Extension {
+export default class EtherbitTilingExtension {
+  constructor(private readonly _ext: Extension) {}
+
+  private get uuid(): string {
+    return this._ext.uuid;
+  }
+
+  private getSettings(): Gio.Settings {
+    return this._ext.getSettings();
+  }
+
   private _indicator: EtherbitIndicator | null = null;
   private _proxy: TilingProxy | null = null;
   private _config: TilingConfig = { ...DEFAULT_CONFIG };
@@ -354,7 +367,7 @@ export default class EtherbitTilingExtension extends Extension {
     this._scheduleRelayout();
   }
 
-  override enable(): void {
+  enable(): void {
     // 1) Proxy D-Bus (lazy + resiliente). Sem daemon no bus, opera em modo degradado até ele
     //    (re)aparecer; toda chamada passa por `_call`, que reconecta sob demanda.
     this._ensureProxy();
@@ -502,7 +515,7 @@ export default class EtherbitTilingExtension extends Extension {
     this._scheduleBootSettle();
   }
 
-  override disable(): void {
+  disable(): void {
     if (this._relayoutSource) {
       GLib.source_remove(this._relayoutSource);
       this._relayoutSource = 0;

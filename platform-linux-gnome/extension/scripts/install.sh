@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 # install.sh — instala o bundle da extensão na pasta local de extensões do GNOME.
 #
-# Copia (não bundla) dist/extension.js + metadata.json para
+# Copia (não bundla) dist/extension.js (loader) + dist/main.js (impl) + metadata.json para
 # ~/.local/share/gnome-shell/extensions/<uuid>/. Idempotente.
 # Use via `pnpm run install:ext`, que roda `vite build` antes.
 #
-# Wayland: o GNOME Shell NÃO recarrega extensões com Alt+F2 r (isso é só X11).
-# Para aplicar: faça logout/login, ou teste num Shell aninhado:
-#   dbus-run-session -- gnome-shell --nested --wayland
+# Hot-reload (ADR 0071): a impl vai para `impl/dev-<timestamp>/` e `impl/current` aponta para ela;
+# o loader já carregado troca de versão ao vivo, sem logout. Logout só na primeira instalação ou
+# quando o próprio loader (src/loader.ts) ou o metadata.json mudam. Se o daemon estiver rodando
+# como serviço, ele também é reiniciado para não ficar com o binário velho em memória.
 set -euo pipefail
 
 UUID="etherbit.tiling@ediano.dev"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="${XDG_DATA_HOME:-$HOME/.local/share}/gnome-shell/extensions/$UUID"
 
-if [ ! -f "$HERE/dist/extension.js" ]; then
-  echo "erro: $HERE/dist/extension.js ausente — rode 'pnpm build' antes." >&2
+if [ ! -f "$HERE/dist/extension.js" ] || [ ! -f "$HERE/dist/main.js" ]; then
+  echo "erro: $HERE/dist/{extension,main}.js ausente — rode 'pnpm build' antes." >&2
   exit 1
 fi
 if [ ! -f "$HERE/metadata.json" ]; then
@@ -31,7 +32,15 @@ if [ -n "$(find "$HERE/src" -name '*.ts' -newer "$HERE/dist/extension.js" -print
   exit 1
 fi
 
-mkdir -p "$DEST"
+NEEDS_LOGOUT=0
+if ! cmp -s "$HERE/dist/extension.js" "$DEST/extension.js" 2>/dev/null \
+   || ! cmp -s "$HERE/metadata.json" "$DEST/metadata.json" 2>/dev/null; then
+  NEEDS_LOGOUT=1
+fi
+IMPL_VERSION="dev-$(date +%s)"
+mkdir -p "$DEST/impl/$IMPL_VERSION"
+install -m 644 "$HERE/dist/main.js" "$DEST/impl/$IMPL_VERSION/main.js"
+[ -f "$HERE/dist/main.js.map" ] && install -m 644 "$HERE/dist/main.js.map" "$DEST/impl/$IMPL_VERSION/main.js.map"
 install -m 644 "$HERE/dist/extension.js" "$DEST/extension.js"
 install -m 644 "$HERE/metadata.json" "$DEST/metadata.json"
 
@@ -64,5 +73,20 @@ elif command -v gsettings >/dev/null; then
   esac
 fi
 
-echo "Instalada e habilitada em $DEST"
-echo "Wayland: faça logout/login — a extensão sobe automaticamente, sem 'gnome-extensions enable'."
+# Daemon de dev: se o serviço existe, reinicia para assumir o binário recém-compilado.
+if command -v systemctl >/dev/null && systemctl --user is-active --quiet etherbit-tiling-daemon.service 2>/dev/null; then
+  systemctl --user restart etherbit-tiling-daemon.service || true
+fi
+
+# Troca ao vivo (escrita atômica de `current`) e limpeza: mantém as 2 versões mais novas.
+printf '%s\n' "$IMPL_VERSION" > "$DEST/impl/current.tmp"
+mv -f "$DEST/impl/current.tmp" "$DEST/impl/current"
+find "$DEST/impl" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -rn | tail -n +3 \
+  | cut -d' ' -f2- | while IFS= read -r d; do rm -rf -- "$d"; done
+
+echo "Instalada e habilitada em $DEST (impl $IMPL_VERSION)"
+if [ "$NEEDS_LOGOUT" = 1 ]; then
+  echo "Loader novo: faça logout/login uma vez — depois disso os updates recarregam ao vivo."
+else
+  echo "Recarregada ao vivo — sem logout."
+fi
