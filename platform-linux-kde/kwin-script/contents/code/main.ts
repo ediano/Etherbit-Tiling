@@ -1406,6 +1406,9 @@ function onMoveStep(): void {
 /// maximizar. Tudo via MoveWindow (move na árvore persistente, traduzindo ids via os mapas do retile).
 function onMoveFinish(win: KWinWindow): void {
   updateOutline(null); // esconde outline nativo + preview translúcido (helper)
+  // O frame foi alterado pelo USUÁRIO, não recusado pelo cliente: esquece o slot committado para a
+  // heurística de recusa (ADR 0070) não ler o frame menor como recusa e só centralizar no mesmo slot.
+  lastApplied.delete(windowId(win));
   const dragged = draggedId;
   draggedId = null;
   updateBorder();

@@ -101,3 +101,12 @@ completos:
 - O CI cobre:
   - as funções puras, nos testes do kwin-script;
   - o anel da borda e o parse de cor, nos testes do helper.
+
+## Emenda (2026-10-26) — grab do usuário invalida a recusa
+
+A heurística de recusa compara o frame atual com o último slot committado. Depois de um resize ou
+arraste manual, o frame menor é ação do usuário, não recusa do cliente — e, se o slot seguinte for
+o mesmo, a janela só era centralizada e nunca voltava a preencher o slot. Ao fim de todo grab
+(`grab-op-end` no GNOME, `interactiveMoveResizeFinished` no KDE) a ponte esquece o slot committado
+da janela agarrada (no GNOME também invalida o dedup). A recusa volta a ser detectada se o cliente
+recusar um pedido novo.
