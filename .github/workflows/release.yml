@@ -80,12 +80,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Versões FIXAS: sem pin, o `npx -p` puxa o `latest` de cada pacote e eles divergem — o
+          # preset `conventional-changelog-conventionalcommits@10` exige o writer@9, mas o
+          # `release-notes-generator@14` ainda traz o writer@8 ("Missing helper", release quebrado).
+          # Atualize o conjunto inteiro de uma vez, validando com `semantic-release --dry-run`.
           npx --yes \
-            -p semantic-release \
-            -p @semantic-release/commit-analyzer \
-            -p @semantic-release/release-notes-generator \
-            -p @semantic-release/exec \
-            -p conventional-changelog-conventionalcommits \
+            -p semantic-release@25.0.9 \
+            -p @semantic-release/commit-analyzer@13.0.1 \
+            -p @semantic-release/release-notes-generator@14.1.1 \
+            -p @semantic-release/exec@7.1.0 \
+            -p conventional-changelog-conventionalcommits@8.0.0 \
             semantic-release
 
       # Publicação: cria a Release da tag calculada NESTE repositório, anexando os tar.gz unificados e
