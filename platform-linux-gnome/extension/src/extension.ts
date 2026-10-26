@@ -1415,6 +1415,14 @@ export default class EtherbitTilingExtension {
   /// MoveWindow escopo `local` (split 50/50 do slot do alvo, resolvido pelo core); escopo global →
   /// MoveWindow `global` (bloco de 50% / maximizar no centro). O `_scheduleRelayout()` re-tila das árvores.
   private _onGrabEnd(window: Meta.Window | null): void {
+    // O frame da janela agarrada foi alterado pelo USUÁRIO, não recusado pelo cliente: esquece o slot
+    // committado dela e invalida o dedup. Sem isso, se o slot seguinte é o mesmo de antes, a heurística
+    // de recusa (ADR 0068) lia o frame menor como recusa e só centralizava — o quadrante "perdia o
+    // encaixe" após resize/arraste manual. A recusa volta a valer se o cliente recusar um novo pedido.
+    if (window) {
+      this._lastAppliedRects.delete(window.get_stable_sequence());
+      this._lastLayoutSig = '';
+    }
     if (this._draggedId && window) {
       const [x, y] = global.get_pointer();
       const target = this._windowUnderPointObj(x, y, this._draggedId);
