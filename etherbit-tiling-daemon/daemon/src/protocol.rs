@@ -9,11 +9,12 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use etherbit_tiling_core::{
-    build_min_sizes, compute_constrained, detect_drop_target, is_tileable,
-    move_window as core_move_window, reconcile, resize_window as core_resize_window,
-    retain_tileable_when_maximized, DropPreview, DropScope, DropZone, Edge, GridChild,
-    LayoutOptions, LayoutTree, Node, PreviewRect, StackDescriptor, TabBarRect, WindowInfo,
-    WindowRect, WorkArea,
+    build_min_sizes, compute_constrained, detect_drop_target, is_tileable, matches_exception,
+    move_window as core_move_window, reconcile, reconcile_focused,
+    resize_window as core_resize_window, retain_tileable_when_maximized,
+    toggle_orientation as core_toggle_orientation, DropPreview, DropScope, DropZone, Edge,
+    GridChild, LayoutOptions, LayoutTree, Node, PreviewRect, StackDescriptor, TabBarRect,
+    WindowInfo, WindowRect, WorkArea,
 };
 
 /// Desserializa um índice (monitor/workspace) de forma TOLERANTE: aceita inteiro e SATURA negativos a
@@ -76,6 +77,9 @@ pub struct WindowDto {
     /// de unmaximize no core (`retain_tileable_when_maximized`).
     #[serde(default)]
     pub maximized: bool,
+    /// Título da janela (regras `title:` da lista de exceções, ADR 0068). Ausente = vazio (retrocompat).
+    #[serde(default)]
+    pub title: String,
 }
 
 /// Tamanho mínimo (px) de uma janela, anexado ao `state_json` para o caminho de `ResizeWindow` — que
@@ -162,6 +166,22 @@ pub struct SyncStateDto {
     /// resize consome; o `SyncWindows` ignora (usa o `min_width/min_height` do próprio `WindowDto`).
     #[serde(default)]
     pub mins: Vec<WinMinDto>,
+    /// Janelas que o usuário pôs para FLUTUAR (Super+G, ADR 0068): saem do grid com motivo `floating`.
+    /// Ausente = nenhuma (retrocompat com pontes antigas).
+    #[serde(default)]
+    pub floating: Vec<u64>,
+}
+
+/// Política do `SyncWindows` derivada da config do daemon (ADR 0068). `Default` = comportamento
+/// histórico (inserção cíclica, sem smart gaps, sem exceções), usado pelo wrapper `sync_windows`.
+#[derive(Debug, Clone, Default)]
+pub struct SyncPolicy {
+    /// Regras de exceção (`id`, `class:id`, `title:trecho`).
+    pub ignore_list: Vec<String>,
+    /// Smart gaps: grupo com UM slot só (janela ou stack) fica sem gap nenhum.
+    pub smart_gaps: bool,
+    /// `true` = a nova janela racha a focada (COSMIC); `false` = distribuição cíclica (ADR 0030).
+    pub focus_insert: bool,
 }
 
 /// Nó da árvore no contrato D-Bus (untagged): folha `{ "win": id }`, grid
@@ -372,6 +392,7 @@ impl From<WindowDto> for WindowInfo {
             min_width: w.min_width,
             min_height: w.min_height,
             maximized: w.maximized,
+            title: w.title,
         }
     }
 }
@@ -521,7 +542,8 @@ pub fn sync_windows(
     ignore_list: &[String],
     opts: LayoutOptions,
 ) -> Result<String> {
-    let dto = sync_windows_dto(windows_json, monitors_json, state_json, ignore_list, opts)?;
+    let policy = SyncPolicy { ignore_list: ignore_list.to_vec(), ..SyncPolicy::default() };
+    let dto = sync_windows_dto(windows_json, monitors_json, state_json, &policy, opts)?;
     serde_json::to_string(&dto).context("falha ao serializar layout_json")
 }
 
@@ -529,8 +551,7 @@ pub fn sync_windows(
 /// chamada quando `is_tileable` já retornou `false`, então sempre acha um motivo (`unknown` é só uma
 /// rede defensiva caso as regras divirjam). Puramente diagnóstica.
 fn drop_reason(w: &WindowInfo, ignore_list: &[String]) -> String {
-    let app = w.app_id.to_lowercase();
-    if !app.is_empty() && ignore_list.iter().any(|e| e.to_lowercase() == app) {
+    if ignore_list.iter().any(|rule| matches_exception(rule, w)) {
         return "ignored".to_string();
     }
     if !w.resizable {
@@ -552,9 +573,10 @@ pub fn sync_windows_dto(
     windows_json: &str,
     monitors_json: &str,
     state_json: &str,
-    ignore_list: &[String],
+    policy: &SyncPolicy,
     opts: LayoutOptions,
 ) -> Result<LayoutResultDto> {
+    let ignore_list = policy.ignore_list.as_slice();
     let windows: Vec<WindowDto> =
         serde_json::from_str(windows_json).context("windows_json inválido")?;
     let monitors: Vec<MonitorDto> =
@@ -569,7 +591,9 @@ pub fn sync_windows_dto(
     let mut dropped: Vec<DroppedDto> = Vec::new();
     let mut tileable: Vec<WindowInfo> = Vec::new();
     for w in windows.into_iter().map(WindowInfo::from) {
-        if is_tileable(&w, ignore_list) {
+        if state.floating.contains(&w.id) {
+            dropped.push(DroppedDto { id: w.id, reason: "floating".to_string() });
+        } else if is_tileable(&w, ignore_list) {
             tileable.push(w);
         } else {
             dropped.push(DroppedDto { id: w.id, reason: drop_reason(&w, ignore_list) });
@@ -628,7 +652,18 @@ pub fn sync_windows_dto(
         match areas.iter().find(|a| a.index == monitor) {
             Some(area) => {
                 // Reconcilia a árvore mesmo se o grupo estiver desligado (mantém a topologia).
-                let tree = reconcile(&prev, &group_ids, &stacks, focused_opt, area, &opts);
+                let tree = if policy.focus_insert {
+                    reconcile_focused(&prev, &group_ids, &stacks, focused_opt, area, &opts)
+                } else {
+                    reconcile(&prev, &group_ids, &stacks, focused_opt, area, &opts)
+                };
+                // Smart gaps (ADR 0068): um único slot no grupo ocupa a área útil inteira, sem gaps.
+                let single = matches!(tree.root, Some(Node::Leaf(_)) | Some(Node::Stack { .. }));
+                let opts = if policy.smart_gaps && single {
+                    LayoutOptions { inner_gap: 0, outer_gap: 0, ..opts }
+                } else {
+                    opts
+                };
                 if !state.disabled_groups.contains(&(monitor, workspace)) {
                     // `compute_constrained` respeita os mínimos via esmagamento impositivo (ADR 0040):
                     // toda janela rígida recebe ≥ seu mínimo no grid e os vizinhos comprimem em cascata.
@@ -736,6 +771,17 @@ pub fn move_window(
     serde_json::to_string(&TreesDto { trees: dtos }).context("falha ao serializar trees_json")
 }
 
+/// Alterna a orientação do split que contém `id` (Super+O, ADR 0068). Tree-only como o `move_window`:
+/// devolve `{"trees":[...]}`; grupos sem `id` ficam intactos.
+pub fn toggle_orientation(state_json: &str, id: u64) -> Result<String> {
+    let state = parse_state(state_json)?;
+    let dtos: Vec<TreeDto> = parse_trees(&state)
+        .iter()
+        .map(|(m, w, t)| tree_to_dto(*m, *w, &core_toggle_orientation(t, id)))
+        .collect();
+    serde_json::to_string(&TreesDto { trees: dtos }).context("falha ao serializar trees_json")
+}
+
 /// Redimensiona elasticamente a janela `id` arrastando a borda `edge` em `delta_px` (positivo = a
 /// janela cresceu). Acha o split governante na árvore do grupo de `id` (usando a área do monitor
 /// daquele grupo) e ajusta o ratio. Tree-only: devolve `{"trees":[...]}`; a geometria vem do
@@ -764,19 +810,12 @@ pub fn resize_window(
         .iter()
         .map(|m| WindowInfo {
             id: m.id,
-            x: 0,
-            y: 0,
-            width: 0,
-            height: 0,
-            app_id: String::new(),
             normal: true,
             resizable: true,
             maximizable: true,
-            monitor: 0,
-            workspace: 0,
             min_width: m.min_width.max(0),
             min_height: m.min_height.max(0),
-            maximized: false,
+            ..WindowInfo::default()
         })
         .collect();
     let all_ids: Vec<u64> = min_stubs.iter().map(|w| w.id).collect();
@@ -1299,5 +1338,73 @@ mod tests {
         assert!(res.floating.is_empty());
         assert!(res.rects.iter().any(|r| r.id == 1));
         assert!(res.rects.iter().any(|r| r.id == 2));
+    }
+
+    // ---- ADR 0068: política COSMIC (float, smart gaps, exceções por título, orientação) ----
+
+    fn sync_policy(windows: &str, state: &str, policy: &SyncPolicy) -> LayoutResultDto {
+        sync_windows_dto(windows, AREAS, state, policy, OPTS).expect("ok")
+    }
+
+    #[test]
+    fn sync_floating_sai_do_grid_com_motivo() {
+        let windows = format!("[{},{}]", win_json(1, "a"), win_json(2, "b"));
+        let res = sync_policy(&windows, r#"{"floating":[2]}"#, &SyncPolicy::default());
+        assert_eq!(res.rects, vec![RectDto { id: 1, x: 12, y: 12, width: 976, height: 776 }]);
+        assert!(res.dropped.iter().any(|d| d.id == 2 && d.reason == "floating"));
+    }
+
+    #[test]
+    fn sync_smart_gaps_zera_gaps_com_janela_unica() {
+        let windows = format!("[{}]", win_json(1, "a"));
+        let policy = SyncPolicy { smart_gaps: true, ..SyncPolicy::default() };
+        let res = sync_policy(&windows, "", &policy);
+        assert_eq!(res.rects, vec![RectDto { id: 1, x: 0, y: 0, width: 1000, height: 800 }]);
+        // Com duas janelas os gaps voltam.
+        let two = format!("[{},{}]", win_json(1, "a"), win_json(2, "b"));
+        let res = sync_policy(&two, "", &policy);
+        assert_eq!(res.rects[0].x, 12);
+    }
+
+    #[test]
+    fn sync_excecao_por_titulo() {
+        let pip = r#"{"id":3,"app_id":"firefox","title":"Picture-in-Picture","x":0,"y":0,"width":10,"height":10,"normal":true,"resizable":true,"maximizable":true,"monitor":0,"workspace":0}"#;
+        let windows = format!("[{},{}]", win_json(1, "firefox"), pip);
+        let policy = SyncPolicy {
+            ignore_list: vec!["title:picture-in-picture".into()],
+            ..Default::default()
+        };
+        let res = sync_policy(&windows, "", &policy);
+        assert_eq!(res.rects.len(), 1);
+        assert!(res.dropped.iter().any(|d| d.id == 3 && d.reason == "ignored"));
+    }
+
+    #[test]
+    fn sync_focus_insert_racha_a_focada() {
+        let two = format!("[{},{}]", win_json(1, "a"), win_json(2, "b"));
+        let base = sync_policy(&two, "", &SyncPolicy::default());
+        let state = serde_json::json!({ "trees": base.trees, "focused_id": 1 }).to_string();
+        let three = format!("[{},{},{}]", win_json(1, "a"), win_json(2, "b"), win_json(3, "c"));
+        let policy = SyncPolicy { focus_insert: true, ..SyncPolicy::default() };
+        let res = sync_policy(&three, &state, &policy);
+        let r = |id| res.rects.iter().find(|r| r.id == id).cloned().expect("rect");
+        // 3 nasce embaixo de 1 (metade esquerda), 2 segue com a altura cheia.
+        assert_eq!(r(3).x, r(1).x);
+        assert!(r(3).y > r(1).y);
+        assert_eq!(r(2).height, 776);
+    }
+
+    #[test]
+    fn toggle_orientation_devolve_arvores_transpostas() {
+        let two = format!("[{},{}]", win_json(1, "a"), win_json(2, "b"));
+        let base = sync_policy(&two, "", &SyncPolicy::default());
+        let state = serde_json::json!({ "trees": base.trees }).to_string();
+        let out: TreesDto =
+            serde_json::from_str(&toggle_orientation(&state, 2).expect("ok")).expect("json");
+        let state = serde_json::json!({ "trees": out.trees }).to_string();
+        let res = sync_policy(&two, &state, &SyncPolicy::default());
+        let r = |id| res.rects.iter().find(|r| r.id == id).cloned().expect("rect");
+        assert_eq!(r(1).x, r(2).x);
+        assert!(r(2).y > r(1).y);
     }
 }

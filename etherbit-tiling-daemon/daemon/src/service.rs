@@ -32,7 +32,7 @@ impl Tiling {
     fn layout_options(&self) -> LayoutOptions {
         LayoutOptions {
             inner_gap: self.config.gap,
-            outer_gap: self.config.gap,
+            outer_gap: self.config.outer_gap.unwrap_or(self.config.gap).min(GAP_MAX),
             group_header_px: self.config.group_header_px,
         }
     }
@@ -121,6 +121,42 @@ impl Tiling {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> fdo::Result<()> {
         self.config.gap = gap.min(GAP_MAX);
+        self.persist()?;
+        self.notify(&emitter).await
+    }
+
+    /// Gap EXTERNO independente (px, travado em 0..=100). ADR 0068.
+    async fn set_outer_gap(
+        &mut self,
+        gap: u32,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
+        self.config.outer_gap = Some(gap.min(GAP_MAX));
+        self.persist()?;
+        self.notify(&emitter).await
+    }
+
+    /// Liga/desliga os smart gaps (sem gaps com uma única janela no workspace). ADR 0068.
+    async fn set_smart_gaps(
+        &mut self,
+        enabled: bool,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
+        self.config.smart_gaps = enabled;
+        self.persist()?;
+        self.notify(&emitter).await
+    }
+
+    /// Política de inserção: `"focus"` (COSMIC) ou `"cyclic"` (ADR 0030). Outro valor = erro. ADR 0068.
+    async fn set_insert_mode(
+        &mut self,
+        mode: String,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
+        if mode != "focus" && mode != "cyclic" {
+            return Err(fdo::Error::InvalidArgs(format!("set_insert_mode: modo inválido: {mode}")));
+        }
+        self.config.insert_mode = mode;
         self.persist()?;
         self.notify(&emitter).await
     }
@@ -226,16 +262,15 @@ impl Tiling {
         state_json: String,
     ) -> fdo::Result<String> {
         let opts = self.layout_options();
+        let policy = protocol::SyncPolicy {
+            ignore_list: self.config.ignore_list.clone(),
+            smart_gaps: self.config.smart_gaps,
+            focus_insert: self.config.focus_insert(),
+        };
         // Computa o layout sob o guard de pânico e serializa o DTO de volta à ponte. O daemon segue
         // sem estado de janelas/layout: request/response puro (as `tab_bars` ainda viajam para o GNOME).
         let dto = guard("sync_windows", || {
-            protocol::sync_windows_dto(
-                &windows_json,
-                &monitors_json,
-                &state_json,
-                &self.config.ignore_list,
-                opts,
-            )
+            protocol::sync_windows_dto(&windows_json, &monitors_json, &state_json, &policy, opts)
         })?;
 
         serde_json::to_string(&dto)
@@ -309,6 +344,13 @@ impl Tiling {
         guard("resize_window", || {
             protocol::resize_window(&monitors_json, &state_json, id, &edge, delta_px, opts)
         })
+    }
+
+    /// Alterna a orientação do split que contém `id` (Super+O, ADR 0068). Recebe o `state_json` (com as
+    /// árvores) e devolve `{"trees":[...]}`; a geometria vem do `SyncWindows` seguinte. Sem estado.
+    async fn toggle_orientation(&self, state_json: String, id: String) -> fdo::Result<String> {
+        let id = id.parse::<u64>().unwrap_or(0);
+        guard("toggle_orientation", || protocol::toggle_orientation(&state_json, id))
     }
 
     /// Sinal emitido sempre que a configuração muda. Carrega a config completa em JSON.

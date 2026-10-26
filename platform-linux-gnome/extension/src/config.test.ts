@@ -28,6 +28,8 @@ describe('parseConfig', () => {
       autostart: true,
       rounded_corners: false,
       corner_radius: 20,
+      smart_gaps: true,
+      insert_mode: 'cyclic',
     };
     expect(parseConfig(JSON.stringify(full))).toEqual(full);
   });
@@ -54,6 +56,8 @@ describe('DEFAULT_CONFIG', () => {
       autostart: false,
       rounded_corners: true,
       corner_radius: 12,
+      smart_gaps: false,
+      insert_mode: 'focus',
     });
   });
 });

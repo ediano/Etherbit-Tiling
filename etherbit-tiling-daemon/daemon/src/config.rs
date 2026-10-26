@@ -58,6 +58,21 @@ pub struct Config {
     /// ao reinício do KWin. A ponte hidrata o set em memória a partir daqui na carga e o reescreve via
     /// `SetDisabledGroups` a cada toggle. Vazio por padrão.
     pub disabled_groups: Vec<DisabledGroup>,
+    /// Gap EXTERNO (px, entre janelas e bordas da tela) independente do interno. `None` = segue o
+    /// `gap` único (comportamento histórico). ADR 0068.
+    pub outer_gap: Option<u32>,
+    /// Smart gaps (COSMIC): com uma única janela/stack no workspace, nenhum gap. ADR 0068.
+    pub smart_gaps: bool,
+    /// Política de inserção de janela nova: `"focus"` (COSMIC — racha a janela focada) ou `"cyclic"`
+    /// (distribuição cíclica em quadrantes, ADR 0030). Valor desconhecido = `"focus"`. ADR 0068.
+    pub insert_mode: String,
+}
+
+impl Config {
+    /// `true` se a inserção segue a janela focada (default COSMIC).
+    pub fn focus_insert(&self) -> bool {
+        self.insert_mode != "cyclic"
+    }
 }
 
 impl Default for Config {
@@ -74,6 +89,9 @@ impl Default for Config {
             rounded_corners: true,
             corner_radius: 12,
             disabled_groups: Vec::new(),
+            outer_gap: None,
+            smart_gaps: false,
+            insert_mode: "focus".to_string(),
         }
     }
 }
@@ -173,6 +191,9 @@ mod tests {
                 DisabledGroup { monitor: "DP-1".to_string(), workspace: 0 },
                 DisabledGroup { monitor: "HDMI-A-1".to_string(), workspace: 2 },
             ],
+            outer_gap: Some(16),
+            smart_gaps: true,
+            insert_mode: "cyclic".to_string(),
         };
         let raw = toml::to_string_pretty(&cfg).expect("serializa TOML");
         let back: Config = toml::from_str(&raw).expect("desserializa TOML");
@@ -180,6 +201,9 @@ mod tests {
         assert_eq!(back.gap, cfg.gap);
         assert_eq!(back.rounded_corners, cfg.rounded_corners);
         assert_eq!(back.corner_radius, cfg.corner_radius);
+        assert_eq!(back.outer_gap, Some(16));
+        assert!(back.smart_gaps);
+        assert!(!back.focus_insert());
         assert_eq!(back.active_border, cfg.active_border);
         assert_eq!(back.border_color, cfg.border_color);
         assert_eq!(back.border_width, cfg.border_width);

@@ -23,6 +23,8 @@ export interface WindowSnapshot {
   min_height: number;
   /// Janela maximizada no momento (estado). Dispara o tratamento de unmaximize no core.
   maximized: boolean;
+  /// Título (regras `title:` da lista de exceções, ADR 0068).
+  title: string;
 }
 
 /// `true` sse a janela tem tamanho GENUINAMENTE FIXO: `min == max` em AMBOS os eixos, com `max > 0`
@@ -384,10 +386,53 @@ export function geometryConverged(
       Math.abs(got.width - want.width) > epsilon ||
       Math.abs(got.height - want.height) > epsilon
     ) {
+      // Recusa de tamanho (ADR 0068): o cliente ficou MENOR que o slot (size increments de terminal,
+      // tamanho máximo) e está contido nele → convergiu no que o app aceita. Sem isso cada gatilho
+      // (até troca de foco) reaplicaria a geometria para sempre (flicker).
+      if (sizeRefused(want, got, epsilon) && containedIn(want, got, epsilon)) {
+        continue;
+      }
       return false;
     }
   }
   return true;
+}
+
+/// `true` se o cliente RECUSOU o tamanho do slot: ficou menor em algum eixo e não maior em nenhum
+/// (dentro de `epsilon`). Uma janela maior que o slot não é recusa — é mínimo (tratado no core).
+export function sizeRefused(want: Rect, got: Rect, epsilon: number): boolean {
+  if (got.width <= 0 || got.height <= 0) {
+    return false;
+  }
+  const notBigger = got.width <= want.width + epsilon && got.height <= want.height + epsilon;
+  const smaller = got.width < want.width - epsilon || got.height < want.height - epsilon;
+  return notBigger && smaller;
+}
+
+/// `true` se `got` cabe inteiro dentro de `want` (tolerância `epsilon`).
+export function containedIn(want: Rect, got: Rect, epsilon: number): boolean {
+  return (
+    got.x >= want.x - epsilon &&
+    got.y >= want.y - epsilon &&
+    got.x + got.width <= want.x + want.width + epsilon &&
+    got.y + got.height <= want.y + want.height + epsilon
+  );
+}
+
+/// Igualdade exata de dois retângulos.
+export function sameRect(a: Rect, b: Rect): boolean {
+  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+}
+
+/// Posição CENTRALIZADA de uma janela que recusou o tamanho do slot (ADR 0068): o tamanho é o que o
+/// cliente aceitou e a folga é dividida igualmente nas bordas (visual alinhado ao grid). Inteiros.
+export function centerInSlot(want: Rect, got: Rect): Rect {
+  return {
+    x: want.x + Math.floor(Math.max(0, want.width - got.width) / 2),
+    y: want.y + Math.floor(Math.max(0, want.height - got.height) / 2),
+    width: got.width,
+    height: got.height,
+  };
 }
 
 /// Resultado do HUD: a zona quente sob o cursor, as células a desenhar e o destino do drop.
@@ -634,6 +679,7 @@ export function serializeState(
   trees: Map<string, TreeNode | null>,
   focusedId: number,
   mins: WinMin[] = [],
+  floating: Iterable<number> = [],
 ): string {
   const stackDtos: Array<{
     monitor: number;
@@ -665,6 +711,7 @@ export function serializeState(
     trees: treeDtos,
     focused_id: focusedId,
     mins,
+    floating: [...floating],
   });
 }
 
@@ -864,4 +911,198 @@ export function toggleGroupDisabled(disabled: Set<string>, key: string): boolean
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+// ---- Paridade COSMIC (ADR 0068): navegação direcional, histórico de foco, monitores, abas ----
+
+/// Direção de navegação/movimento por teclado.
+export type Direction = 'left' | 'right' | 'up' | 'down';
+
+/// Zona do `MoveWindow` correspondente a uma direção (a janela vai para AQUELE lado do vizinho).
+export function directionZone(dir: Direction): 'left' | 'right' | 'top' | 'bottom' {
+  return dir === 'up' ? 'top' : dir === 'down' ? 'bottom' : dir;
+}
+
+/// Vizinho de `fromId` na direção `dir`, pela geometria (`rects`, px absolutos — atravessa monitores).
+/// Candidatos: janelas inteiramente além da borda de `fromId` naquele lado (tolerância `epsilon`, que
+/// absorve o gap). Preferência: (1) sobreposição no eixo perpendicular (vizinho "de frente"), (2)
+/// menor distância de borda, (3) centro perpendicular mais próximo. `null` se não houver.
+export function neighborInDirection(
+  rects: Map<number, Rect>,
+  fromId: number,
+  dir: Direction,
+  epsilon = 2,
+): number | null {
+  const a = rects.get(fromId);
+  if (!a) {
+    return null;
+  }
+  const horizontal = dir === 'left' || dir === 'right';
+  let best: { id: number; overlap: boolean; dist: number; perp: number } | null = null;
+  for (const [id, b] of rects) {
+    if (id === fromId) {
+      continue;
+    }
+    let dist: number;
+    if (dir === 'left') {
+      dist = a.x - (b.x + b.width);
+    } else if (dir === 'right') {
+      dist = b.x - (a.x + a.width);
+    } else if (dir === 'up') {
+      dist = a.y - (b.y + b.height);
+    } else {
+      dist = b.y - (a.y + a.height);
+    }
+    if (dist < -epsilon) {
+      continue;
+    }
+    const overlap = horizontal
+      ? Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y) > 0
+      : Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x) > 0;
+    const perp = horizontal
+      ? Math.abs(a.y + a.height / 2 - (b.y + b.height / 2))
+      : Math.abs(a.x + a.width / 2 - (b.x + b.width / 2));
+    const cand = { id, overlap, dist: Math.max(0, dist), perp };
+    if (
+      !best ||
+      (cand.overlap && !best.overlap) ||
+      (cand.overlap === best.overlap &&
+        (cand.dist < best.dist || (cand.dist === best.dist && cand.perp < best.perp)))
+    ) {
+      best = cand;
+    }
+  }
+  return best ? best.id : null;
+}
+
+/// Registra `id` no topo do histórico de foco (MRU), sem duplicatas, limitado a `cap` entradas.
+export function pushFocus(mru: number[], id: number, cap = 32): void {
+  if (id <= 0) {
+    return;
+  }
+  const idx = mru.indexOf(id);
+  if (idx !== -1) {
+    mru.splice(idx, 1);
+  }
+  mru.unshift(id);
+  if (mru.length > cap) {
+    mru.length = cap;
+  }
+}
+
+/// Âncora da inserção COSMIC (ADR 0068): a janela mais recentemente focada que JÁ está no grid
+/// (`tiled`) e ainda existe (`present`). Quando o `SyncWindows` roda, o GNOME já focou a janela NOVA —
+/// ela é pulada por não estar em `tiled`, e a anterior vira o alvo do split. `0` = nenhuma.
+export function pickInsertAnchor(mru: number[], present: Set<number>, tiled: Set<number>): number {
+  for (const id of mru) {
+    if (present.has(id) && tiled.has(id)) {
+      return id;
+    }
+  }
+  return 0;
+}
+
+/// Novo índice de cada monitor antigo após um hotplug/reordenação (ADR 0068). Casa primeiro pela
+/// GEOMETRIA idêntica (o índice muda, o monitor não); os que sobram casam pelo mesmo índice se ele
+/// existir e estiver livre (ex.: troca de resolução). Monitor que sumiu → `null`.
+export function remapMonitors(oldGeoms: Rect[], newGeoms: Rect[]): Map<number, number | null> {
+  const out = new Map<number, number | null>();
+  const claimed = new Set<number>();
+  oldGeoms.forEach((g, i) => {
+    const j = newGeoms.findIndex((n, k) => !claimed.has(k) && sameRect(g, n));
+    if (j !== -1) {
+      out.set(i, j);
+      claimed.add(j);
+    }
+  });
+  oldGeoms.forEach((_g, i) => {
+    if (out.has(i)) {
+      return;
+    }
+    if (i < newGeoms.length && !claimed.has(i)) {
+      out.set(i, i);
+      claimed.add(i);
+    } else {
+      out.set(i, null);
+    }
+  });
+  return out;
+}
+
+/// `true` se o mapeamento de `remapMonitors` é a identidade (nada a reescrever).
+export function isIdentityRemap(mapping: Map<number, number | null>): boolean {
+  for (const [from, to] of mapping) {
+    if (from !== to) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// Reescreve as chaves `"monitor:workspace"` de um Map conforme `mapping`. Grupos de monitor que
+/// sumiu são descartados (as janelas migram e o core reinsere). Chaves de monitor desconhecido ficam.
+export function remapGroupMap<T>(
+  map: Map<string, T>,
+  mapping: Map<number, number | null>,
+): Map<string, T> {
+  const out = new Map<string, T>();
+  for (const [key, value] of map) {
+    const [monitor, workspace] = parseOrderKey(key);
+    const to = mapping.has(monitor) ? (mapping.get(monitor) ?? null) : monitor;
+    if (to === null) {
+      continue;
+    }
+    out.set(orderKey(to, workspace), value);
+  }
+  return out;
+}
+
+/// Idem `remapGroupMap` para um Set de chaves de grupo.
+export function remapGroupSet(set: Set<string>, mapping: Map<number, number | null>): Set<string> {
+  const asMap = new Map([...set].map((k) => [k, true] as const));
+  return new Set(remapGroupMap(asMap, mapping).keys());
+}
+
+/// Avança a aba ativa do stack que contém `member` em `step` (±1, circular). Devolve o novo ativo, ou
+/// `null` se `member` não está em stack nenhum.
+export function cycleStackActive(
+  stacks: Map<string, Stack[]>,
+  member: number,
+  step: number,
+): number | null {
+  for (const list of stacks.values()) {
+    for (const s of list) {
+      const idx = s.members.indexOf(member);
+      if (idx === -1 || s.members.length === 0) {
+        continue;
+      }
+      const n = s.members.length;
+      const next = s.members[(((idx + step) % n) + n) % n] ?? member;
+      s.active = next;
+      return next;
+    }
+  }
+  return null;
+}
+
+/// Liga/desliga o float de `id` (Super+G). Devolve `true` se agora flutua.
+export function toggleFloating(floating: Set<number>, id: number): boolean {
+  if (floating.has(id)) {
+    floating.delete(id);
+    return false;
+  }
+  floating.add(id);
+  return true;
+}
+
+/// Troca `a` ⇄ `b` nos membros/ativa dos stacks — acompanha o swap de folhas do core (`center` local),
+/// para o estado leve da ponte não re-materializar o stack com a janela errada.
+export function swapInStacks(stacks: Map<string, Stack[]>, a: number, b: number): void {
+  const relabel = (id: number): number => (id === a ? b : id === b ? a : id);
+  for (const list of stacks.values()) {
+    for (const s of list) {
+      s.members = s.members.map(relabel);
+      s.active = relabel(s.active);
+    }
+  }
 }

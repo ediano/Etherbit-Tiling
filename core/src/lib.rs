@@ -8,10 +8,11 @@ pub mod layout;
 
 pub use layout::{
     build_min_sizes, compute_constrained, compute_geometry, compute_layout, compute_layout_with,
-    detect_drop_target, detect_drop_zone, is_tileable, move_window, reconcile, resize_window,
-    retain_tileable_when_maximized, Axis, DropPreview, DropScope, DropZone, Edge, GridChild,
-    LayoutOptions, LayoutResult, LayoutTree, MinSizes, Node, PreviewRect, StackDescriptor,
-    StackGroup, TabBarRect, WindowInfo, WindowRect, WorkArea, MIN_RATIO,
+    detect_drop_target, detect_drop_zone, is_tileable, matches_exception, move_window, reconcile,
+    reconcile_focused, resize_window, retain_tileable_when_maximized, toggle_orientation, Axis,
+    DropPreview, DropScope, DropZone, Edge, GridChild, LayoutOptions, LayoutResult, LayoutTree,
+    MinSizes, Node, PreviewRect, StackDescriptor, StackGroup, TabBarRect, WindowInfo, WindowRect,
+    WorkArea, MIN_RATIO,
 };
 
 pub fn version() -> &'static str {

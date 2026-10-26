@@ -15,6 +15,10 @@ export interface TilingConfig {
   autostart: boolean;
   rounded_corners: boolean;
   corner_radius: number;
+  /// Smart gaps (COSMIC): sem gaps com uma janela só no workspace (ADR 0068).
+  smart_gaps: boolean;
+  /// Inserção de janela nova: `focus` (COSMIC) ou `cyclic` (ADR 0030).
+  insert_mode: string;
 }
 
 export const DEFAULT_CONFIG: TilingConfig = {
@@ -27,6 +31,8 @@ export const DEFAULT_CONFIG: TilingConfig = {
   autostart: false,
   rounded_corners: true,
   corner_radius: 12,
+  smart_gaps: false,
+  insert_mode: 'focus',
 };
 
 /// Faz parse defensivo do JSON do daemon, completando campos ausentes com o padrão.

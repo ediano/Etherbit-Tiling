@@ -99,5 +99,5 @@ daemon rodando.
 Via pacote de release `etherbit-tiling-kde.tar.gz` (daemon + KWin Script + installer):
 
 ```bash
-curl -sSL https://github.com/ediano/etherbit-tiling-releases/releases/latest/download/install-kde.sh | bash
+curl -sSL https://github.com/ediano/Etherbit-Tiling/releases/latest/download/install-kde.sh | bash
 ```

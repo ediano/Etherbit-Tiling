@@ -3,7 +3,7 @@
   "name": "Etherbit Tiling",
   "description": "The invisible fabric that puts your windows in perfect orbit. Automatic window manager (tiling) for GNOME 45+ under Wayland.",
   "shell-version": ["45", "46", "47", "48", "49", "50"],
-  "url": "https://github.com/ediano/etherbit-tiling-releases",
+  "url": "https://github.com/ediano/Etherbit-Tiling",
   "settings-schema": "org.gnome.shell.extensions.etherbit-tiling",
   "version": 3
 }

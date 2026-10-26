@@ -144,7 +144,7 @@ guard_desktop() {
 guard_desktop
 
 ID="etherbit-tiling"
-REPO="${ETHERBIT_RELEASE_REPO:-ediano/etherbit-tiling-releases}"
+REPO="${ETHERBIT_RELEASE_REPO:-ediano/Etherbit-Tiling}"
 TARBALL="etherbit-tiling-kde.tar.gz"
 ASSET_URL="https://github.com/$REPO/releases/latest/download/$TARBALL"
 

@@ -8,9 +8,10 @@
 // Controles: uma CHAVE GERAL (switch "Ativar tiling") no topo e dois INPUTS NUMÉRICOS inteiros
 // (spinbox: digitar + botões − / +), com travas rígidas (ver ADR rules/0019): Gap 0..100 px, raio
 // dos cantos 0..50 px (raio `0` = sem arredondamento; `> 0` = arredondado — não há toggle separado).
-// A UI completa migrará para a janela própria do daemon (wgpu) no futuro (ver ADR rules/0016). NÃO há
-// controle de "borda ativa" (a borda não é desenhável por um cliente Wayland; só pelo compositor) nem
-// de autostart (o daemon já sobe via serviço/ativação D-Bus — ADR rules/0024).
+// A UI completa migrará para a janela própria do daemon (wgpu) no futuro (ver ADR rules/0016). Abaixo
+// dos inputs, três chaves de comportamento COSMIC (ADR 0068): borda da janela ativa (desenhada pela
+// extensão, que roda DENTRO do compositor), smart gaps e inserção ao lado da janela focada. Não há
+// controle de autostart (o daemon já sobe via serviço/ativação D-Bus — ADR rules/0024).
 
 import Clutter from 'gi://Clutter';
 import GObject from 'gi://GObject';
@@ -37,6 +38,9 @@ export interface IndicatorHandlers {
   onEnabled: (enabled: boolean) => void;
   onGap: (gap: number) => void;
   onCornerRadius: (radius: number) => void;
+  onActiveBorder: (enabled: boolean) => void;
+  onSmartGaps: (enabled: boolean) => void;
+  onFocusInsert: (enabled: boolean) => void;
 }
 
 class EtherbitIndicatorImpl extends PanelMenu.Button {
@@ -44,6 +48,9 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
   private _enabledSwitch!: PopupMenu.PopupSwitchMenuItem;
   private _gapSpin!: SpinRow;
   private _radiusSpin!: SpinRow;
+  private _borderSwitch!: PopupMenu.PopupSwitchMenuItem;
+  private _smartGapsSwitch!: PopupMenu.PopupSwitchMenuItem;
+  private _focusInsertSwitch!: PopupMenu.PopupSwitchMenuItem;
   // Evita reentrância: ao refletir a config do daemon não queremos re-disparar handlers.
   private _syncing = false;
 
@@ -82,6 +89,28 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
     this._radiusSpin = this._addSpinRow(_('radius.label'), RADIUS_MIN, RADIUS_MAX, (v) =>
       this._handlers.onCornerRadius(v),
     );
+
+    this._menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+    this._borderSwitch = this._addSwitch(_('toggle.border'), (v) =>
+      this._handlers.onActiveBorder(v),
+    );
+    this._smartGapsSwitch = this._addSwitch(_('toggle.smartGaps'), (v) =>
+      this._handlers.onSmartGaps(v),
+    );
+    this._focusInsertSwitch = this._addSwitch(_('toggle.focusInsert'), (v) =>
+      this._handlers.onFocusInsert(v),
+    );
+  }
+
+  /// Chave de comportamento que não fecha o menu ao alternar.
+  private _addSwitch(label: string, onChange: (v: boolean) => void): PopupMenu.PopupSwitchMenuItem {
+    const item = new PopupMenu.PopupSwitchMenuItem(label, false);
+    this._keepOpenOnToggle(item);
+    item.connect('toggled', (_item, state) => {
+      if (!this._syncing) onChange(state);
+    });
+    this._menu.addMenuItem(item);
+    return item;
   }
 
   /// Faz um switch ALTERNAR sem fechar o painel. O `activate` padrão de um item de menu emite o sinal
@@ -101,6 +130,9 @@ class EtherbitIndicatorImpl extends PanelMenu.Button {
     this._enabledSwitch.setToggleState(config.enabled);
     this._gapSpin.setValue(config.gap);
     this._radiusSpin.setValue(config.corner_radius);
+    this._borderSwitch.setToggleState(config.active_border);
+    this._smartGapsSwitch.setToggleState(config.smart_gaps);
+    this._focusInsertSwitch.setToggleState(config.insert_mode !== 'cyclic');
     this._syncing = false;
   }
 
