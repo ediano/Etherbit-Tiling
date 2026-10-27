@@ -125,3 +125,11 @@ recusar um pedido novo.
   menor frame que a janela aceitou num resize manual e usa-o como teto do mínimo enviado ao core.
 - **Troca de aba silenciosa:** minimizar/restaurar os membros de um stack passa por
   `Main.wm.skipNextEffect` — a aba que entra não "volta do dock"; é a mesma célula trocando de conteúdo.
+
+## Emenda (2026-10-27) — recusa só com evidência (ADR 0072)
+
+A premissa do item 1 ("uma janela fora do slot, apply descartado no boot, continua não convergida")
+não vale para a 1ª janela de um monitor: o slot é a área útil inteira e o posicionamento natural do
+Mutter fica sempre "menor e contido". A janela era lida como recusa e nunca redimensionada. Pela
+[0072](0072-recusa-com-evidencia-e-transientes-flutuam.md), o 1º quadro esquece o slot pedido antes dele,
+e a recusa só é aceita depois de uma sonda: o mesmo slot é re-pedido uma vez e o cliente continua menor.

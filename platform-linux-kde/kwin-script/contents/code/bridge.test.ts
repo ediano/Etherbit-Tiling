@@ -36,6 +36,7 @@ import {
   sizeRefused,
   containedIn,
   centerInSlot,
+  refusalAction,
   directionZone,
   neighborInDirection,
   pushFocus,
@@ -68,11 +69,17 @@ const win: WindowSnapshot = {
   min_height: 0,
   maximized: false,
   title: 'Konsole',
+  transient: false,
 };
 
 describe('serializeWindows / serializeMonitors', () => {
   it('produz JSON com os campos do contrato (espelho do DTO do daemon)', () => {
     expect(JSON.parse(serializeWindows([win]))).toEqual([win]);
+  });
+
+  it('leva o `transient` (ADR 0072): a lista literal de campos não pode perdê-lo', () => {
+    const dialog: WindowSnapshot = { ...win, id: 8, transient: true };
+    expect(JSON.parse(serializeWindows([dialog]))[0].transient).toBe(true);
   });
 
   it('serializa monitores (áreas úteis)', () => {
@@ -849,6 +856,24 @@ describe('paridade COSMIC (ADR 0070)', () => {
     expect(centerInSlot(r(100, 50, 805, 1000), r(0, 0, 797, 990))).toEqual(r(104, 55, 797, 990));
     expect(sameRect(r(1, 2, 3, 4), r(1, 2, 3, 4))).toBe(true);
     expect(sameRect(r(1, 2, 3, 4), r(1, 2, 3, 5))).toBe(false);
+  });
+
+  it('refusalAction (ADR 0072): 1º pedido, slot novo ou cliente não menor → resize', () => {
+    const slot = r(0, 0, 805, 1000);
+    expect(refusalAction(slot, undefined, r(0, 0, 797, 990), undefined, 2)).toBe('resize');
+    expect(refusalAction(slot, r(0, 0, 400, 1000), r(0, 0, 397, 990), undefined, 2)).toBe('resize');
+    expect(refusalAction(slot, slot, r(0, 0, 805, 1000), slot, 2)).toBe('resize');
+    expect(refusalAction(slot, slot, r(0, 0, 0, 0), undefined, 2)).toBe('resize');
+  });
+
+  it('refusalAction (ADR 0072): menor no mesmo slot → sonda; já sondado → centraliza', () => {
+    // O app que restaura o próprio tamanho logo depois do apply fica "menor e contido": antes da 0072
+    // isso centralizava e re-pedia o tamanho MENOR, travando a janela fora do slot.
+    const slot = r(0, 0, 805, 1000);
+    const cur = r(100, 100, 600, 400);
+    expect(refusalAction(slot, slot, cur, undefined, 2)).toBe('probe');
+    expect(refusalAction(slot, slot, cur, r(0, 0, 400, 1000), 2)).toBe('probe');
+    expect(refusalAction(slot, slot, cur, slot, 2)).toBe('center');
   });
 
   it('neighborInDirection atravessa monitores e prefere o vizinho de frente', () => {

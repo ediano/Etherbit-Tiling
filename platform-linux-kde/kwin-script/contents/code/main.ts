@@ -49,6 +49,7 @@ import {
   sizeRefused,
   containedIn,
   centerInSlot,
+  refusalAction,
   directionZone,
   neighborInDirection,
   pushFocus,
@@ -287,6 +288,10 @@ const focusMru: string[] = [];
 const floating = new Set<string>();
 /// Slot que o core deu a cada janela no último apply (já clampado). Base da recusa de tamanho.
 let lastApplied = new Map<string, Rect>();
+/// Sondas de recusa (ADR 0072): slot que a ponte JÁ reaplicou uma vez com o cliente menor. A recusa só
+/// é aceita (centralizar) com sonda do mesmo slot — sem ela, "menor e contido" pode ser o app restaurando
+/// o próprio tamanho depois do apply. Reconstruído a cada apply, como `lastApplied`.
+let refusalProbes = new Map<string, Rect>();
 /// Tolerância (px) da recusa de tamanho — espelha `RELAYOUT_CONVERGE_EPSILON_PX` do GNOME.
 const REFUSAL_EPSILON_PX = 2;
 /// Passo (px) do resize por teclado.
@@ -639,6 +644,7 @@ function releaseToFloating(): void {
   }
   stackHidden.clear();
   lastApplied.clear();
+  refusalProbes.clear();
   // Tiling desligado: nenhuma barra de abas nem borda deve permanecer no overlay.
   pushTabs([]);
   updateBorder();
@@ -766,6 +772,9 @@ function retile(): void {
         min_height: min ? Math.max(0, Math.round(min.height)) : 0,
         maximized: isMaximized(entry.win),
         title: entry.win.caption || '',
+        // Pai (ADR 0072): o diálogo NÃO modal do Wayland chega com `normalWindow`; o pai é o único
+        // sinal para o core deixá-lo flutuar (seletor de pasta do VS Code, portal).
+        transient: entry.win.transient === true,
       });
     }
   }
@@ -827,6 +836,10 @@ function retile(): void {
 
       const prevApplied = lastApplied;
       const nextApplied = new Map<string, Rect>();
+      // Sondas de recusa (ADR 0072): reconstruídas junto — só fica a de quem segue no mesmo slot e
+      // continua menor.
+      const prevProbes = refusalProbes;
+      const nextProbes = new Map<string, Rect>();
       applying = true;
       // Alguma janela do snapshot morreu entre o envio do SyncWindows e esta resposta? Ao detectar,
       // pulamos a referência inválida (sem abortar o apply) e re-tilamos uma vez no fim para o daemon
@@ -890,18 +903,33 @@ function retile(): void {
             const area = mi >= 0 ? monitors[mi] : undefined;
             const g = area ? clampToWorkArea(command, area) : command;
             const slot = { x: g.x, y: g.y, width: g.width, height: g.height };
-            // Recusa de tamanho (ADR 0070): o MESMO slot já foi pedido e o cliente ficou menor (size
-            // increments de terminal, tamanho máximo). Reenviar só reproduz a recusa; centraliza.
-            const prev = prevApplied.get(wid);
+            // Recusa de tamanho (ADR 0070) só CONFIRMADA (ADR 0072): o MESMO slot já foi pedido, o
+            // cliente ficou menor e a ponte já reaplicou uma vez (sonda). Aí reenviar só reproduz a
+            // recusa (size increments de terminal, tamanho máximo) — centraliza. Antes da sonda,
+            // reaplica o slot: o frame menor pode ser o app restaurando o próprio tamanho.
             const fg = win.frameGeometry;
             const cur = { x: fg.x, y: fg.y, width: fg.width, height: fg.height };
-            if (prev && sameRect(prev, slot) && sizeRefused(slot, cur, REFUSAL_EPSILON_PX)) {
+            const action = refusalAction(
+              slot,
+              prevApplied.get(wid),
+              cur,
+              prevProbes.get(wid),
+              REFUSAL_EPSILON_PX,
+            );
+            if (action === 'center') {
               const c = centerInSlot(slot, cur);
               if (cur.x !== c.x || cur.y !== c.y) {
                 win.frameGeometry = c;
               }
+              nextProbes.set(wid, slot);
+              // `debug`: sem dedup no KDE, todo retile (inclusive troca de foco) passa por aqui.
+              debug('recusa: confirmada', wid);
             } else {
               win.frameGeometry = slot;
+              if (action === 'probe') {
+                nextProbes.set(wid, slot);
+                log('recusa: sonda', wid);
+              }
             }
             nextApplied.set(wid, slot);
           }
@@ -910,6 +938,7 @@ function retile(): void {
         applying = false;
       }
       lastApplied = nextApplied;
+      refusalProbes = nextProbes;
       updateBorder();
       stackHidden.clear();
       for (const sid of shouldHide) {
@@ -1406,9 +1435,11 @@ function onMoveStep(): void {
 /// maximizar. Tudo via MoveWindow (move na árvore persistente, traduzindo ids via os mapas do retile).
 function onMoveFinish(win: KWinWindow): void {
   updateOutline(null); // esconde outline nativo + preview translúcido (helper)
-  // O frame foi alterado pelo USUÁRIO, não recusado pelo cliente: esquece o slot committado para a
-  // heurística de recusa (ADR 0070) não ler o frame menor como recusa e só centralizar no mesmo slot.
+  // O frame foi alterado pelo USUÁRIO, não recusado pelo cliente: esquece o slot committado (e a sonda,
+  // ADR 0072) para a heurística de recusa (ADR 0070) não ler o frame menor como recusa e só centralizar
+  // no mesmo slot.
   lastApplied.delete(windowId(win));
+  refusalProbes.delete(windowId(win));
   const dragged = draggedId;
   draggedId = null;
   updateBorder();
@@ -1630,15 +1661,45 @@ function trackWindow(win: KWinWindow): void {
   }
 }
 
-/// Mudança de geometria FORA do nosso apply (ADR 0070): se a janela recusou o tamanho do slot (ficou
-/// menor e contida), centraliza no slot; e reposiciona a borda se for a janela ativa. Ignora arrasto e
-/// resize interativos (o usuário está no controle) e a nossa própria escrita (`applying`).
+/// Log de nascimento (ADR 0072): uma linha por janela normal ou diálogo com a classificação bruta —
+/// confirma se um seletor de arquivos tem pai (`transiente`) e com que frame a janela chegou, a base
+/// para ler as linhas `recusa: sonda` do boot. SEM título: o repositório é público e os logs vão para
+/// `docs/logs/`. Nunca lança.
+function logWindowAdded(win: KWinWindow): void {
+  try {
+    if (!isLiveWindow(win) || (!win.normalWindow && !win.dialog)) {
+      return;
+    }
+    const g = win.frameGeometry;
+    log(
+      'janela:',
+      windowId(win),
+      'classe=' + (win.resourceClass || '-'),
+      'normal=' + win.normalWindow,
+      'dialog=' + win.dialog,
+      'transiente=' + win.transient,
+      'modal=' + win.modal,
+      'frame=' + Math.round(g.width) + 'x' + Math.round(g.height),
+      '@' + Math.round(g.x) + ',' + Math.round(g.y),
+    );
+  } catch (e) {
+    // referência morta — ignora
+  }
+}
+
+/// Mudança de geometria FORA do nosso apply (ADR 0070): se a janela ficou menor e contida no slot, só
+/// conta como recusa depois de uma sonda (ADR 0072). Na 1ª vez reaplica o slot — o app pode ter
+/// restaurado o próprio tamanho logo depois do apply, e centralizar aqui re-pedia o tamanho MENOR,
+/// travando a janela fora do slot. Com a sonda do mesmo slot, centraliza. Também reposiciona a borda se
+/// for a janela ativa. Ignora arrasto e resize interativos (o usuário está no controle) e a nossa
+/// própria escrita (`applying`). Sem timer no sandbox: o próximo `frameGeometryChanged` lê a sonda.
 function onFrameChanged(win: KWinWindow): void {
   if (applying || draggedId !== null || resizeStart !== null || !isLiveWindow(win)) {
     return;
   }
   try {
-    const want = lastApplied.get(windowId(win));
+    const id = windowId(win);
+    const want = lastApplied.get(id);
     if (want) {
       const fg = win.frameGeometry;
       const cur = { x: fg.x, y: fg.y, width: fg.width, height: fg.height };
@@ -1646,11 +1707,19 @@ function onFrameChanged(win: KWinWindow): void {
         sizeRefused(want, cur, REFUSAL_EPSILON_PX) &&
         containedIn(want, cur, REFUSAL_EPSILON_PX)
       ) {
+        const probe = refusalProbes.get(id);
+        const confirmed = probe !== undefined && sameRect(probe, want);
         const c = centerInSlot(want, cur);
-        if (cur.x !== c.x || cur.y !== c.y) {
+        if (!confirmed || cur.x !== c.x || cur.y !== c.y) {
           applying = true;
           try {
-            win.frameGeometry = c;
+            if (confirmed) {
+              win.frameGeometry = c;
+            } else {
+              win.frameGeometry = want;
+              refusalProbes.set(id, want);
+              log('recusa: sonda', id);
+            }
           } finally {
             applying = false;
           }
@@ -1935,6 +2004,7 @@ function toggleFloatingShortcut(): void {
   if (toggleFloating(floating, id)) {
     removeIdFromStacks(stacks, id);
     lastApplied.delete(id);
+    refusalProbes.delete(id);
   }
   retile();
 }
@@ -2069,6 +2139,7 @@ for (const [name, label, keys, handler] of COSMIC_SHORTCUTS) {
 
 workspace.windowAdded.connect((win) => {
   trackWindow(win);
+  logWindowAdded(win);
   // Marca o instante de nascimento (base da janela de graça, ADR 0043) ANTES do spawn-unmaximize.
   try {
     spawnAt.set(windowId(win), Date.now());
@@ -2096,6 +2167,7 @@ workspace.windowRemoved.connect((win) => {
     spawnAt.delete(id);
     floating.delete(id);
     lastApplied.delete(id);
+    refusalProbes.delete(id);
     const mruIdx = focusMru.indexOf(id);
     if (mruIdx !== -1) {
       focusMru.splice(mruIdx, 1);

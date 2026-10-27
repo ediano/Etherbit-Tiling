@@ -47,6 +47,7 @@ import {
   sizeRefused,
   centerInSlot,
   sameRect,
+  refusalAction,
   parseLayoutTrees,
   resolveHotZone,
   serializeScope,
@@ -140,8 +141,16 @@ interface Tracked {
   /// sinal já disparou (one-shot) ou não pôde ser conectado (ator ainda inexistente em `window-created`).
   actor: Meta.WindowActor | null;
   firstFrameId: number;
+  /// Fallback do 1º quadro (ADR 0072): id do sinal `shown` do `Meta.Window`, conectado só quando não
+  /// havia ator no `window-created`. 0 = inativo (já disparou ou não foi preciso).
+  shownId: number;
+  /// Adotada no `enable()` (já existia, ADR 0067). Só alimenta o log de realização.
+  adopted: boolean;
+  /// Instante monotônico (µs) do `window-created`/adoção — base do Δ do log de realização.
+  bornAt: number;
   /// Instante monotônico (µs) do nascimento da janela — base da janela de graça de spawn-unmaximize
-  /// (`SPAWN_MAXIMIZE_GRACE_US`, ADR 0043). Sai de cena junto com o `Tracked` no `unmanaged`.
+  /// (`SPAWN_MAXIMIZE_GRACE_US`, ADR 0043). Reiniciado no 1º quadro (ADR 0072). Sai de cena junto com o
+  /// `Tracked` no `unmanaged`.
   spawnAt: number;
 }
 
@@ -190,6 +199,10 @@ export default class EtherbitTilingExtension {
   // `move_resize_frame` em janelas ainda não realizadas, e sem isso o re-disparo da rede de
   // settle recalcula assinatura idêntica → cai no dedup → nunca reaplica (ADR 0038).
   private _lastAppliedRects = new Map<number, Rect>();
+  // Sondas de recusa (ADR 0072): slot que a ponte JÁ re-pediu uma vez com o cliente menor. A recusa de
+  // tamanho (ADR 0068) só é aceita com sonda do mesmo slot — sem ela, "menor e contido" pode ser só o
+  // frame natural de um apply descartado no boot. Reconstruído a cada apply, como `_lastAppliedRects`.
+  private _refusalProbes = new Map<number, Rect>();
   // Timers do "boot settle cascade": janelas abertas ANTES do `enable()` não disparam
   // `window-created`, logo não ganham a rede `first-frame`/`size-changed`. Um único relayout no boot
   // pode ser descartado (daemon ou janelas ainda não prontos). Reagendamos nos offsets de
@@ -506,13 +519,18 @@ export default class EtherbitTilingExtension {
     this._followBorder(global.display.focus_window);
 
     // 6b) Adota as janelas já abertas (não disparam `window-created`): sem isso ficam sem handlers de
-    //     `unmanaged`/`size-changed` e o efeito de cantos não é removido no `disable()` (ADR 0067).
+    //     `unmanaged`/`size-changed` e o efeito de cantos não é removido no `disable()` (ADR 0067). No
+    //     boot, o `import()` assíncrono do loader (ADR 0071) pode adotar janelas que ainda não desenharam
+    //     — o log conta quantas, para correlacionar com as linhas `janela: … adotada=1` (ADR 0072).
+    let adoptedCount = 0;
     for (const actor of global.get_window_actors()) {
       const window = actor.get_meta_window();
       if (window) {
         this._onWindowCreated(window, true);
+        adoptedCount += 1;
       }
     }
+    console.log(`[etherbit] enable: adotadas=${adoptedCount}`);
 
     // 7) Layout inicial para as janelas já abertas. No boot frio, um único disparo pode ser descartado
     //    (daemon ou janelas ainda não prontos); a cascata reescalona até convergir (ADR 0038).
@@ -549,6 +567,7 @@ export default class EtherbitTilingExtension {
     this._relayoutPending = false;
     this._lastLayoutSig = '';
     this._lastAppliedRects.clear();
+    this._refusalProbes.clear();
 
     // Remove os atalhos globais.
     for (const name of this._keybindings) {
@@ -608,14 +627,8 @@ export default class EtherbitTilingExtension {
       for (const sigId of notifyIds) {
         window.disconnect(sigId);
       }
-      // Desconecta o gating de `first-frame` ainda pendente (janela rastreada que nunca renderizou).
-      if (tracked.firstFrameId && tracked.actor) {
-        try {
-          tracked.actor.disconnect(tracked.firstFrameId);
-        } catch {
-          // ator já destruído — ignora.
-        }
-      }
+      // Desconecta os gatilhos de realização ainda pendentes (janela rastreada que nunca renderizou).
+      this._disconnectRealize(tracked);
       // Remove o efeito de cantos arredondados para deixar as janelas no estado original.
       const actor = window.get_compositor_private() as Clutter.Actor | null;
       if (actor) {
@@ -641,8 +654,9 @@ export default class EtherbitTilingExtension {
   }
 
   /// Rastreia a janela para reagir ao seu fechamento e agenda um relayout. `adopted` = janela já aberta
-  /// ANTES do `enable()` (ADR 0067): ganha os mesmos sinais, mas não passa pelo spawn-unmaximize nem
-  /// pelo gating de `first-frame` (já renderizou) — o estado atual do usuário é preservado.
+  /// ANTES do `enable()` (ADR 0067): ganha os mesmos sinais, mas não passa pelo spawn-unmaximize no
+  /// `window-created` — o estado atual do usuário é preservado. O `first-frame` vale para as duas (ADR
+  /// 0072): numa adotada que já renderizou ele nunca dispara.
   private _onWindowCreated(window: Meta.Window, adopted = false): void {
     const id = window.get_stable_sequence();
     if (!this._tracked.has(id)) {
@@ -653,14 +667,8 @@ export default class EtherbitTilingExtension {
           for (const sigId of tracked.notifyIds) {
             tracked.window.disconnect(sigId);
           }
-          // Gating de `first-frame` ainda pendente (janela fechada antes de renderizar): desconecta.
-          if (tracked.firstFrameId && tracked.actor) {
-            try {
-              tracked.actor.disconnect(tracked.firstFrameId);
-            } catch {
-              // ator já destruído — ignora.
-            }
-          }
+          // Gatilhos de realização ainda pendentes (janela fechada antes de renderizar): desconecta.
+          this._disconnectRealize(tracked);
           this._tracked.delete(id);
         }
         removeFromOrder(this._order, id);
@@ -668,6 +676,7 @@ export default class EtherbitTilingExtension {
         this._stackHidden.delete(id);
         this._lastMinSizes.delete(id);
         this._acceptedFrames.delete(id);
+        this._refusalProbes.delete(id);
         this._floating.delete(id);
         const mruIdx = this._focusMru.indexOf(id);
         if (mruIdx !== -1) {
@@ -723,39 +732,44 @@ export default class EtherbitTilingExtension {
       // OU o Merge Fallback agrupa em aba, em tempo real. Não há loop: nossa própria aplicação roda sob
       // `_suppressRelayout` (coalesce trailing-edge), e o dedup gated por realização converge num passo.
       notifyIds.push(window.connect('size-changed', () => this._scheduleRelayout()));
+      // Diálogo que vira modal DEPOIS do 1º relayout (xdg-dialog `set_modal`): o tipo passa a
+      // MODAL_DIALOG e ele sai do grid já, não no próximo gatilho qualquer (ADR 0072).
+      notifyIds.push(window.connect('notify::window-type', () => this._scheduleRelayout()));
       // Encaixe determinístico no spawn (conceito pop-shell): o `window-created` chega ANTES de o ator
       // estar mapeado — aplicar geometria agora faz o Mutter REJEITAR o encaixe (a 1ª janela "nasce
       // flutuante" no meio da tela; a 2ª "funciona" só porque dispara um relayout posterior). O sinal
       // `first-frame` do `Meta.WindowActor` dispara no 1º quadro renderizado — janela já mapeada e com
-      // tamanho real no Wayland. Esse é o gatilho PRIMÁRIO do encaixe: desmaximiza atômico (se nasceu
-      // maximizada) ANTES do 1º `move_resize_frame` e relayouta. One-shot (desconecta ao disparar); o
-      // `size-changed` acima fica como rede. Se o ator ainda não existe aqui, `firstFrameId` fica 0.
+      // tamanho real no Wayland. Esse é o gatilho PRIMÁRIO do encaixe (`_onRealized`): esquece o que foi
+      // pedido antes, desmaximiza atômico (se nasceu maximizada) e relayouta. One-shot por ator: numa
+      // adotada que já renderizou nunca dispara, mas cobre a criada durante o `import()` assíncrono do
+      // loader (ADR 0071/0072). Sem ator aqui, o `shown` do `Meta.Window` faz o papel; o `size-changed`
+      // acima fica como rede.
       let firstFrameId = 0;
+      let shownId = 0;
       const actor = window.get_compositor_private() as Meta.WindowActor | null;
-      if (actor && !adopted) {
-        firstFrameId = actor.connect('first-frame', () => {
-          const tracked = this._tracked.get(id);
-          if (tracked) {
-            tracked.firstFrameId = 0;
-          }
-          try {
-            actor.disconnect(firstFrameId);
-          } catch {
-            // ator já destruído — ignora.
-          }
-          this._spawnUnmaximizeIfBorn(window, id);
-          this._spawnUnfullscreenIfBorn(window, id);
-          this._scheduleRelayout();
-        });
+      if (actor) {
+        firstFrameId = actor.connect('first-frame', () =>
+          this._onRealized(window, id, 'first-frame'),
+        );
+      } else if (!adopted) {
+        try {
+          shownId = window.connect('shown', () => this._onRealized(window, id, 'shown'));
+        } catch {
+          // sinal ausente nesta versão do Mutter (ADR 0023) — fica a rede do `size-changed`.
+        }
       }
+      const now = GLib.get_monotonic_time();
       this._tracked.set(id, {
         window,
         unmanagedId,
         notifyIds,
         actor,
         firstFrameId,
+        shownId,
+        adopted,
+        bornAt: now,
         // Adotada: fora da janela de graça de spawn (uma maximização dela é manual).
-        spawnAt: adopted ? 0 : GLib.get_monotonic_time(),
+        spawnAt: adopted ? 0 : now,
       });
     }
     if (adopted) {
@@ -768,6 +782,77 @@ export default class EtherbitTilingExtension {
     this._spawnUnmaximizeIfBorn(window, id);
     this._spawnUnfullscreenIfBorn(window, id);
     this._scheduleRelayout();
+  }
+
+  /// 1º quadro da janela na tela (`first-frame`, ou `shown` sem ator — ADR 0072). O que a ponte pediu
+  /// ANTES disso pode ter sido descartado pelo Mutter (janela não realizada, ADR 0038) e trocado pelo
+  /// posicionamento natural. Esquece o slot committado e a sonda e invalida o dedup (mesmo padrão do
+  /// `_onGrabEnd`), para o relayout seguinte reenviar o resize em vez de ler o frame natural — menor e
+  /// contido no slot da 1ª janela — como recusa (ADR 0068). A graça de spawn-unmaximize passa a contar
+  /// daqui: no boot frio o 1º quadro chega segundos depois do `window-created`. One-shot.
+  private _onRealized(window: Meta.Window, id: number, via: string): void {
+    const tracked = this._tracked.get(id);
+    if (!tracked) {
+      return;
+    }
+    this._disconnectRealize(tracked);
+    tracked.spawnAt = GLib.get_monotonic_time();
+    this._lastAppliedRects.delete(id);
+    this._refusalProbes.delete(id);
+    this._lastLayoutSig = '';
+    this._logRealized(window, tracked, via);
+    this._spawnUnmaximizeIfBorn(window, id);
+    this._spawnUnfullscreenIfBorn(window, id);
+    this._scheduleRelayout();
+  }
+
+  /// Desconecta os gatilhos de realização ainda pendentes (`first-frame` do ator, `shown` da janela).
+  private _disconnectRealize(tracked: Tracked): void {
+    if (tracked.firstFrameId && tracked.actor) {
+      try {
+        tracked.actor.disconnect(tracked.firstFrameId);
+      } catch {
+        // ator já destruído — ignora.
+      }
+    }
+    tracked.firstFrameId = 0;
+    if (tracked.shownId) {
+      try {
+        tracked.window.disconnect(tracked.shownId);
+      } catch {
+        // janela já descartada — ignora.
+      }
+    }
+    tracked.shownId = 0;
+  }
+
+  /// Log de realização (ADR 0072): uma linha por janela normal ou diálogo, com o atraso do 1º quadro e a
+  /// classificação bruta. Confirma por que uma janela não encaixou no boot frio (Δ > 80 ms = o relayout
+  /// de spawn pegou a janela antes da tela; `adotada=1` = corrida com o loader) e se um seletor de
+  /// arquivos tem pai. SEM título: o repositório é público e os logs vão para `docs/logs/`. Nunca lança.
+  private _logRealized(window: Meta.Window, tracked: Tracked, via: string): void {
+    try {
+      const wtype = window.get_window_type();
+      if (
+        wtype !== Meta.WindowType.NORMAL &&
+        wtype !== Meta.WindowType.DIALOG &&
+        wtype !== Meta.WindowType.MODAL_DIALOG
+      ) {
+        return;
+      }
+      const parent = window.get_transient_for();
+      const client = window.get_client_type() === Meta.WindowClientType.X11 ? 'x11' : 'wayland';
+      const f = window.get_frame_rect();
+      const deltaMs = Math.round((GLib.get_monotonic_time() - tracked.bornAt) / 1000);
+      console.log(
+        `[etherbit] janela: id=${window.get_stable_sequence()} via=${via} Δ=${deltaMs}ms ` +
+          `adotada=${tracked.adopted ? 1 : 0} classe=${window.get_wm_class() ?? '-'} wtype=${wtype} ` +
+          `transiente=${parent ? parent.get_stable_sequence() : '-'} cliente=${client} ` +
+          `frame=${f.width}x${f.height}@${f.x},${f.y}`,
+      );
+    } catch (error) {
+      console.error(`Etherbit Tiling: log de realização falhou: ${error}`);
+    }
   }
 
   /// Coalesce rajadas de eventos (ex.: vários `window-created` no login) num único relayout.
@@ -1003,10 +1088,12 @@ export default class EtherbitTilingExtension {
       try {
         const [minW, minH] = this._minSize(w);
         const [maxW, maxH] = this._maxSize(w);
+        const parent = w.get_transient_for();
         console.log(
           `[etherbit] drop-detail: id=${d.id} reason=${d.reason} resizeable=${w.resizeable} ` +
             `can_maximize=${w.can_maximize()} fullscreen=${this._isFullscreen(w)} ` +
             `maximized=${this._isMaximized(w)} wtype=${w.get_window_type()} ` +
+            `transient=${parent ? parent.get_stable_sequence() : '-'} ` +
             `min=${minW}x${minH} max=${maxW}x${maxH}`,
         );
       } catch (error) {
@@ -1019,6 +1106,12 @@ export default class EtherbitTilingExtension {
     // próximo dedup, ADR 0038). Só recebe janelas visíveis e não-maximizadas, gravadas pós-apply.
     const prevApplied = new Map(this._lastAppliedRects);
     this._lastAppliedRects.clear();
+    // Sondas de recusa (ADR 0072): reconstruídas junto — só fica a de quem segue no mesmo slot e
+    // continua menor. `probed` pede um relayout de acompanhamento (ver o fim do método).
+    const prevProbes = new Map(this._refusalProbes);
+    this._refusalProbes.clear();
+    const probed: number[] = [];
+    const confirmed: number[] = [];
     // Uma janela pode morrer ENTRE o snapshot e a aplicação (unmanage assíncrono). Se isso ocorrer,
     // o layout que estamos aplicando é da topologia antiga (N células) — as sobreviventes cairiam em
     // slots errados, sobrepondo-se. Marca e força uma passada corretiva sobre o conjunto sobrevivente
@@ -1064,25 +1157,35 @@ export default class EtherbitTilingExtension {
           // ≥1px se o monitor não for resolvido (defensivo — rect inválido quebraria o framebuffer do Cogl).
           const target = monitorForWin.get(command.id);
           const g = target ? clampToWorkArea(command, target) : clampGeometry(command);
-          // Recusa de tamanho (ADR 0068): o MESMO slot já foi pedido e o cliente ficou menor (size
-          // increments/tamanho máximo). Reenviar o resize só reproduz a recusa (flicker); centraliza.
-          const prev = prevApplied.get(command.id);
+          const slot: Rect = { x: g.x, y: g.y, width: g.width, height: g.height };
+          // Recusa de tamanho (ADR 0068) só CONFIRMADA (ADR 0072): o MESMO slot já foi pedido, o cliente
+          // ficou menor e a ponte já re-pediu uma vez (sonda). Aí reenviar o resize só reproduz a recusa
+          // (flicker de terminal com size increments) — centraliza. Antes da sonda, o frame menor pode
+          // ser posicionamento natural/restauração do app: reenvia o resize uma vez.
           const cur = window.get_frame_rect();
-          if (prev && sameRect(prev, g) && sizeRefused(g, cur, RELAYOUT_CONVERGE_EPSILON_PX)) {
-            const c = centerInSlot(g, cur);
+          const action = refusalAction(
+            slot,
+            prevApplied.get(command.id),
+            cur,
+            prevProbes.get(command.id),
+            RELAYOUT_CONVERGE_EPSILON_PX,
+          );
+          if (action === 'center') {
+            const c = centerInSlot(slot, cur);
             if (cur.x !== c.x || cur.y !== c.y) {
               window.move_frame(false, c.x, c.y);
             }
+            this._refusalProbes.set(command.id, slot);
+            confirmed.push(command.id);
           } else {
             window.move_resize_frame(false, g.x, g.y, g.width, g.height);
+            if (action === 'probe') {
+              this._refusalProbes.set(command.id, slot);
+              probed.push(command.id);
+            }
           }
           // Registra o slot committado: o próximo dedup só curto-circuita se o frame chegar nele.
-          this._lastAppliedRects.set(command.id, {
-            x: g.x,
-            y: g.y,
-            width: g.width,
-            height: g.height,
-          });
+          this._lastAppliedRects.set(command.id, slot);
           // Cantos arredondados (efeito no ator): o RAIO é a única fonte de verdade — `> 0` aplica o
           // efeito; `0` o remove (não há mais toggle separado). Best-effort, nunca quebra.
           const actor = window.get_compositor_private() as Clutter.Actor | null;
@@ -1141,6 +1244,19 @@ export default class EtherbitTilingExtension {
       this._lastLayoutSig = '';
       this._scheduleRelayout();
     }
+
+    // Recusa (ADR 0072): `sonda` = slot re-pedido nesta passada; `confirmada` = cliente seguiu menor
+    // depois da sonda e foi só centralizado. Um cliente que recusa DE NOVO não emite `size-changed`:
+    // sem o relayout de acompanhamento o resultado da sonda nunca seria lido e a janela ficaria no canto
+    // do slot. Sob supressão, `_scheduleRelayout` só marca `_relayoutPending` (honrado no settle).
+    if (probed.length > 0 || confirmed.length > 0) {
+      console.log(
+        `[etherbit] recusa: sonda=[${probed.join(', ')}] confirmada=[${confirmed.join(', ')}]`,
+      );
+    }
+    if (probed.length > 0) {
+      this._scheduleRelayout();
+    }
   }
 
   /// Confronta a geometria que committamos no último ciclo (`_lastAppliedRects`) com o
@@ -1161,13 +1277,23 @@ export default class EtherbitTilingExtension {
       const r = window.get_frame_rect();
       current.set(id, { x: r.x, y: r.y, width: r.width, height: r.height });
     }
-    return geometryConverged(this._lastAppliedRects, current, RELAYOUT_CONVERGE_EPSILON_PX);
+    return geometryConverged(
+      this._lastAppliedRects,
+      current,
+      RELAYOUT_CONVERGE_EPSILON_PX,
+      this._refusalProbes,
+    );
   }
 
-  /// Centraliza no slot as janelas que recusaram o tamanho pedido (ADR 0068). Só `move_frame` (não
-  /// redimensiona), então não dispara `size-changed` nem realimenta o laço. Idempotente.
+  /// Centraliza no slot as janelas que recusaram o tamanho pedido (ADR 0068) — só as de recusa
+  /// CONFIRMADA por sonda do mesmo slot (ADR 0072). Só `move_frame` (não redimensiona), então não
+  /// dispara `size-changed` nem realimenta o laço. Idempotente.
   private _centerRefusedWindows(byId: Map<number, Meta.Window>): void {
     for (const [id, want] of this._lastAppliedRects) {
+      const probe = this._refusalProbes.get(id);
+      if (!probe || !sameRect(probe, want)) {
+        continue;
+      }
       const window = byId.get(id);
       if (!window || !this._isWindowLive(window) || this._isMaximized(window)) {
         continue;
@@ -1175,6 +1301,9 @@ export default class EtherbitTilingExtension {
       try {
         const cur = window.get_frame_rect();
         if (!sizeRefused(want, cur, RELAYOUT_CONVERGE_EPSILON_PX)) {
+          // Cliente lento aceitou o slot depois da sonda: a recusa não se confirmou — esquece a sonda,
+          // para um encolhimento futuro (restauração do app) passar de novo pela sonda.
+          this._refusalProbes.delete(id);
           continue;
         }
         const c = centerInSlot(want, cur);
@@ -1431,6 +1560,7 @@ export default class EtherbitTilingExtension {
     // encaixe" após resize/arraste manual. A recusa volta a valer se o cliente recusar um novo pedido.
     if (window) {
       this._lastAppliedRects.delete(window.get_stable_sequence());
+      this._refusalProbes.delete(window.get_stable_sequence());
       this._lastLayoutSig = '';
     }
     if (this._draggedId && window) {
@@ -2347,6 +2477,7 @@ export default class EtherbitTilingExtension {
     // o grid, mesmo que o layout calculado coincida com o último de antes do desligamento.
     this._lastLayoutSig = '';
     this._lastAppliedRects.clear();
+    this._refusalProbes.clear();
     this._restoreHiddenWindows();
     this._destroyTabBars();
     this._positionBorder();
@@ -2450,6 +2581,9 @@ export default class EtherbitTilingExtension {
       min_height: minHeight,
       maximized: this._isMaximized(window),
       title: window.get_title() ?? '',
+      // Pai (ADR 0072): o diálogo NÃO modal chega NORMAL no Wayland (ex.: seletor de pasta do VS Code,
+      // parentado via xdg-foreign); o pai é o único sinal para o core deixá-lo flutuar.
+      transient: window.get_transient_for() !== null,
     };
   }
 

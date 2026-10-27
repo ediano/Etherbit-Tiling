@@ -51,6 +51,10 @@ pub struct WindowInfo {
     pub maximized: bool,
     /// Título da janela — alvo das regras `title:` da lista de exceções (ADR 0068). Vazio = sem título.
     pub title: String,
+    /// Janela com janela-pai (transiente): diálogo do portal, seletor de arquivos, preferências. No
+    /// Wayland um diálogo NÃO modal segue "normal" no compositor; o pai é o único sinal. Flutua, como no
+    /// COSMIC e no pop-shell (ADR 0072).
+    pub transient: bool,
 }
 
 /// Área útil de um monitor (já descontadas barras/docks do compositor).
@@ -304,7 +308,8 @@ enum Slot<'a> {
 /// `_shouldIgnore` (GNOME) e `shouldTile` (KDE):
 ///  1) não está na `ignore_list` (por `app_id`, case-insensitive — só se houver app_id);
 ///  2) é redimensionável e maximizável (descarta diálogos rígidos);
-///  3) é uma janela normal (descarta dock/utility/splash/dialog).
+///  3) é uma janela normal (descarta dock/utility/splash/dialog);
+///  4) não tem janela-pai (descarta diálogos não modais, que o Wayland reporta como normais — ADR 0072).
 pub fn is_tileable(window: &WindowInfo, ignore_list: &[String]) -> bool {
     if ignore_list.iter().any(|rule| matches_exception(rule, window)) {
         return false;
@@ -313,6 +318,9 @@ pub fn is_tileable(window: &WindowInfo, ignore_list: &[String]) -> bool {
         return false;
     }
     if !window.normal {
+        return false;
+    }
+    if window.transient {
         return false;
     }
     true
@@ -2169,6 +2177,7 @@ mod tests {
             min_height: 0,
             maximized: false,
             title: String::new(),
+            transient: false,
         }
     }
 
@@ -2227,6 +2236,15 @@ mod tests {
         let mut w = win(1, 0);
         w.normal = false;
         assert!(!is_tileable(&w, &[]));
+    }
+
+    #[test]
+    fn tileable_rejects_transient() {
+        // ADR 0072: diálogo NÃO modal com pai chega "normal" do Wayland, redimensionável e maximizável.
+        // O pai é o único sinal — flutua, como no COSMIC.
+        let w = WindowInfo { transient: true, ..win(1, 0) };
+        assert!(!is_tileable(&w, &[]));
+        assert!(is_tileable(&WindowInfo { transient: false, ..w }, &[]));
     }
 
     #[test]

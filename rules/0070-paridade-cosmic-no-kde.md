@@ -110,3 +110,11 @@ o mesmo, a janela só era centralizada e nunca voltava a preencher o slot. Ao fi
 (`grab-op-end` no GNOME, `interactiveMoveResizeFinished` no KDE) a ponte esquece o slot committado
 da janela agarrada (no GNOME também invalida o dedup). A recusa volta a ser detectada se o cliente
 recusar um pedido novo.
+
+## Emenda (2026-10-27) — recusa só depois de uma sonda (ADR 0072)
+
+O `frameGeometryChanged` centralizava qualquer frame menor e contido, inclusive o app restaurando o
+próprio tamanho logo depois do apply. Centralizar re-pedia o tamanho menor e travava a janela fora do
+slot. Pela [0072](0072-recusa-com-evidencia-e-transientes-flutuam.md), a 1ª ocorrência reaplica o slot
+(sonda); só com a sonda do mesmo slot a ponte centraliza, no `frameGeometryChanged` ou no apply. A ponte
+também passa a enviar `transient` (`win.transient`): diálogos com pai flutuam.

@@ -46,6 +46,7 @@ import {
   sizeRefused,
   containedIn,
   centerInSlot,
+  refusalAction,
   type Stack,
   type TreeNode,
   type WindowSnapshot,
@@ -69,6 +70,7 @@ const win: WindowSnapshot = {
   min_height: 0,
   maximized: false,
   title: 'kitty',
+  transient: false,
 };
 
 describe('serializeWindows / serializeMonitors', () => {
@@ -741,16 +743,47 @@ describe('recusa de tamanho (ADR 0068)', () => {
     height,
   });
 
-  it('terminal menor (size increments) contido no slot → convergiu', () => {
+  it('terminal menor (size increments) contido no slot e já sondado → convergiu', () => {
     const last = new Map([[1, r(0, 0, 805, 1000)]]);
     const current = new Map([[1, r(0, 0, 797, 990)]]);
-    expect(geometryConverged(last, current, 2)).toBe(true);
+    expect(geometryConverged(last, current, 2, new Map([[1, r(0, 0, 805, 1000)]]))).toBe(true);
   });
 
-  it('menor mas FORA do slot (apply descartado) → não convergiu', () => {
+  it('menor mas FORA do slot (apply descartado) → não convergiu, mesmo sondado', () => {
     const last = new Map([[1, r(0, 0, 800, 1000)]]);
     const current = new Map([[1, r(900, 100, 400, 300)]]);
     expect(geometryConverged(last, current, 2)).toBe(false);
+    expect(geometryConverged(last, current, 2, last)).toBe(false);
+  });
+
+  it('regressão ADR 0072: 1ª janela com apply descartado no boot NÃO convergiu sem sonda', () => {
+    // Slot = área útil inteira; o Mutter pôs a janela no tamanho natural, centralizada → "menor e
+    // contida". Antes da 0072 isso era lido como recusa e a janela nunca era redimensionada.
+    const last = new Map([[1, r(8, 40, 1904, 1032)]]);
+    const current = new Map([[1, r(560, 290, 800, 600)]]);
+    expect(geometryConverged(last, current, 2)).toBe(false);
+  });
+
+  it('sonda de OUTRO slot não confirma a recusa do slot atual', () => {
+    const last = new Map([[1, r(0, 0, 805, 1000)]]);
+    const current = new Map([[1, r(0, 0, 797, 990)]]);
+    expect(geometryConverged(last, current, 2, new Map([[1, r(0, 0, 400, 1000)]]))).toBe(false);
+  });
+
+  it('refusalAction: 1º pedido, slot novo ou cliente não menor → resize', () => {
+    const slot = r(0, 0, 805, 1000);
+    expect(refusalAction(slot, undefined, r(0, 0, 797, 990), undefined, 2)).toBe('resize');
+    expect(refusalAction(slot, r(0, 0, 400, 1000), r(0, 0, 397, 990), undefined, 2)).toBe('resize');
+    expect(refusalAction(slot, slot, r(0, 0, 805, 1000), slot, 2)).toBe('resize');
+    expect(refusalAction(slot, slot, r(0, 0, 0, 0), undefined, 2)).toBe('resize');
+  });
+
+  it('refusalAction: mesmo slot com o cliente menor → sonda; já sondado → centraliza', () => {
+    const slot = r(0, 0, 805, 1000);
+    const cur = r(0, 0, 797, 990);
+    expect(refusalAction(slot, slot, cur, undefined, 2)).toBe('probe');
+    expect(refusalAction(slot, slot, cur, r(0, 0, 400, 1000), 2)).toBe('probe');
+    expect(refusalAction(slot, slot, cur, slot, 2)).toBe('center');
   });
 
   it('sizeRefused: menor num eixo e não maior no outro', () => {

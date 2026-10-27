@@ -25,6 +25,9 @@ export interface WindowSnapshot {
   maximized: boolean;
   /// Título (`caption`) — alvo das regras `title:` da lista de exceções (ADR 0068/0070).
   title: string;
+  /// Tem janela-pai (`transient` do KWin: diálogo não modal, seletor do portal): o core a deixa
+  /// flutuar (ADR 0072).
+  transient: boolean;
 }
 
 /// Espelha o `MonitorDto` do daemon (área útil de um monitor).
@@ -103,6 +106,7 @@ export function serializeWindows(windows: WindowSnapshot[]): string {
       min_height: roundPx(w.min_height),
       maximized: w.maximized,
       title: w.title,
+      transient: w.transient,
     })),
   );
 }
@@ -1122,6 +1126,27 @@ export function centerInSlot(want: Rect, got: Rect): Rect {
     width: got.width,
     height: got.height,
   };
+}
+
+/// Ação do apply para uma janela cujo slot é `want` (ADR 0072, espelho do GNOME). `prev` = slot pedido
+/// no ciclo anterior; `cur` = frame atual; `probe` = slot já re-pedido uma vez com o cliente menor.
+///  - `resize`: 1º pedido, slot novo ou cliente não está menor → aplica o slot;
+///  - `probe`: o MESMO slot já foi pedido e o cliente ficou menor, mas isso ainda não prova recusa (o app
+///    pode ter restaurado o próprio tamanho depois do apply) — reaplica o slot UMA vez e registra a sonda;
+///  - `center`: o slot já foi sondado e o cliente segue menor → recusa confirmada: só centraliza.
+export type RefusalAction = 'resize' | 'probe' | 'center';
+
+export function refusalAction(
+  want: Rect,
+  prev: Rect | undefined,
+  cur: Rect,
+  probe: Rect | undefined,
+  epsilon: number,
+): RefusalAction {
+  if (!prev || !sameRect(prev, want) || !sizeRefused(want, cur, epsilon)) {
+    return 'resize';
+  }
+  return probe && sameRect(probe, want) ? 'center' : 'probe';
 }
 
 /// Direção de navegação/movimento por teclado.

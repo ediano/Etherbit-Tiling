@@ -57,7 +57,8 @@ Leitura dos resultados:
   `[etherbit] relayout: total=<N> aplicadas=<A> flutuantes=<F> descartadas=[id:motivo, …]` e
   `[etherbit] grid: id@x,y wxh | …` (geometria final de cada janela). Se `total > aplicadas` sem
   `flutuantes`, a janela "que some" está em `descartadas` com o motivo: `non_normal`/`non_resizable`/
-  `non_maximizable`/`ignored` (reprovou em `is_tileable`, ex.: desktop/DING ou diálogo) ou
+  `non_maximizable`/`ignored` (reprovou em `is_tileable`, ex.: desktop/DING ou diálogo), `transient`
+  (tem janela-pai — diálogo não modal, seletor de arquivos; ver a seção 7), `floating` (Super+G) ou
   `excluded_maximized` (nasceu maximizada e está fora do grid até desmaximizar — se persistir, ver o
   `JS WARNING` de `Meta.Window.unmaximize`, sintoma da API do Mutter mudar de assinatura).
 
@@ -124,3 +125,44 @@ systemctl suspend
 #  → ao acordar, fechar janela reorganiza e o gap surte efeito;
 #    journalctl --user -f mostra o tratamento de PrepareForSleep / reativação.
 ```
+
+## 7. 1ª janela não encaixa após reiniciar / diálogo entra no grid
+
+Sintomas da [ADR 0072](../rules/0072-recusa-com-evidencia-e-transientes-flutuam.md): depois do boot a
+1ª janela fica no tamanho natural, centralizada, até abrir a 2ª; ou um seletor de arquivos (ex.: "Abrir
+Pasta" do VS Code) é tilado e racha a janela focada. Reinicie, reproduza e colete:
+
+```bash
+# GNOME (horário monotônico: compara com a linha "impl … ativa" do loader)
+journalctl --user -b 0 -o short-monotonic /usr/bin/gnome-shell | grep etherbit
+
+# KDE
+journalctl --user -b 0 QT_CATEGORY=kwin_scripting | grep etherbit
+```
+
+Linhas novas (nenhuma traz o título da janela — o repositório é público):
+
+- **GNOME** `[etherbit] enable: adotadas=N` — janelas que já existiam quando a extensão ativou.
+- **GNOME** `[etherbit] janela: id=… via=first-frame|shown Δ=…ms adotada=0|1 classe=… wtype=…
+transiente=<idPai|-> cliente=wayland|x11 frame=WxH@x,y` — uma por janela normal ou diálogo, no 1º
+  quadro. `Δ` acima de ~80 ms quer dizer que o relayout de spawn pegou a janela antes da tela (o pedido
+  feito antes do 1º quadro é esquecido e reenviado). `adotada=1` quer dizer que ela nasceu durante o
+  carregamento assíncrono da extensão.
+- **KDE** `[etherbit] janela: <id> classe=… normal=… dialog=… transiente=… modal=… frame=WxH @x,y` — no
+  `windowAdded`.
+- `[etherbit] recusa: sonda=[…] confirmada=[…]` (GNOME) / `recusa: sonda <id>` (KDE) — o cliente ficou
+  menor que o slot. A sonda reenvia o slot uma vez; só se ele continuar menor (terminal com _size
+  increments_, tamanho máximo) a janela é centralizada. Uma sonda seguida da janela no slot = era
+  restauração do app, não recusa.
+- `drop-detail: … transient=<idPai|->` (GNOME) — por que a janela ficou fora do grid.
+
+Leitura:
+
+- Seletor com `transiente=<id>` e o motivo `transient` em `descartadas` ⇒ flutua, como esperado.
+- Seletor com `transiente=-` (sem pai) e tilado ⇒ o portal não conseguiu parentar o diálogo (ex.: app em
+  XWayland). Anote a `classe` e abra uma ADR de acompanhamento com uma regra de exceção por classe.
+- Ainda tilado com `transiente=<id>` ⇒ o daemon é antigo e ignora o campo. Reinstale o pacote, que
+  reinicia o daemon.
+- O seletor GTK memoriza o último tamanho. Se ele voltar pequeno depois da correção, redimensione uma
+  vez (ou `gsettings reset` na chave `window-size` do `org.gtk.Settings.FileChooser`/
+  `org.gtk.gtk4.Settings.FileChooser`).
