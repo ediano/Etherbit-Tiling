@@ -80,6 +80,10 @@ pub struct WindowDto {
     /// Título da janela (regras `title:` da lista de exceções, ADR 0068). Ausente = vazio (retrocompat).
     #[serde(default)]
     pub title: String,
+    /// Janela com janela-pai (diálogo não modal, seletor do portal): flutua (ADR 0072). Ausente =
+    /// `false` (retrocompat com ponte antiga).
+    #[serde(default)]
+    pub transient: bool,
 }
 
 /// Tamanho mínimo (px) de uma janela, anexado ao `state_json` para o caminho de `ResizeWindow` — que
@@ -290,9 +294,10 @@ pub struct LayoutResultDto {
 }
 
 /// Uma janela recebida que o daemon NÃO posicionou, com o motivo. Motivos: `ignored` (lista de
-/// exclusão), `non_resizable`, `non_maximizable`, `non_normal` (reprovada em `is_tileable`), ou
-/// `excluded_maximized` (tileável, mas "nasceu maximizada" e ainda sem folha →
-/// `retain_tileable_when_maximized` a mantém fora do grid até desmaximizar).
+/// exclusão), `non_resizable`, `non_maximizable`, `non_normal`, `transient` (tem janela-pai, ADR
+/// 0072) — reprovadas em `is_tileable` —, `floating` (Super+G) ou `excluded_maximized` (tileável, mas
+/// "nasceu maximizada" e ainda sem folha → `retain_tileable_when_maximized` a mantém fora do grid até
+/// desmaximizar).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DroppedDto {
     pub id: u64,
@@ -393,6 +398,7 @@ impl From<WindowDto> for WindowInfo {
             min_height: w.min_height,
             maximized: w.maximized,
             title: w.title,
+            transient: w.transient,
         }
     }
 }
@@ -562,6 +568,9 @@ fn drop_reason(w: &WindowInfo, ignore_list: &[String]) -> String {
     }
     if !w.normal {
         return "non_normal".to_string();
+    }
+    if w.transient {
+        return "transient".to_string();
     }
     "unknown".to_string()
 }
@@ -1377,6 +1386,25 @@ mod tests {
         let res = sync_policy(&windows, "", &policy);
         assert_eq!(res.rects.len(), 1);
         assert!(res.dropped.iter().any(|d| d.id == 3 && d.reason == "ignored"));
+    }
+
+    #[test]
+    fn sync_transiente_sai_do_grid_com_motivo() {
+        // ADR 0072: seletor de pasta NÃO modal com pai chega normal/redimensionável/maximizável do
+        // Wayland. Sem o filtro ele rachava a janela focada; agora flutua com o motivo `transient`.
+        let dialog = r#"{"id":7,"app_id":"code","x":0,"y":0,"width":600,"height":400,"normal":true,"resizable":true,"maximizable":true,"monitor":0,"workspace":0,"transient":true}"#;
+        let windows = format!("[{},{}]", win_json(1, "code"), dialog);
+        let out = sync_windows(&windows, AREAS, "", &[], OPTS).expect("ok");
+        let res = layout_of(&out);
+        assert_eq!(res.rects, vec![RectDto { id: 1, x: 12, y: 12, width: 976, height: 776 }]);
+        assert!(res.dropped.iter().any(|d| d.id == 7 && d.reason == "transient"));
+    }
+
+    #[test]
+    fn window_dto_sem_transient_desserializa_false() {
+        // Retrocompat: uma ponte antiga não envia o campo — a janela segue tileável.
+        let dto: WindowDto = serde_json::from_str(&win_json(1, "a")).expect("ok");
+        assert!(!dto.transient);
     }
 
     #[test]

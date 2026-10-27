@@ -62,3 +62,10 @@ chave de monitor por connector.
   - borda de janela ativa (config já existe, sem render);
   - chave de monitor por connector, com migração no hotplug.
 - Reutilizar as tab bars em vez de recriá-las a cada relayout.
+
+## Emenda (2026-10-27) — adotadas também ganham o `first-frame` (ADR 0072)
+
+O `import()` assíncrono do loader ([0071](0071-update-sem-logout-hot-reload.md)) pode adotar janelas
+que ainda não desenharam. Pela [0072](0072-recusa-com-evidencia-e-transientes-flutuam.md), o
+`first-frame` é conectado também nas adotadas: o sinal é de disparo único por ator e nunca dispara numa
+janela que já renderizou, então o hot-reload continua preservando o estado do usuário.

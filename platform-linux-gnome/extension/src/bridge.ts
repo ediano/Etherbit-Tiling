@@ -25,6 +25,8 @@ export interface WindowSnapshot {
   maximized: boolean;
   /// Título (regras `title:` da lista de exceções, ADR 0068).
   title: string;
+  /// Tem janela-pai (diálogo não modal, seletor do portal): o core a deixa flutuar (ADR 0072).
+  transient: boolean;
 }
 
 /// `true` sse a janela tem tamanho GENUINAMENTE FIXO: `min == max` em AMBOS os eixos, com `max > 0`
@@ -233,7 +235,8 @@ export function shouldSuppressSpawnMaximize(p: {
 }
 
 /// Uma janela RECEBIDA que o daemon não posicionou, com o motivo (`non_normal`, `non_resizable`,
-/// `non_maximizable`, `ignored`, `excluded_maximized`). Puramente diagnóstico — alimenta o log fiel.
+/// `non_maximizable`, `transient`, `ignored`, `floating`, `excluded_maximized`). Puramente diagnóstico —
+/// alimenta o log fiel.
 export interface DroppedWindow {
   id: number;
   reason: string;
@@ -393,10 +396,13 @@ export interface Rect {
 /// `current` (janela fechada/maximizada — o chamador os exclui) são ignorados; `last` vazio → `true`.
 /// No boot, o compositor descarta o `move_resize_frame` em janelas ainda não realizadas: o frame não
 /// bate → NÃO convergiu → o dedup do `_lastLayoutSig` não pode curto-circuitar a reaplicação.
+/// `probes` = slots já re-pedidos uma vez com o cliente menor (ver `refusalAction`); só eles podem
+/// convergir por recusa. Ausente = nenhuma recusa aceita (estrito).
 export function geometryConverged(
   last: Map<number, Rect>,
   current: Map<number, Rect>,
   epsilon: number,
+  probes: ReadonlyMap<number, Rect> = new Map(),
 ): boolean {
   for (const [id, want] of last) {
     const got = current.get(id);
@@ -409,16 +415,46 @@ export function geometryConverged(
       Math.abs(got.width - want.width) > epsilon ||
       Math.abs(got.height - want.height) > epsilon
     ) {
-      // Recusa de tamanho (ADR 0068): o cliente ficou MENOR que o slot (size increments de terminal,
-      // tamanho máximo) e está contido nele → convergiu no que o app aceita. Sem isso cada gatilho
-      // (até troca de foco) reaplicaria a geometria para sempre (flicker).
-      if (sizeRefused(want, got, epsilon) && containedIn(want, got, epsilon)) {
+      // Recusa de tamanho CONFIRMADA (ADR 0068/0072): o slot já foi sondado e o cliente segue MENOR e
+      // contido (size increments de terminal, tamanho máximo) → convergiu no que o app aceita. Sem a
+      // sonda, "menor e contido" é também o frame natural de uma janela cujo apply foi descartado no
+      // boot (a 1ª janela tem a área útil inteira como slot) — essa NÃO convergiu.
+      const probe = probes.get(id);
+      if (
+        probe &&
+        sameRect(probe, want) &&
+        sizeRefused(want, got, epsilon) &&
+        containedIn(want, got, epsilon)
+      ) {
         continue;
       }
       return false;
     }
   }
   return true;
+}
+
+/// Ação do apply para uma janela cujo slot é `want` (ADR 0072). `prev` = slot pedido no ciclo
+/// anterior; `cur` = frame atual; `probe` = slot já re-pedido uma vez com o cliente menor.
+///  - `resize`: 1º pedido, slot novo ou cliente não está menor → `move_resize_frame`;
+///  - `probe`: o MESMO slot já foi pedido e o cliente ficou menor, mas isso ainda não prova recusa — o
+///    frame menor pode ser o posicionamento inicial do compositor, a restauração do app ou um resize do
+///    próprio cliente. Reenvia o resize UMA vez e registra a sonda;
+///  - `center`: o slot já foi sondado e o cliente segue menor → recusa confirmada (size increments,
+///    tamanho máximo): só centraliza, sem reenviar o resize (sem flicker, ADR 0068).
+export type RefusalAction = 'resize' | 'probe' | 'center';
+
+export function refusalAction(
+  want: Rect,
+  prev: Rect | undefined,
+  cur: Rect,
+  probe: Rect | undefined,
+  epsilon: number,
+): RefusalAction {
+  if (!prev || !sameRect(prev, want) || !sizeRefused(want, cur, epsilon)) {
+    return 'resize';
+  }
+  return probe && sameRect(probe, want) ? 'center' : 'probe';
 }
 
 /// `true` se o cliente RECUSOU o tamanho do slot: ficou menor em algum eixo e não maior em nenhum

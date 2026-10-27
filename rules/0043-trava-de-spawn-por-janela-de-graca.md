@@ -73,3 +73,9 @@ janela é revertida. É raro e coerente com o princípio "maximização é ato e
   agrupa em abas. O merge retorna **antes** de aplicar a geometria de esmagamento, então não há frame
   de sobreposição na primeira detecção. Nenhuma mudança no core/daemon.
 - **Paridade GNOME ⇄ KDE** mantida pelo predicado puro comum.
+
+## Emenda (2026-10-27) — graça a partir do 1º quadro (GNOME, ADR 0072)
+
+No boot frio o 1º quadro chega segundos depois do `window-created`, e a graça de 1,5 s acabava antes de
+o app restaurar a maximização. Pela [0072](0072-recusa-com-evidencia-e-transientes-flutuam.md), o
+`spawnAt` é reiniciado no 1º quadro (`first-frame`, ou `shown` sem ator).
