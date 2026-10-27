@@ -50,6 +50,7 @@ import {
   containedIn,
   centerInSlot,
   refusalAction,
+  transientPlacement,
   directionZone,
   neighborInDirection,
   pushFocus,
@@ -652,6 +653,43 @@ function releaseToFloating(): void {
 
 /// Coleta janelas + monitores na ORDEM estável, pede o layout ao daemon (com o estado de árvores +
 /// grupos desligados) e aplica os retângulos (pull). Não faz nada durante um arrasto nem reentrante.
+/// Transientes já colocados (ADR 0073): a 1ª vez que um diálogo com pai é visto, a ponte o centraliza
+/// sobre o pai com proporção adequada; depois disso o usuário manda. Limpo no `windowRemoved`.
+const placedTransients = new Set<string>();
+
+/// Centraliza o diálogo transiente sobre o pai, corrigindo proporção ruim (ADR 0073). Só uma vez.
+function placeTransient(sid: string, win: KWinWindow): void {
+  if (placedTransients.has(sid)) {
+    return;
+  }
+  placedTransients.add(sid);
+  try {
+    const g = win.frameGeometry;
+    const area = workspace.clientArea(KWin.MaximizeArea, win);
+    const parent = win.transientFor && isLiveWindow(win.transientFor) ? win.transientFor : null;
+    const p = parent ? parent.frameGeometry : null;
+    const min = win.minSize;
+    const max = win.maxSize;
+    const r = transientPlacement(
+      { x: g.x, y: g.y, width: g.width, height: g.height },
+      p ? { x: p.x, y: p.y, width: p.width, height: p.height } : null,
+      { x: area.x, y: area.y, width: area.width, height: area.height },
+      [min ? Math.round(min.width) : 0, min ? Math.round(min.height) : 0],
+      [
+        max && max.width < 1e6 ? Math.round(max.width) : 0,
+        max && max.height < 1e6 ? Math.round(max.height) : 0,
+      ],
+      win.resizeable,
+    );
+    log(
+      `transiente: ${sid} pai=${parent ? windowId(parent) : '-'} ${g.width}x${g.height} -> ${r.width}x${r.height}`,
+    );
+    win.frameGeometry = { x: r.x, y: r.y, width: r.width, height: r.height };
+  } catch (error) {
+    debug('placeTransient falhou', String(error));
+  }
+}
+
 function retile(): void {
   if (draggedId !== null || applying) {
     return;
@@ -756,6 +794,9 @@ function retile(): void {
       // Enviamos o mínimo real e o core o respeita via esmagamento impositivo (ADR 0040): a janela
       // rígida recebe ≥ seu mínimo e os vizinhos comprimem. Espelha a ponte GNOME.
       const min = entry.win.minSize;
+      if (entry.win.transient === true && !isMaximized(entry.win)) {
+        placeTransient(entry.stableId, entry.win);
+      }
       snapshots.push({
         id,
         app_id: entry.win.resourceClass || entry.win.resourceName || '',
@@ -2005,6 +2046,7 @@ function toggleFloatingShortcut(): void {
     removeIdFromStacks(stacks, id);
     lastApplied.delete(id);
     refusalProbes.delete(id);
+    placedTransients.delete(id);
   }
   retile();
 }

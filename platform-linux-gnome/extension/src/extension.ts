@@ -48,6 +48,7 @@ import {
   centerInSlot,
   sameRect,
   refusalAction,
+  transientPlacement,
   parseLayoutTrees,
   resolveHotZone,
   serializeScope,
@@ -203,6 +204,9 @@ export default class EtherbitTilingExtension {
   // tamanho (ADR 0068) só é aceita com sonda do mesmo slot — sem ela, "menor e contido" pode ser só o
   // frame natural de um apply descartado no boot. Reconstruído a cada apply, como `_lastAppliedRects`.
   private _refusalProbes = new Map<number, Rect>();
+  // Transientes já colocados (ADR 0073): o diálogo com pai é centralizado sobre o pai com proporção
+  // adequada UMA vez; depois o usuário manda. Limpo no `unmanaged`.
+  private _placedTransients = new Set<number>();
   // Timers do "boot settle cascade": janelas abertas ANTES do `enable()` não disparam
   // `window-created`, logo não ganham a rede `first-frame`/`size-changed`. Um único relayout no boot
   // pode ser descartado (daemon ou janelas ainda não prontos). Reagendamos nos offsets de
@@ -677,6 +681,7 @@ export default class EtherbitTilingExtension {
         this._lastMinSizes.delete(id);
         this._acceptedFrames.delete(id);
         this._refusalProbes.delete(id);
+        this._placedTransients.delete(id);
         this._floating.delete(id);
         const mruIdx = this._focusMru.indexOf(id);
         if (mruIdx !== -1) {
@@ -999,6 +1004,14 @@ export default class EtherbitTilingExtension {
     const monitors = this._collectMonitors();
     const monitorByIndex = new Map(monitors.map((m) => [m.index, m]));
     const monitorForWin = new Map(snapshots.map((s) => [s.id, monitorByIndex.get(s.monitor)]));
+
+    for (const s of snapshots) {
+      const w = byId.get(s.id);
+      const area = monitorByIndex.get(s.monitor);
+      if (s.transient && !s.maximized && w && area && !this._placedTransients.has(s.id)) {
+        this._placeTransient(s.id, w, area);
+      }
+    }
 
     const res = this._call((p) =>
       p.SyncWindowsSync(
@@ -2854,6 +2867,38 @@ export default class EtherbitTilingExtension {
     } catch {
       // Defensivo: na dúvida, tratar como redimensionável (o core ainda filtra por normal/maximizable).
       return true;
+    }
+  }
+
+  /// Centraliza o diálogo transiente sobre o pai, corrigindo proporção ruim (ADR 0073). Só uma vez:
+  /// o seletor do portal nasce com o tamanho que o app escolheu (largo e baixo no VS Code).
+  private _placeTransient(id: number, window: Meta.Window, area: Rect): void {
+    this._placedTransients.add(id);
+    try {
+      const f = window.get_frame_rect();
+      const parent = window.get_transient_for();
+      const p = parent ? parent.get_frame_rect() : null;
+      const r = transientPlacement(
+        { x: f.x, y: f.y, width: f.width, height: f.height },
+        p ? { x: p.x, y: p.y, width: p.width, height: p.height } : null,
+        { x: area.x, y: area.y, width: area.width, height: area.height },
+        this._minSize(window),
+        this._maxSize(window),
+        this._isResizable(window),
+      );
+      console.log(
+        `[etherbit] transiente: id=${id} pai=${parent ? parent.get_stable_sequence() : '-'} ` +
+          `${f.width}x${f.height} -> ${r.width}x${r.height}`,
+      );
+      const prevSuppress = this._suppressRelayout;
+      this._suppressRelayout = true;
+      try {
+        window.move_resize_frame(false, r.x, r.y, r.width, r.height);
+      } finally {
+        this._suppressRelayout = prevSuppress;
+      }
+    } catch (error) {
+      console.error(`Etherbit Tiling: transiente falhou na janela ${id}: ${error}`);
     }
   }
 
