@@ -177,6 +177,10 @@ export default class EtherbitTilingExtension {
   private _displayIds: number[] = [];
   private _workspaceId = 0;
   private _monitorsId = 0;
+  // Tela bloqueada (ADR 0074): a extensão segue viva no `unlock-dialog` para preservar o estado, mas
+  // não relayouta nem mostra o indicador; ao destravar, um único relayout com o estado intacto.
+  private _sessionModeId = 0;
+  private _locked = false;
 
   // Janelas rastreadas (para reagir ao fechamento) e debounce do relayout.
   private _tracked = new Map<number, Tracked>();
@@ -204,7 +208,7 @@ export default class EtherbitTilingExtension {
   // tamanho (ADR 0068) só é aceita com sonda do mesmo slot — sem ela, "menor e contido" pode ser só o
   // frame natural de um apply descartado no boot. Reconstruído a cada apply, como `_lastAppliedRects`.
   private _refusalProbes = new Map<number, Rect>();
-  // Transientes já colocados (ADR 0073): o diálogo com pai é centralizado sobre o pai com proporção
+  // Transientes já colocados (ADR 0074): o diálogo com pai é centralizado sobre o pai com proporção
   // adequada UMA vez; depois o usuário manda. Limpo no `unmanaged`.
   private _placedTransients = new Set<number>();
   // Timers do "boot settle cascade": janelas abertas ANTES do `enable()` não disparam
@@ -519,6 +523,13 @@ export default class EtherbitTilingExtension {
       console.error(`Etherbit Tiling: falha ao registrar atalhos: ${error}`);
     }
 
+    // 5b) Bloqueio de tela (ADR 0074): o `metadata.json` declara `unlock-dialog`, então o Shell NÃO
+    //     chama `disable()` ao bloquear — sem isso a ordem/árvores/abas eram descartadas e o grid
+    //     voltava embaralhado no desbloqueio.
+    this._locked = Main.sessionMode.isLocked;
+    this._sessionModeId = Main.sessionMode.connect('updated', () => this._onSessionModeUpdated());
+    this._indicator.visible = !this._locked;
+
     // 6a) Borda ativa já na janela focada no momento do enable.
     this._followBorder(global.display.focus_window);
 
@@ -542,7 +553,38 @@ export default class EtherbitTilingExtension {
     this._scheduleBootSettle();
   }
 
+  /// Entrada/saída da tela de bloqueio (ADR 0074). Travado: pausa o relayout e esconde o indicador.
+  /// Destravado: reexibe e dispara UM relayout com o estado preservado.
+  private _onSessionModeUpdated(): void {
+    const locked = Main.sessionMode.isLocked;
+    if (locked === this._locked) {
+      return;
+    }
+    this._locked = locked;
+    if (this._indicator) {
+      this._indicator.visible = !locked;
+    }
+    if (locked) {
+      if (this._relayoutSource) {
+        GLib.source_remove(this._relayoutSource);
+        this._relayoutSource = 0;
+      }
+      return;
+    }
+    this._relayoutPending = false;
+    this._scheduleRelayout();
+    this._positionBorder();
+  }
+
+  /// Também roda ao bloquear a tela? Não: a extensão usa o modo `unlock-dialog` (ADR 0074) para
+  /// manter a ordem/árvores/abas durante o bloqueio, e enquanto travada só pausa (`_locked`). Este
+  /// teardown roda ao desativar a extensão ou encerrar a sessão.
   disable(): void {
+    if (this._sessionModeId) {
+      Main.sessionMode.disconnect(this._sessionModeId);
+      this._sessionModeId = 0;
+    }
+    this._locked = false;
     if (this._relayoutSource) {
       GLib.source_remove(this._relayoutSource);
       this._relayoutSource = 0;
@@ -869,7 +911,7 @@ export default class EtherbitTilingExtension {
     // cursor. O único relayout do resize é o pós-`_applyResize` (grab-op-end zera `_resizeStart` ANTES de
     // liberar a supressão). Complementa `_suppressRelayout`: torna a invariante explícita e imune a uma
     // liberação de supressão em corrida durante o grab.
-    if (this._resizeStart) {
+    if (this._resizeStart || this._locked) {
       this._relayoutPending = true;
       return;
     }
@@ -928,6 +970,10 @@ export default class EtherbitTilingExtension {
 
   /// Coleta janelas+monitores, pede o layout ao daemon e aplica os retângulos.
   private _relayout(): void {
+    if (this._locked) {
+      this._relayoutPending = true;
+      return;
+    }
     // Garante o canal (reconecta/ativa sob demanda); sem daemon alcançável, opera em modo degradado.
     if (!this._ensureProxy()) {
       return;
@@ -2870,7 +2916,7 @@ export default class EtherbitTilingExtension {
     }
   }
 
-  /// Centraliza o diálogo transiente sobre o pai, corrigindo proporção ruim (ADR 0073). Só uma vez:
+  /// Centraliza o diálogo transiente sobre o pai, corrigindo proporção ruim (ADR 0074). Só uma vez:
   /// o seletor do portal nasce com o tamanho que o app escolheu (largo e baixo no VS Code).
   private _placeTransient(id: number, window: Meta.Window, area: Rect): void {
     this._placedTransients.add(id);

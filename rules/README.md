@@ -84,6 +84,7 @@ arqueologia de commits.
 | [0071](0071-update-sem-logout-hot-reload.md) | Update sem logout: loader estável + impl versionada (`impl/<versão>/main.js`) com troca ao vivo no GNOME; `unloadScript` + `reconfigure`, restart do helper e do plasmashell no KDE | ✅ Aceita; emenda #0024 |
 | [0072](0072-recusa-com-evidencia-e-transientes-flutuam.md) | Recusa de tamanho só com evidência (o 1º quadro esquece o slot pedido antes dele; recusa confirmada por sonda no GNOME e no KDE) e janelas transientes flutuam (`transient` no contrato, motivo `transient`) | ✅ Aceita; emenda #0068/#0070 (recusa), #0043 (graça a partir do 1º quadro) e #0067 (adotadas ganham `first-frame`); D-Bus estendido de forma retrocompatível (`transient`); emendada por #0073 (transiente centralizado com proporção) |
 | [0073](0073-transientes-centralizados-com-proporcao.md) | Janelas transientes flutuam centralizadas sobre o pai, com proporção adequada (colocação única, função pura `transientPlacement` nas duas pontes) | ✅ Aceita; emenda #0072; core e D-Bus inalterados |
+| [0074](0074-extensao-viva-no-lock.md) | Extensão GNOME segue viva na tela de bloqueio (`session-modes` com `unlock-dialog`): estado do grid preservado, relayout pausado enquanto travado | ✅ Aceita; estende #0067/#0071; só ponte GNOME |
 
 ## Como adicionar uma nova decisão
 
