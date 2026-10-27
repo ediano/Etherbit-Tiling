@@ -59,6 +59,8 @@ interface KWinWindow {
   readonly maximizable: boolean;
   /** Tamanho mínimo (WM_NORMAL_HINTS / xdg set_min_size); 0×0 = sem restrição. */
   readonly minSize: QSize;
+  /** Tamanho máximo (hints do cliente). OPCIONAL: lido com checagem (ADR 0073). */
+  readonly maxSize?: QSize;
   /** Minimizada. É GRAVÁVEL: usamos para OCULTAR as abas inativas de um stack. */
   minimized: boolean;
   /** Sempre-acima. É GRAVÁVEL: usamos para ELEVAR janelas em auto-floating sobre o grid. */
@@ -68,6 +70,8 @@ interface KWinWindow {
   readonly skipTaskbar: boolean;
   readonly skipPager: boolean;
   readonly transient: boolean;
+  /** Janela-pai de um transiente (ou `null`). OPCIONAL: lido com checagem (ADR 0073). */
+  readonly transientFor?: KWinWindow | null;
   readonly modal: boolean;
   readonly fullScreen: boolean;
   readonly onAllDesktops: boolean;

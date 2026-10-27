@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 
 import {
+  transientPlacement,
   serializeWindows,
   serializeMonitors,
   parseLayout,
@@ -935,5 +936,61 @@ describe('paridade COSMIC (ADR 0070)', () => {
     );
     expect(out.floating).toEqual([2]);
     expect(out.focused_id).toBe(1);
+  });
+});
+
+describe('transientPlacement (ADR 0073)', () => {
+  const area = { x: 0, y: 0, width: 3440, height: 1400 };
+  const parent = { x: 1720, y: 0, width: 1720, height: 1400 };
+
+  it('seletor largo e baixo vira ~3:2 centrado sobre o pai', () => {
+    const r = transientPlacement(
+      { x: 1720, y: 350, width: 1720, height: 450 },
+      parent,
+      area,
+      [0, 0],
+      [0, 0],
+      true,
+    );
+    expect(r.height).toBe(860);
+    expect(r.width).toBe(1032);
+    expect(r.x).toBe(1720 + (1720 - 1032) / 2);
+    expect(r.y).toBe(270);
+  });
+
+  it('proporção boa só centraliza', () => {
+    const r = transientPlacement(
+      { x: 0, y: 0, width: 1200, height: 800 },
+      parent,
+      area,
+      [0, 0],
+      [0, 0],
+      true,
+    );
+    expect(r).toEqual({ x: 1980, y: 300, width: 1200, height: 800 });
+  });
+
+  it('sem pai usa a área útil; respeita min/max', () => {
+    const r = transientPlacement(
+      { x: 0, y: 0, width: 300, height: 100 },
+      null,
+      area,
+      [0, 0],
+      [900, 600],
+      true,
+    );
+    expect(r).toEqual({ x: 1270, y: 400, width: 900, height: 600 });
+  });
+
+  it('não redimensionável só move, com clamp na área útil', () => {
+    const r = transientPlacement(
+      { x: 0, y: 0, width: 400, height: 100 },
+      { x: 3300, y: 0, width: 100, height: 100 },
+      area,
+      [0, 0],
+      [0, 0],
+      false,
+    );
+    expect(r).toEqual({ x: 3040, y: 0, width: 400, height: 100 });
   });
 });

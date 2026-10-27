@@ -1281,3 +1281,44 @@ export function swapInStacks(stacks: Map<string, Stack[]>, a: string, b: string)
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
+
+/// Colocação de uma janela TRANSIENTE (diálogo com pai) na 1ª vez que flutua (ADR 0073). Diálogos do
+/// portal nascem com o tamanho que o app escolheu, e quem ganhou pai depois de tilado sai do grid com
+/// a geometria do slot — o seletor do VS Code ficava largo e baixo. Mantém o frame se a proporção for
+/// razoável (L/A em [1,2; 1,9]) e a altura ≥ 50% da referência; senão, 60% × 70% da referência (o pai,
+/// ou a área útil sem pai), com L/A entre 1,2 e 1,5. Respeita min/max (0 = sem limite) e a área útil; não
+/// redimensionável só é movida. Centraliza sobre a referência, com clamp na área útil. Inteiros.
+export function transientPlacement(
+  frame: Rect,
+  parent: Rect | null,
+  workArea: Rect,
+  min: [number, number],
+  max: [number, number],
+  resizable: boolean,
+): Rect {
+  const ref = parent && parent.width > 0 && parent.height > 0 ? parent : workArea;
+  let width = frame.width;
+  let height = frame.height;
+  const ratio = height > 0 ? width / height : 0;
+  const goodShape = ratio >= 1.2 && ratio <= 1.9 && height >= ref.height * 0.5;
+  if (resizable && !goodShape) {
+    height = Math.round(ref.height * 0.7);
+    width = Math.min(Math.round(ref.width * 0.6), Math.round(height * 1.5));
+    // Pai estreito (metade de um ultrawide): baixa a altura em vez de passar dos 60% de largura.
+    height = Math.min(height, Math.round(width / 1.2));
+    const clampAxis = (v: number, lo: number, hi: number, area: number): number => {
+      let out = Math.max(v, lo);
+      if (hi > 0) {
+        out = Math.min(out, hi);
+      }
+      return Math.min(out, area);
+    };
+    width = clampAxis(width, min[0], max[0], workArea.width);
+    height = clampAxis(height, min[1], max[1], workArea.height);
+  }
+  const fit = (start: number, size: number, areaStart: number, areaSize: number): number =>
+    Math.max(areaStart, Math.min(start, areaStart + areaSize - size));
+  const x = fit(Math.round(ref.x + (ref.width - width) / 2), width, workArea.x, workArea.width);
+  const y = fit(Math.round(ref.y + (ref.height - height) / 2), height, workArea.y, workArea.height);
+  return { x, y, width, height };
+}
